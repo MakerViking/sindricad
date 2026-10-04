@@ -651,7 +651,7 @@ describe("Coincident puts a point ON a line, circle or arc", () => {
     expect(h.warnings).toEqual([t("sketch.constraint.pointOnNeedsPoint")]);
   });
 
-  it("two line BODIES still mean Collinear, but not with a polygon side", () => {
+  it("two line BODIES still mean Collinear, and a polygon's side is a line body", () => {
     expect(run(pointAndLine().concat([{ type: "line", id: "l2", x1: 0, y1: 5, x2: 20, y2: 9 }]), v(12, 0), v(10, 7))._cons)
       .toEqual([{ type: "collinear", l1: "l1", l2: "l2" }]);
     const ents: ResolvedEntity[] = [
@@ -659,8 +659,7 @@ describe("Coincident puts a point ON a line, circle or arc", () => {
       { type: "line", id: "l1", x1: 30, y1: 0, x2: 50, y2: 0 },
     ];
     const h = run(ents, v(7.5, 4.33), v(40, 0));
-    expect(h._cons).toEqual([]);
-    expect(h.warnings).toEqual([t("sketch.constraint.pointOnNeedsPoint")]);
+    expect(h._cons).toEqual([{ type: "collinear", l1: "H~0", l2: "l1" }]);
   });
 
   it("the ORIGIN is a point it can put on a curve, and its axes are curves to put a point on", () => {
@@ -772,7 +771,7 @@ describe("Coincident and points that only SIT together", () => {
 });
 
 describe("Coincident and a polygon's CORNER", () => {
-  // hexagon about (0,0), r 10, first vertex at angle 0: a vertex at (5, 8.66)
+  // hexagon about (0,0), r 10, first vertex at angle 0: vertex 1 at (5, 8.66)
   const hex = (): ResolvedEntity[] => [
     { type: "polygon", id: "H", x: 0, y: 0, radius: 10, sides: 6, angle: 0 },
     { type: "line", id: "l", x1: 20, y1: 12, x2: 30, y2: 12 },
@@ -787,20 +786,18 @@ describe("Coincident and a polygon's CORNER", () => {
     return { h, ct };
   };
 
-  it("is refused out loud, not taken as the nearest side: a corner is not a point yet", () => {
-    // it used to hold the nearest side without a word, and the line's end then
-    // landed on that side's line, about 3 mm off the corner the user clicked
-    const { h } = run(CORNER, v(20, 12));
-    expect(h.warnings).toEqual([t("sketch.constraint.polygonCorner")]);
-    expect(h._cons, "no side was held for the line's end to go on").toEqual([]);
+  it("is a POINT now, in either order: the corner itself, not the nearest side", () => {
+    // it used to be refused ("a corner is not a point yet"), and before that
+    // taken as the nearest side, landing the line's end 3 mm off the corner
+    expect(run(CORNER, v(20, 12)).h._cons).toEqual([{ type: "coincident", e1: "H", p1: 1, e2: "l", p2: 0 }]);
+    const back = run(v(20, 12), CORNER).h;
+    expect(back._cons).toEqual([{ type: "coincident", e1: "l", p1: 0, e2: "H", p2: 1 }]);
+    expect(back.warnings).toEqual([]);
   });
 
-  it("with a point held, the corner is refused and the point stays held; the hover lights nothing there", () => {
-    const { h, ct } = run(v(20, 12), CORNER);
-    expect(h._cons).toEqual([]);
-    expect(h.warnings).toEqual([t("sketch.constraint.polygonCorner")]);
-    expect(h.pending).toEqual({ x: 20, y: 12 });
-    expect(ct.hoverCurve(CORNER)).toBeNull();
-    expect(ct.hoverCurve(v(7.5, 4.33))?.id, "a side away from its corners still lights").toBe("H~0");
+  it("and so is its centre, and a corner of it goes on a line", () => {
+    const { h } = run(v(0, 0), v(25, 12));
+    expect(h._cons).toEqual([{ type: "pointOn", e: "H", p: -1, curve: "l" }]);
+    expect(run(CORNER, v(25, 12)).h._cons).toEqual([{ type: "pointOn", e: "H", p: 1, curve: "l" }]);
   });
 });

@@ -7,7 +7,7 @@ import type { ResolvedEntity } from "./snap";
 import type { PlaceOffset, SketchConstraint } from "../types";
 import { dimPlaceOf, isDriven } from "../types";
 import { entitySegments, polygonPoints, rectCorners } from "./region";
-import { asRound, dimRefPoints, lineOperand, refPoint } from "./entityDims";
+import { POLYGON_CENTRE, RECT_CENTRE, asRound, dimRefPoints, lineOperand, namedEntityIds, refPoint } from "./entityDims";
 import { isOriginGeometry } from "./origin";
 import { newEntityId } from "./id";
 import { arcCenterRadius } from "./arc";
@@ -65,10 +65,20 @@ export function fixPinnedKeys(
 
 /** The moved entity's attachment points: the positions where neighbours may
  *  coincide, and — during a drag — the positions to hold still while the solver
- *  re-satisfies everything around them. */
-export function attachmentPoints(e: ResolvedEntity): THREE.Vector2[] {
+ *  re-satisfies everything around them. `cons` is the sketch's constraints. */
+export function attachmentPoints(e: ResolvedEntity, cons: readonly SketchConstraint[]): THREE.Vector2[] {
   if (e.type === "line" || e.type === "arc") return [v(e.x1, e.y1), v(e.x2, e.y2)];
   if (e.type === "rectangle") return rectCorners(e.x, e.y, e.width, e.height).map((q) => q.clone());
+  // A polygon's corners and a slot's centres, once a constraint names the
+  // shape: solver points then, so a body drag holds them where the cursor put
+  // them, or the frame's solve pulls the shape back toward whatever it is tied
+  // to. Before that the solver has no point there, so nothing merges with
+  // one and nothing that only sits on it may ride along (an old sketch's
+  // snapped line end stayed put in 0.1.232), and a drag of the shape needs no
+  // solve at all.
+  if ((e.type === "polygon" || e.type === "slot") && !namedEntityIds(cons).has(e.id)) return [];
+  if (e.type === "polygon") return polygonPoints(e.x, e.y, e.radius, e.sides, (e.angle * Math.PI) / 180);
+  if (e.type === "slot") return [v(e.x1, e.y1), v(e.x2, e.y2)];
   if (e.type === "spline") {
     const a = e.points[0], b = e.points[e.points.length - 1];
     return a && b ? [v(a.x, a.y), v(b.x, b.y)] : [];
@@ -108,7 +118,7 @@ export function bodyDragBlocked(
   if (moved.some((e) => pinnedIds.has(e.id))) return true;
   const pinnedAt = fixPinnedKeys(ents, cons);
   if (pinnedAt.size === 0) return false;
-  return moved.some((e) => attachmentPoints(e).some((q) => pinnedAt.has(coincKey(q.x, q.y))));
+  return moved.some((e) => attachmentPoints(e, cons).some((q) => pinnedAt.has(coincKey(q.x, q.y))));
 }
 
 /** ONE frame of the select tool's whole-entity body drag: the grabbed entity
@@ -149,7 +159,7 @@ export function bodyDragFrame(
   const moved = new Set(dragIdxs(idx));
   if (bodyDragBlocked(ents, [...moved], cons)) return null;
   const keys = new Set(
-    [...moved].flatMap((i) => attachmentPoints(ents[i]!).map((q) => coincKey(q.x, q.y))),
+    [...moved].flatMap((i) => attachmentPoints(ents[i]!, cons).map((q) => coincKey(q.x, q.y))),
   );
   const near = (x: number, y: number) => keys.has(coincKey(x, y));
   return ents.map((e, i) => {
@@ -177,8 +187,10 @@ export function bodyDragFrame(
 
 /** The nearest solver-controlled point (line/arc endpoint, circle or arc centre,
  *  rectangle corner, spline fit point) within `tol` of p — the select tool's
- *  drag handles. Rigid shapes (polygon/slot) are intentionally excluded: they
- *  don't expand to solver points.
+ *  drag handles. Polygons and slots are intentionally excluded: they expand to
+ *  solver points only once a constraint names them (sketchSolve), so a handle
+ *  on one would drag in one sketch and be refused in the next. A body drag
+ *  moves them whole.
  *
  *  The ORIGIN offers no handles. It is pinned, so a drag started on it is
  *  refused and nothing happens — but starting one still consumes the click, so
@@ -844,7 +856,9 @@ export type ExplodeResult = {
    *  included). The first is the shape's own id. */
   outline: string[];
   /** the construction geometry that holds it in shape: a polygon's two
-   *  circles, a slot's two end diameters. Not part of the outline. */
+   *  circles, a slot's two end diameters, a rectangle's centre point and the
+   *  two lines that hold it (only when a constraint names that centre). Not
+   *  part of the outline. */
   helpers: string[];
   /** the constraints that hold it in shape, the last ones in `constraints`
    *  (the same objects): the explode's own, not anything the user made */
@@ -927,6 +941,38 @@ export function explodeCompound(
         { type: "horizontal", line: s2 },
         { type: "vertical", line: s3 },
       ];
+    // Its CENTRE, when a constraint names it (point 4): a construction point
+    // held in the middle of two construction lines, one across from the left
+    // side's line to the right side's and one up from the bottom's to the
+    // top's, each square to the sides it spans. Not a diagonal between two
+    // corners: a fillet or chamfer moves the corners off the corner, while
+    // the sides' lines stay where they were, so this keeps the centre where
+    // it was after one. Rotate needs it most, turning a rectangle about its
+    // centre on the origin.
+    const namesCentre = cons.some((k) => {
+      const rec = k as unknown as Record<string, unknown>;
+      return ([["e", "p"], ["e1", "p1"], ["e2", "p2"]] as const).some(([f, q]) => rec[f] === e.id && rec[q] === RECT_CENTRE);
+    });
+    if (namesCentre) {
+      const centre = newEntityId(), across = newEntityId(), up = newEntityId();
+      const hw = e.width / 2, hh = e.height / 2;
+      made.push(
+        { type: "point", id: centre, x: e.x, y: e.y, construction: true },
+        { ...line(across, { x: e.x - hw, y: e.y }, { x: e.x + hw, y: e.y }), construction: true },
+        { ...line(up, { x: e.x, y: e.y - hh }, { x: e.x, y: e.y + hh }), construction: true },
+      );
+      helpers = [centre, across, up];
+      keep.push(
+        { type: "pointOn", e: across, p: 0, curve: s3 },
+        { type: "pointOn", e: across, p: 1, curve: s1 },
+        { type: "perpendicular", l1: across, l2: s1 },
+        { type: "midpoint", e: centre, p: 0, line: across },
+        { type: "pointOn", e: up, p: 0, curve: s0 },
+        { type: "pointOn", e: up, p: 1, curve: s2 },
+        { type: "perpendicular", l1: up, l2: s0 },
+        { type: "midpoint", e: centre, p: 0, line: up },
+      );
+    }
   } else if (e.type === "polygon") {
     if (!(e.radius > 0)) return null;
     const vs = polygonPoints(e.x, e.y, e.radius, e.sides, (e.angle * Math.PI) / 180);
@@ -1006,16 +1052,32 @@ export function explodeCompound(
    *  rectangle and a corner index, or an edge and its end (edge k runs from
    *  corner k to corner k+1, as sketchSolve registers it) */
   const cornerOf = (id: string, p: number): number | null => {
-    if (e.type !== "rectangle") return null; // a polygon or slot offers no point yet
+    if (e.type !== "rectangle") return null; // a polygon's or slot's: see point()
     if (id === shape) return Number.isInteger(p) && p >= 0 && p <= 3 ? p : null;
     const k = Number(id.slice(shape.length + 1));
     return Number.isInteger(k) && k >= 0 && k <= 3 ? (k + (p === 1 ? 1 : 0)) % 4 : null;
   };
-  /** a POINT operand: a corner becomes the start of the side leaving it */
+  /** a POINT operand: a corner becomes the start of the side leaving it, a
+   *  polygon's centre the centre of its circle, a slot's centres those of its
+   *  end arcs, and the end of a side (`P~k` p0/p1) the end of its line. A
+   *  rectangle's centre becomes its construction centre point (above). */
   const point = (id: string, p: number): { e: string; p: number } | null => {
     if (!names(id)) return { e: id, p };
-    const k = cornerOf(id, p);
-    return k === null ? null : { e: sides[k]!, p: 0 };
+    if (e.type === "rectangle") {
+      if (id === shape && p === RECT_CENTRE) return helpers[0] ? { e: helpers[0], p: 0 } : null;
+      const k = cornerOf(id, p);
+      return k === null ? null : { e: sides[k]!, p: 0 };
+    }
+    if (id !== shape) {
+      const l = side(id);
+      return l ? { e: l, p: p === 1 ? 1 : 0 } : null;
+    }
+    if (e.type === "polygon") {
+      if (p === POLYGON_CENTRE) return { e: helpers[0]!, p: 0 };
+      return Number.isInteger(p) && p >= 0 && p < sides.length ? { e: sides[p]!, p: 0 } : null;
+    }
+    // a slot: its arcs are outline[3] round (x1,y1) and outline[1] round (x2,y2)
+    return p === 0 ? { e: outline[3]!, p: 2 } : p === 1 ? { e: outline[1]!, p: 2 } : null;
   };
   /** corner k as an end of the side through it that runs ACROSS `field`'s
    *  measure: the width runs between the two vertical sides (odd k), the
@@ -1283,6 +1345,53 @@ export function rotationTie(
     return !(q && Math.hypot(q.x - pivot.x, q.y - pivot.y) < 1e-6);
   }
   return true;
+}
+
+/** Does `c` tie geometry in `moving` (entity ids; a side `R~k` counts as R)
+ *  to geometry outside it, in a way a MOVE by `d` would break? The settle
+ *  after the move would then pull the moved geometry part of the way back, or
+ *  stretch it, which is how a rectangle with a corner on the origin came out
+ *  of a Move resized instead of moved (a237de6b, decision C8: refuse, and say
+ *  so).
+ *
+ *  Not a tie: what rotationTie lets through, since a move keeps every length
+ *  as a rotation does; and anything about DIRECTION alone (Horizontal,
+ *  Vertical, Parallel, Perpendicular, an angle), which a move keeps too. Nor a
+ *  move in a direction the constraint leaves free: along the line of a point
+ *  On a line, of two Collinear lines, of a distance from a point or a rim to a
+ *  line, or of a line touching a round; sideways for a vertical distance, and
+ *  up or down for a horizontal one. */
+export function translationTie(
+  c: SketchConstraint,
+  ents: readonly ResolvedEntity[],
+  moving: ReadonlySet<string>,
+  d: { x: number; y: number },
+): boolean {
+  if (!rotationTie(c, ents, moving, { x: Number.NaN, y: Number.NaN })) return false;
+  const dl = Math.hypot(d.x, d.y);
+  if (!(dl > 0)) return false; // no move breaks nothing
+  // the move runs along (dx, dy), to within a thousandth of a degree
+  const along = (dx: number, dy: number) => {
+    const len = Math.hypot(dx, dy);
+    return len > 0 && Math.abs(dx * d.y - dy * d.x) / (len * dl) <= 2e-5;
+  };
+  /** the move runs along line operand `id` (a circle or an arc has no along) */
+  const alongLine = (id: string) => {
+    const seg = lineOperand(new Map(ents.map((e) => [e.id, e])), id);
+    return !!seg && along(seg.x2 - seg.x1, seg.y2 - seg.y1);
+  };
+  switch (c.type) {
+    case "horizontal": case "vertical": case "parallel": case "perpendicular": case "angle":
+      return false;
+    case "pointOn": return !alongLine(c.curve);
+    case "collinear": return !alongLine(c.l1);
+    case "p2lDistance": case "c2lDistance": return !alongLine(c.line);
+    case "tangent": return !alongLine(c.line);
+    case "tangent2": return !(alongLine(c.a) || alongLine(c.b));
+    case "p2pDistanceX": return !along(0, 1);
+    case "p2pDistanceY": return !along(1, 0);
+    default: return true;
+  }
 }
 
 /**

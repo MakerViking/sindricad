@@ -1469,6 +1469,12 @@
     "constraint": {
       "alreadyPicked": "That is the point you already picked — choose the second one to mirror.",
       "angle": "Angle",
+      "boundField": {
+        "angle": "angle",
+        "position": "position",
+        "radius": "radius"
+      },
+      "boundShape": "I did not apply that: it needs the {shape}'s {field} to change, and a parameter sets it. Change the parameter instead.",
       "c2cDistance": "Rim-to-rim distance",
       "c2lDistance": "Rim-to-line distance",
       "coincident": "Coincident",
@@ -1503,7 +1509,6 @@
       "pointOn": "Point on curve",
       "pointOnNeedsPoint": "Coincident puts a point on a curve, so one of the two clicks has to be a point: an end, a corner, a centre or a sketch point.",
       "pointOnOwnCurve": "That point belongs to the curve you picked. Put it on a different line, circle or arc.",
-      "polygonCorner": "I can't take a polygon's corner as a point yet. To put a point on the polygon, click along one of its sides instead.",
       "radialGap": "Radial gap",
       "radius": "Radius",
       "samePointTwice": "That is the same point twice — Coincident joins two DIFFERENT points.",
@@ -1514,18 +1519,18 @@
       "vertical": "Vertical",
       "wants": {
         "coincident": "two points, or a point and a line, circle or arc",
-        "collinear": "two lines (a rectangle edge counts)",
+        "collinear": "two lines (a side of a rectangle, polygon or slot counts)",
         "concentric": "two circles or arcs",
         "default": "a target",
         "equal": "two lines, or two circles/arcs",
-        "fix": "a point, an endpoint or a centre",
-        "horizontal": "a line, or a rectangle edge",
+        "fix": "a point, an endpoint, a corner or a centre",
+        "horizontal": "a line, or a side of a rectangle, polygon or slot",
         "midpoint": "a point, an endpoint or a centre, then the line to centre it on",
-        "parallel": "two lines (a rectangle edge counts)",
-        "perpendicular": "two lines (a rectangle edge counts)",
+        "parallel": "two lines (a side of a rectangle, polygon or slot counts)",
+        "perpendicular": "two lines (a side of a rectangle, polygon or slot counts)",
         "symmetric": "two points, endpoints or centres, then the axis line",
         "tangent": "a circle or arc, then the line or curve it should touch",
-        "vertical": "a line, or a rectangle edge"
+        "vertical": "a line, or a side of a rectangle, polygon or slot"
       }
     },
     "constructionToggle": {
@@ -1601,7 +1606,8 @@
         "rimsTouch": "These two rims touch — the edge-to-edge distance measures 0, nothing to drive.",
         "sameCircleTwice": "That is one circle picked twice — pick a second entity to measure to.",
         "sameRim": "These two rims are the same circle — the radial gap measures 0.",
-        "unsupported": "A {kind} can't be dimensioned yet — pick a line, arc, circle or rectangle edge."
+        "slotWidth": "That is the slot's width, which the slot sets itself. To change it, edit the slot's width dimension.",
+        "unsupported": "A {kind} can't be dimensioned there. Pick a line, an arc, a circle, or a side or corner of a rectangle, polygon or slot."
       },
       "expressionDropped": "Dimension expression \"{expr}\" was dropped: {reason}",
       "fixedEndsNotApplied": "Both ends are fixed reference geometry, so this dimension can only measure — the value you typed was not applied.",
@@ -1626,7 +1632,8 @@
         "radialGap": "Radial gap (wall thickness): type a value · click to place",
         "rectEdge": "Rectangle edge: type a length, or pick a second entity · click to place",
         "referenceOn": "{hint} · Reference Dim is ON — this dimension will measure, not drive",
-        "secondPoint": "Pick a second point, or a line, for the distance between them"
+        "secondPoint": "Pick a second point, or a line, for the distance between them",
+        "shapeSide": "Side: type a length, or pick a second entity · click to place"
       },
       "label": {
         "count": "N",
@@ -1839,6 +1846,7 @@
     },
     "transform": {
       "clickDestination": "Click the destination point",
+      "moveTied": "I did not move anything: a constraint ties what you selected to geometry that is not being moved, and the solver would pull it back or stretch it. Select that geometry too, or remove the constraint, then move again.",
       "rectangleToLines": {
         "one": "A rectangle always sits square to the sketch axes, so I turned it into four lines kept square to each other and rotated those. Its constraints moved to the lines.",
         "other": "A rectangle always sits square to the sketch axes, so I turned these {count} into lines kept square to each other and rotated those. Their constraints moved to the lines."

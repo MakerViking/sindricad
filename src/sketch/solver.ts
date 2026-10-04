@@ -58,6 +58,17 @@ export type SConstraint =
   | { id: string; type: "pointOnArc"; p: PointId; arc: string }
   | { id: string; type: "pointOnPerpBisector"; p: PointId; line: string }
   | { id: string; type: "symmetric"; a: PointId; b: PointId; line: string }
+  // `a` and `b` mirror through the POINT `p` (planegcs p2p_symmetric_ppp): `p`
+  // is their midpoint. A rectangle's centre, between two opposite corners.
+  | { id: string; type: "symmetricPoint"; a: PointId; b: PointId; p: PointId }
+  // one coordinate of a point held at a value (planegcs coordinate_x / _y): a
+  // polygon's or slot's centre x or y that a parameter sets (sketchSolve's
+  // pins), or a shape's place the hold seed keeps
+  | { id: string; type: "coordX"; p: PointId; value: number }
+  | { id: string; type: "coordY"; p: PointId; value: number }
+  // the DIRECTION of a -> b, radians from +X (planegcs p2p_angle): a polygon's
+  // rotation that a parameter sets, or a shape's turn the hold seed keeps
+  | { id: string; type: "pointAngle"; a: PointId; b: PointId; value: number }
   // --- edge-to-edge (rim) distances -----------------------------------------
   // `round1`/`round2`/`round` name a CIRCLE OR ARC primitive: planegcs's Arc
   // derives from Circle, so the same three constraints take either (verified
@@ -369,6 +380,14 @@ function toGcsConstraint(c: SConstraint): any {
       return { id: c.id, type: "point_on_perp_bisector_pl", p_id: c.p, l_id: c.line };
     case "symmetric":
       return { id: c.id, type: "p2p_symmetric_ppl", p1_id: c.a, p2_id: c.b, l_id: c.line };
+    case "symmetricPoint":
+      return { id: c.id, type: "p2p_symmetric_ppp", p1_id: c.a, p2_id: c.b, p_id: c.p };
+    case "coordX":
+      return { id: c.id, type: "coordinate_x", p_id: c.p, x: c.value };
+    case "coordY":
+      return { id: c.id, type: "coordinate_y", p_id: c.p, y: c.value };
+    case "pointAngle":
+      return { id: c.id, type: "p2p_angle", p1_id: c.a, p2_id: c.b, angle: c.value };
     case "rimGap":
       return { id: c.id, type: "c2cdistance", c1_id: c.round1, c2_id: c.round2, dist: c.value };
     case "rimLine":

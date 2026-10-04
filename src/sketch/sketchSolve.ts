@@ -13,14 +13,16 @@
 //
 // A rectangle is expanded here into 4 corner points + 4 implicit edges with
 // horizontal/vertical rules, so a rectangle (drawn or loaded) stays rectangular
-// under dragging while remaining a single atomic entity in the document.
+// under dragging while remaining a single atomic entity in the document. A
+// polygon and a slot are expanded the same way, but only once a constraint
+// names one of their points or sides (see "the shapes a constraint names").
 
 import { t } from "../i18n";
 import type { ResolvedEntity } from "./snap";
 import { solveSketch, type SConstraint, type SPoint, type SLine, type SCircle, type SArc, type SolveInput, type SolveResult } from "./solver";
 import { circumcenter } from "./arc";
-import { rectCorners } from "./region";
-import { asRound, lineOperand, refPoint, rimNesting, type Round } from "./entityDims";
+import { polygonPoints, rectCorners } from "./region";
+import { POLYGON_CENTRE, RECT_CENTRE, SLOT_AXIS, asRound, lineOperand, namedEntityIds, refPoint, rimNesting, type Round } from "./entityDims";
 import type { SketchConstraint } from "../types";
 import { isDriven, projEndSamples } from "../types";
 import { isOriginGeometry, isOriginId } from "./origin";
@@ -92,6 +94,18 @@ export interface SolvePass {
 const TAU = Math.PI * 2;
 const ccwDelta = (from: number, to: number) => ((to - from) % TAU + TAU) % TAU;
 
+/** `after`, unless it is `before` to within float noise: then `before`, digit
+ *  for digit. For the numbers a solve DERIVES rather than moves (a polygon's
+ *  radius and angle, read back off solved points), so a shape the solve left
+ *  where it was writes back exactly what it was. */
+const kept = (before: number, after: number) =>
+  Math.abs(after - before) <= 1e-9 * Math.max(1, Math.abs(before)) ? before : after;
+
+/** Most solves the hold seed may try before the plain solve stands (see
+ *  compileAndSolve's holdSeed). Two shapes made square to each other from a
+ *  level start take 4; one shape left with nothing held, up to 16. */
+const SEED_TRIES = 24;
+
 /** Most anchors a mover bias may allocate before it gives up and solves free.
  *  Each anchor is a fixed helper point plus a temporary coincidence in the
  *  planegcs wasm heap, and an exhausted heap answers with `Aborted(OOM)` — a
@@ -150,12 +164,20 @@ export function soleDimEntity(c: SketchConstraint): string | null {
   }
 }
 
+/** A shape's number a parameter or a formula sets, `<entityId>:<field>`
+ *  (`P:radius`, `S:x1`): the polygon and slot fields of
+ *  RIGID_ENTITY_NUM_FIELDS. The solver holds each where it is (see the
+ *  shapes below), or the next parameter recompute would write it back over
+ *  whatever the solve made of it, and the two would fight. */
+export type BoundFields = ReadonlySet<string>;
+
 export async function compileAndSolve(
   entities: ResolvedEntity[],
   constraints: SketchConstraint[],
   drag?: { fromX: number; fromY: number; toX: number; toY: number },
   bias?: { moves: string[] },
   pins?: { x: number; y: number }[],
+  bound?: BoundFields,
 ): Promise<SolvePass> {
   const points: SPoint[] = [];
   const pointByKey = new Map<string, string>();
@@ -320,28 +342,132 @@ export async function compileAndSolve(
     }
   }
 
-  // The polygon and slot SIDES a `pointOn` names. Neither shape is in the
-  // solver (types.ts), so a side compiles as FIXED geometry, the way a
-  // projected line does, and only when a constraint names it: a document that
-  // names none compiles exactly as it did before this existed. Its two points
-  // are registered after every other entity's, and as points nothing merges
-  // onto, so a user endpoint drawn on a polygon corner is not pinned by a side
-  // that happens to be named, and the drag search below, which takes the FIRST
-  // of two equally near points, still finds the user's own.
+  // --- the shapes a constraint names ---------------------------------------
+  // A polygon or a slot, and a rectangle's CENTRE, come into the solver only
+  // when a constraint NAMES one of their points or sides: a document that
+  // names none compiles exactly as it did before they could be named, and
+  // writes back nothing new. Until then a polygon or slot is rigid, as it
+  // always was. A reference dimension names nothing (it constrains nothing).
+  //
+  //   rectangle centre  one more point, the midpoint of corners 0 and 2
+  //   polygon           its centre, its n corners (mergeable, like a
+  //                     rectangle's), a circle through them, a spoke from the
+  //                     centre to each corner, and the n sides as lines
+  //                     `P~k`. Every corner ON the circle, and each spoke a
+  //                     SIGNED 360/n degrees round from the one before: that
+  //                     keeps it regular, numbered and turning the way it was
+  //                     drawn, so a solve can never fold a corner back over its
+  //                     neighbour or mirror it (the write-back reads the angle
+  //                     off corner 0 and checks every other corner against it).
+  //                     Four freedoms: centre, size, angle.
+  //   slot              its two centres, its axis `S~2` between them, and its
+  //                     two sides `S~0` (left of the axis) and `S~1`, each end
+  //                     of a side held half the width out from its centre and
+  //                     SIGNED square to the axis. The width stays as drawn
+  //                     (it is the slot's own badge), so four freedoms: the two
+  //                     centres.
+  //
+  // Every implicit id here contains `~`, so none can be blamed for a conflict
+  // (constraintIndexOf); the spokes and the circle are no user operand
+  // (lineOperand cannot decode them, so pruneConstraints drops any that names
+  // one).
   const entById = new Map(entities.map((e) => [e.id, e]));
+  const shapesNamed = [...namedEntityIds(constraints)].filter((id) => {
+    const t = entById.get(id)?.type;
+    return t === "polygon" || t === "slot";
+  });
+  const rectCentresNamed = new Set<string>();
   for (const c of constraints) {
-    if (c.type !== "pointOn" || ends.has(c.curve)) continue;
-    const cut = c.curve.lastIndexOf("~");
-    const shape = cut > 0 ? entById.get(c.curve.slice(0, cut)) : undefined;
-    if (shape?.type !== "polygon" && shape?.type !== "slot") continue;
-    const side = lineOperand(entById, c.curve);
-    if (!side) continue; // a side the shape no longer has (fewer sides now)
-    const p1 = getPoint(side.x1, side.y1, false), p2 = getPoint(side.x2, side.y2, false);
-    lines.push({ id: c.curve, p1, p2 });
-    ends.set(c.curve, [p1, p2]);
-    fixedPts.add(p1);
-    fixedPts.add(p2);
+    if (isDriven(c)) continue;
+    const rec = c as unknown as Record<string, unknown>;
+    for (const [e, p] of [["e", "p"], ["e1", "p1"], ["e2", "p2"]] as const) {
+      const id = rec[e];
+      if (typeof id === "string" && rec[p] === RECT_CENTRE && entById.get(id)?.type === "rectangle") rectCentresNamed.add(id);
+    }
   }
+  const rectCentreMap = new Map<string, string>(); // rectangle id -> its centre point
+  for (const id of rectCentresNamed) {
+    const e = entById.get(id), cp = rectMap.get(id);
+    if (e?.type !== "rectangle" || !cp || cp[0] === cp[2]) continue; // no size: no centre to hold
+    const centre = getPoint(e.x, e.y, false); // a centre is not an endpoint
+    cons.push({ id: `${id}~m`, type: "symmetricPoint", a: cp[0]!, b: cp[2]!, p: centre });
+    rectCentreMap.set(id, centre);
+  }
+  const polyMap = new Map<string, { centre: string; verts: string[]; circle: string }>();
+  const slotMap = new Map<string, { c1: string; c2: string; ends: string[]; mid: string }>();
+  const isBound = (id: string, field: string) => bound?.has(`${id}:${field}`) ?? false;
+  /** the pins on numbers a parameter sets, with what to call each in a
+   *  refusal (see the end of this function) */
+  const boundPins: { c: SConstraint; shape: ResolvedEntity["type"]; field: "position" | "radius" | "angle" }[] = [];
+  const pinBound = (e: ResolvedEntity, field: "position" | "radius" | "angle", c: SConstraint) => {
+    cons.push(c);
+    boundPins.push({ c, shape: e.type, field });
+  };
+  for (const id of shapesNamed) {
+    const e = entById.get(id);
+    if (e?.type === "polygon") {
+      if (!(e.radius > RECT_COLLAPSE_MIN)) continue; // no size: stays rigid
+      const vs = polygonPoints(e.x, e.y, e.radius, e.sides, (e.angle * Math.PI) / 180);
+      const n = vs.length;
+      const centre = getPoint(e.x, e.y, false);
+      const verts = vs.map((q) => getPoint(q.x, q.y, true));
+      if (new Set(verts).size !== n) continue; // too small to tell its corners apart
+      const circle = `${id}~c`;
+      circles.push({ id: circle, center: centre, radius: e.radius });
+      verts.forEach((pv, k) => {
+        const side = `${id}~${k}`, next = verts[(k + 1) % n]!;
+        lines.push({ id: side, p1: pv, p2: next });
+        ends.set(side, [pv, next]);
+        // In `ends` though no user operand, so the mover bias walks through
+        // the spokes' angles from a corner to the centre (its `take`).
+        lines.push({ id: `${id}~r${k}`, p1: centre, p2: pv });
+        ends.set(`${id}~r${k}`, [centre, pv]);
+        cons.push({ id: `${id}~o${k}`, type: "pointOnCircle", p: pv, circle });
+        if (k > 0) cons.push({ id: `${id}~a${k}`, type: "angleLL", l1: `${id}~r${k - 1}`, l2: `${id}~r${k}`, value: TAU / n });
+      });
+      if (isBound(id, "x")) pinBound(e, "position", { id: `${id}~px`, type: "coordX", p: centre, value: e.x });
+      if (isBound(id, "y")) pinBound(e, "position", { id: `${id}~py`, type: "coordY", p: centre, value: e.y });
+      if (isBound(id, "radius")) pinBound(e, "radius", { id: `${id}~pr`, type: "circleRadius", circle, value: e.radius });
+      if (isBound(id, "angle")) pinBound(e, "angle", { id: `${id}~pa`, type: "pointAngle", a: centre, b: verts[0]!, value: (e.angle * Math.PI) / 180 });
+      polyMap.set(id, { centre, verts, circle });
+    } else if (e?.type === "slot") {
+      const one = new Map([[id, e]]);
+      const s0 = lineOperand(one, `${id}~0`), s1 = lineOperand(one, `${id}~1`);
+      if (!s0 || !s1 || !(e.width > 0) || !(Math.hypot(e.x2 - e.x1, e.y2 - e.y1) > RECT_COLLAPSE_MIN)) continue;
+      const c1 = getPoint(e.x1, e.y1, false), c2 = getPoint(e.x2, e.y2, false);
+      // a side's ends are where it meets the round ends: nothing else's point
+      const a0 = getPoint(s0.x1, s0.y1, false), b0 = getPoint(s0.x2, s0.y2, false);
+      const a1 = getPoint(s1.x1, s1.y1, false), b1 = getPoint(s1.x2, s1.y2, false);
+      const axis = `${id}~${SLOT_AXIS}`;
+      for (const [lid, p1, p2] of [[`${id}~0`, a0, b0], [`${id}~1`, a1, b1], [axis, c1, c2]] as const) {
+        lines.push({ id: lid, p1, p2 });
+        ends.set(lid, [p1, p2]);
+      }
+      // side 0's ends a quarter turn LEFT of the axis, side 1's right
+      ([[c1, a0, 1], [c2, b0, 1], [c2, a1, -1], [c1, b1, -1]] as const).forEach(([from, to, turn], k) => {
+        lines.push({ id: `${id}~r${k}`, p1: from, p2: to });
+        ends.set(`${id}~r${k}`, [from, to]);
+        cons.push({ id: `${id}~a${k}`, type: "angleLL", l1: axis, l2: `${id}~r${k}`, value: (turn * Math.PI) / 2 });
+        cons.push({ id: `${id}~d${k}`, type: "distance", a: from, b: to, value: e.width / 2 });
+      });
+      if (isBound(id, "x1")) pinBound(e, "position", { id: `${id}~px1`, type: "coordX", p: c1, value: e.x1 });
+      if (isBound(id, "y1")) pinBound(e, "position", { id: `${id}~py1`, type: "coordY", p: c1, value: e.y1 });
+      if (isBound(id, "x2")) pinBound(e, "position", { id: `${id}~px2`, type: "coordX", p: c2, value: e.x2 });
+      if (isBound(id, "y2")) pinBound(e, "position", { id: `${id}~py2`, type: "coordY", p: c2, value: e.y2 });
+      // its MIDDLE, on the axis halfway between the centres: no operand, but
+      // the point the hold seed keeps still when the slot only has to turn
+      const mid = getPoint((e.x1 + e.x2) / 2, (e.y1 + e.y2) / 2, false);
+      cons.push({ id: `${id}~mo`, type: "pointOnLine", p: mid, line: axis });
+      cons.push({ id: `${id}~mb`, type: "pointOnPerpBisector", p: mid, line: axis });
+      slotMap.set(id, { c1, c2, ends: [a0, b0, a1, b1], mid });
+    }
+  }
+  /** the rectangle, polygon or slot an operand id belongs to, when that shape
+   *  is in the solver: the shape itself, or one of its sides (`R~2`, `P~4`) */
+  const shapeOf = (v: string): string | undefined => {
+    const base = v.includes("~") ? v.slice(0, v.indexOf("~")) : v;
+    return rectMap.has(base) || polyMap.has(base) || slotMap.has(base) ? base : undefined;
+  };
 
   const isLine = (id: string) => ends.has(id);
   // The axis a line operand is already held square to, if any: a rectangle
@@ -383,7 +509,11 @@ export async function compileAndSolve(
   // question the same way, which is the invariant that keeps being broken here.
   const endpointPoint = (entId: string, idx: number): string | undefined => {
     const rc = rectMap.get(entId);
-    if (rc) return rc[idx];
+    if (rc) return idx === RECT_CENTRE ? rectCentreMap.get(entId) : rc[idx];
+    const pg = polyMap.get(entId);
+    if (pg) return idx === POLYGON_CENTRE ? pg.centre : pg.verts[idx];
+    const sl = slotMap.get(entId);
+    if (sl) return idx === 0 ? sl.c1 : idx === 1 ? sl.c2 : undefined;
     const ln = ends.get(entId);
     if (ln) return idx === 0 ? ln[0] : ln[1];
     const ar = arcMap.get(entId);
@@ -463,7 +593,8 @@ export async function compileAndSolve(
     return rectMap.has(base) ? base : undefined;
   };
   const namesEntity = (v: string) =>
-    ends.has(v) || centers.has(v) || arcMap.has(v) || pointMap.has(v) || splineMap.has(v);
+    ends.has(v) || centers.has(v) || arcMap.has(v) || pointMap.has(v) || splineMap.has(v)
+    || polyMap.has(v) || slotMap.has(v);
   const noteRectScope = (c: SketchConstraint) => {
     const rects = new Set<string>();
     let observable = c.type === "fix";
@@ -743,7 +874,7 @@ export async function compileAndSolve(
     // stamp `ent.id`. This is here so the next one cannot be caught by it — and
     // one now is: a locked rectangle width is a `distance` on `R~0`, and
     // soleDimEntity hands that edge straight through as the mover.
-    const movers = new Set(bias.moves.map((id) => rectOf(id) ?? id));
+    const movers = new Set(bias.moves.map((id) => shapeOf(id) ?? id));
     const owners = new Map<string, Set<string>>(); // solver point -> entities that own it
     const own = (entId: string, ...pids: (string | undefined)[]) => {
       for (const pid of pids) {
@@ -753,11 +884,13 @@ export async function compileAndSolve(
         s.add(entId);
       }
     };
-    for (const [id, cp] of rectMap) own(id, ...cp);
-    // `ends` carries rectangle EDGES too (`R~k`), and `moves` names ENTITIES —
-    // attribute an edge to its rectangle or naming the rectangle would fail to
-    // free its own corners.
-    for (const [id, e] of ends) own(rectOf(id) ?? id, ...e);
+    for (const [id, cp] of rectMap) own(id, ...cp, rectCentreMap.get(id));
+    for (const [id, pg] of polyMap) own(id, pg.centre, ...pg.verts);
+    for (const [id, sl] of slotMap) own(id, sl.c1, sl.c2, ...sl.ends, sl.mid);
+    // `ends` carries rectangle EDGES too (`R~k`), and a polygon's or slot's
+    // sides and spokes, and `moves` names ENTITIES — attribute each to its
+    // shape or naming the shape would fail to free its own corners.
+    for (const [id, e] of ends) own(shapeOf(id) ?? id, ...e);
     for (const [id, c] of centers) own(id, c);
     for (const [id, a] of arcMap) own(id, a.ourS, a.ourE, a.center);
     for (const [id, ps] of splineMap) own(id, ...ps);
@@ -961,6 +1094,7 @@ export async function compileAndSolve(
   // bias, and a dragged SELECTION, the one caller that can pin more than a
   // rectangle's four corners, skips its frame solves rather than pass more pins
   // than that budget (SketchMode.queueBodyDrag).
+  const biasAnchorCount = anchors.length; // the pins below are not the bias's
   if (pins?.length) {
     const wanted = new Set(pins.map((q) => key(q.x, q.y)));
     const taken = new Set(anchors.map((a) => a.point));
@@ -969,9 +1103,304 @@ export async function compileAndSolve(
       anchors.push({ point: p.id, x: p.x, y: p.y });
     }
   }
+  // --- what a shape keeps unless something asks --------------------------
+  // A polygon in the solver has four freedoms, and a solve with more room than
+  // it needs spends a correction across all of them: Horizontal on a side of a
+  // hexagon (radius 10, at 17 degrees) turned it AND shrank it to 9.37 AND
+  // moved it 1.8 mm, and a corner put on a point, the hexagon picked first,
+  // grew it 15 percent and turned it 8 degrees. A rectangle whose centre was
+  // put on the origin came out 41 percent bigger, because DogLeg found that
+  // before the plain slide. So each shape brought in above has HOLDS on its
+  // place, its turn and its size, and when the plain solve below changed any
+  // of them, the HOLD SEED gives up, shape by shape, as few of them as the
+  // constraints need (see there). Rectangles that name no centre are left as
+  // they always were (they stretch).
+  //
+  // Holds, not soft pins on the anchors' temporary device: soft against soft
+  // is a least-squares compromise, and a soft turn on the shape picked first
+  // dragged the anchored line it was made parallel to two tenths of a degree
+  // round with it. A number a parameter sets is already held hard (the pins),
+  // so it gets no hold of its own. The one soft piece is where a shape that
+  // has to SLIDE starts from (`at`): a slide released outright went wherever
+  // planegcs's pivoting took it, so a vertical dimension on a polygon's centre
+  // moved it 6 mm sideways too, and a corner put on a sloping line travelled
+  // 62 mm where 55 would do. Anchored softly there, it takes the nearest
+  // place the constraints allow, which is the plain point's behaviour.
+  type ShapeHold = {
+    id: string;
+    place: SConstraint[];
+    turn: SConstraint[];
+    size: SConstraint[];
+    /** the point the place hold is on, and where it was */
+    centre: string;
+    at: { x: number; y: number };
+    /** the points a nudge turns about `at` (see the seed) */
+    spin: string[];
+    /** all its points: what holding everything fixes */
+    pts: string[];
+    /** its turn (radians) and sizes as a solve left them; null when a point is missing */
+    read: (r: SolveResult) => { turn: number | null; size: number[] } | null;
+    was: { turn: number | null; size: number[] };
+  };
+  const shapeHolds: ShapeHold[] = [];
+  const placeAt = (id: string, p: string, x: number, y: number, bx: boolean, by: boolean): SConstraint[] => [
+    ...(bx ? [] : [{ id: `${id}~hx`, type: "coordX", p, value: x } as SConstraint]),
+    ...(by ? [] : [{ id: `${id}~hy`, type: "coordY", p, value: y } as SConstraint]),
+  ];
+  const angleOf = (r: SolveResult, a: string, b: string): number | null => {
+    const p = r.points[a], q = r.points[b];
+    return p && q ? Math.atan2(q.y - p.y, q.x - p.x) : null;
+  };
+  for (const [id, pg] of polyMap) {
+    const e = entById.get(id);
+    if (e?.type !== "polygon") continue;
+    const turn = (e.angle * Math.PI) / 180;
+    shapeHolds.push({
+      id,
+      place: placeAt(id, pg.centre, e.x, e.y, isBound(id, "x"), isBound(id, "y")),
+      turn: isBound(id, "angle") ? [] : [{ id: `${id}~ha`, type: "pointAngle", a: pg.centre, b: pg.verts[0]!, value: turn }],
+      size: isBound(id, "radius") ? [] : [{ id: `${id}~hr`, type: "circleRadius", circle: pg.circle, value: e.radius }],
+      centre: pg.centre,
+      at: { x: e.x, y: e.y },
+      spin: pg.verts,
+      pts: [pg.centre, ...pg.verts],
+      read: (r) => {
+        const t = angleOf(r, pg.centre, pg.verts[0]!), rad = r.circles[pg.circle];
+        return t === null || rad === undefined ? null : { turn: t, size: [rad] };
+      },
+      was: { turn, size: [e.radius] },
+    });
+  }
+  for (const [id, sl] of slotMap) {
+    const e = entById.get(id);
+    if (e?.type !== "slot") continue;
+    const bound = ["x1", "y1", "x2", "y2"].some((f) => isBound(id, f)); // a centre the pins hold already
+    const turn = Math.atan2(e.y2 - e.y1, e.x2 - e.x1), len = Math.hypot(e.x2 - e.x1, e.y2 - e.y1);
+    const at = { x: (e.x1 + e.x2) / 2, y: (e.y1 + e.y2) / 2 };
+    shapeHolds.push({
+      id,
+      place: placeAt(id, sl.mid, at.x, at.y, bound, bound),
+      turn: [{ id: `${id}~ha`, type: "pointAngle", a: sl.c1, b: sl.c2, value: turn }],
+      size: [{ id: `${id}~hl`, type: "distance", a: sl.c1, b: sl.c2, value: len }],
+      centre: sl.mid,
+      at,
+      spin: [sl.c1, sl.c2, ...sl.ends],
+      pts: [sl.c1, sl.c2, ...sl.ends, sl.mid],
+      read: (r) => {
+        const p = r.points[sl.c1], q = r.points[sl.c2];
+        return p && q ? { turn: Math.atan2(q.y - p.y, q.x - p.x), size: [Math.hypot(q.x - p.x, q.y - p.y)] } : null;
+      },
+      was: { turn, size: [len] },
+    });
+  }
+  for (const [id, centre] of rectCentreMap) {
+    const e = entById.get(id), cp = rectMap.get(id);
+    if (e?.type !== "rectangle" || !cp) continue;
+    shapeHolds.push({
+      id,
+      place: placeAt(id, centre, e.x, e.y, false, false),
+      turn: [], // a rectangle sits square to the axes
+      size: [
+        { id: `${id}~hw`, type: "distanceX", a: cp[0]!, b: cp[1]!, value: e.width },
+        { id: `${id}~hh`, type: "distanceY", a: cp[0]!, b: cp[3]!, value: e.height },
+      ],
+      centre,
+      at: { x: e.x, y: e.y },
+      spin: [],
+      pts: [...cp, centre],
+      read: (r) => {
+        const a = r.points[cp[0]!], b = r.points[cp[1]!], d = r.points[cp[3]!];
+        return a && b && d ? { turn: null, size: [b.x - a.x, d.y - a.y] } : null;
+      },
+      was: { turn: null, size: [e.width, e.height] },
+    });
+  }
+  /** Did solve `r` move, turn or resize shape `h`? Past float noise: an
+   *  untouched shape comes back the same to 1e-12, a held one to the solver's
+   *  convergence. */
+  const shapeChanged = (h: ShapeHold, r: SolveResult): boolean => {
+    const c = r.points[h.centre], got = h.read(r);
+    if (!c || !got) return true;
+    const scale = Math.max(1, ...h.was.size.map(Math.abs));
+    if (Math.hypot(c.x - h.at.x, c.y - h.at.y) > 1e-7 * scale) return true;
+    if (h.was.turn !== null && got.turn !== null) {
+      const d = Math.abs(((got.turn - h.was.turn) % TAU + TAU + Math.PI) % TAU - Math.PI);
+      if (d > 1e-8) return true;
+    }
+    return got.size.some((s, k) => !(Math.abs(s - h.was.size[k]!) <= 1e-7 * scale));
+  };
   const biased = anchors.length > 0 || radiusAnchors.length > 0;
 
   const model = { points, lines, circles, arcs, constraints: cons, ...(dragInput ? { drag: dragInput } : {}) };
+  /** How far solve `r` moved the farthest point the MOVER BIAS anchors (a body
+   *  drag's pins are not the bias, and are not judged). */
+  const biasMoved = (r: SolveResult): number =>
+    anchors.slice(0, biasAnchorCount).reduce((m, a) => {
+      const q = r.points[a.point];
+      return Math.max(m, q ? Math.hypot(q.x - a.x, q.y - a.y) : Number.POSITIVE_INFINITY);
+    }, 0);
+  /** `base` with each shape turned its angle about its `at`: the start a
+   *  shape that has to turn a QUARTER turn needs. Drawn square to the axes,
+   *  as the tools draw them (a slot snaps level, a polygon with a typed radius
+   *  sits at exactly 0 degrees), a side that has to go from level to upright
+   *  has no slope to follow: turning it does not change how far from upright
+   *  it is, to first order, so a solve held to turning alone stalls, and one
+   *  with more room shrinks the shape or slides it instead (measured: Vertical
+   *  on a hexagon's top side took radius 15 to 6.75; on a slot's axis it slid
+   *  the slot 20 mm). Points a fix or a projection holds are left alone. */
+  const nudged = (base: SolveInput, turns: [ShapeHold, number][]): SolveInput => {
+    const turn = new Map<string, { o: { x: number; y: number }; cos: number; sin: number }>();
+    for (const [h, a] of turns) for (const p of h.spin) turn.set(p, { o: h.at, cos: Math.cos(a), sin: Math.sin(a) });
+    return {
+      ...base,
+      points: base.points.map((p) => {
+        const t = turn.get(p.id);
+        if (!t || p.fixed) return p;
+        const dx = p.x - t.o.x, dy = p.y - t.o.y;
+        return { ...p, x: t.o.x + dx * t.cos - dy * t.sin, y: t.o.y + dx * t.sin + dy * t.cos };
+      }),
+    };
+  };
+  /** The HOLD SEED, run when the plain solve (`plain`; `plainClean` when it
+   *  is a solution, guards and all) moved, turned or resized a shape: which
+   *  shapes give up which holds. Returns the geometry the real pass should
+   *  start from; null when no step came back clean, and undefined when no
+   *  shape changed, so nothing was tried.
+   *
+   *  Only the shapes the plain solve changed are in question; every other one
+   *  keeps all its holds, and a clean plain solve is the proof that they can.
+   *  Each in question then gives up as little as will do, in this order:
+   *  nothing, its turn (Horizontal on a side turns it about its centre), its
+   *  place (a corner put on a point slides it), its size (a dimension on a
+   *  side sizes it about its centre), then two of the three, then all three,
+   *  and failing that it is left as free as the plain solve had it. One shape
+   *  at a time, with the ones after it still free: released all at once, a
+   *  polygon that only had to turn and a slot that only had to slide were both
+   *  free to do both, and planegcs spread the correction across the two of
+   *  them (the slot turned 21 degrees, the polygon slid 9 mm). The shapes the
+   *  first pick did NOT name go first, so they are the ones that keep their
+   *  holds and the one picked first is what gives: the other way round, a
+   *  perpendicular between two hexagons turned the one picked second.
+   *
+   *  A shape not in question is held as FIXED points rather than by hold
+   *  constraints, and without its own rules, which fixed points meet already:
+   *  the same thing to the solve, in a smaller system rather than a larger
+   *  one. The solver's heap is a fixed 16 MB and its diagnosis is dense
+   *  (constraints by freedoms), so forty named polygons with four holds each
+   *  ran it out (Aborted(OOM)).
+   *
+   *  A step that fails is tried once more with every shape free to turn
+   *  started a NUDGE round (above), each by its own small angle, so two
+   *  shapes made square to each other do not start level with each other
+   *  again. And the mover bias outranks a hold: the points it anchors are
+   *  held hard here, or, when the plain solve had to move them, a step may
+   *  move them no further than it did (a step that kept the shape picked
+   *  first from turning by turning what it was made parallel to instead is
+   *  passed over).
+   *
+   *  A body drag's frame (`pins`) gets one try, not the ladder: the shapes
+   *  keep their turn and size and take the nearest place to the cursor, the
+   *  gesture being a shape moved as a whole, on a path that must not pay a
+   *  dozen solves a frame. Anything else gets SEED_TRIES at most: a solve
+   *  that is no solution can leave every shape in the sketch changed, and a
+   *  constraint that really conflicts would otherwise pay up to sixteen
+   *  solves for each of them before it is refused. Out of tries, the shapes
+   *  not reached stay as free as the plain solve had them. */
+  const holdSeed = async (plain: SolveResult, plainClean: boolean): Promise<SolveInput | null | undefined> => {
+    const moving = shapeHolds.filter((h) => shapeChanged(h, plain));
+    if (!moving.length) return undefined;
+    let tries = SEED_TRIES;
+    const movers = new Set((bias?.moves ?? []).map((id) => shapeOf(id) ?? id));
+    const order = [...moving.filter((h) => !movers.has(h.id)), ...moving.filter((h) => movers.has(h.id))];
+    const free = "free";
+    const rungOf = new Map<string, string>(order.map((h) => [h.id, free]));
+    // 1, -1, 2, -2 ... degrees, by place in the order
+    const nudgeOf = new Map(order.map((h, k) => [h, ((k % 2 ? -1 : 1) * (1 + Math.floor(k / 2)) * Math.PI) / 180]));
+    // The bias HARD, unless the plain solve is a solution that had to move
+    // what it anchors. Soft, it traded against a sliding shape's soft start
+    // (least squares): the anchored line moved a few hundredths with it, or
+    // the step was passed over for one that grew the polygon instead. And
+    // where the plain solve is no solution at all, soft was how a level line
+    // made parallel to a slot was squashed to a point instead of the slot
+    // turned.
+    const plainMoved = plainClean ? biasMoved(plain) : 0;
+    const radiusMoved = (r: SolveResult) => radiusAnchors.reduce((m, a) => {
+      const got = a.arc ? r.arcs[a.id]?.radius : r.circles[a.id];
+      return Math.max(m, got === undefined ? Number.POSITIVE_INFINITY : Math.abs(got - a.radius));
+    }, 0);
+    const hard = !plainClean || (plainMoved <= 1e-9 && radiusMoved(plain) <= 1e-9);
+    const pinned = new Map(anchors.slice(0, hard ? biasAnchorCount : 0).map((a) => [a.point, a]));
+    const stillShapes = shapeHolds.filter((h) => !rungOf.has(h.id));
+    const still = new Set(stillShapes.flatMap((h) => h.pts));
+    const ownRule = new Set(stillShapes.map((h) => `${h.id}~`));
+    const rules = cons.filter((c) => !ownRule.has(c.id.slice(0, c.id.indexOf("~") + 1)));
+    const radiusHolds: SConstraint[] = !hard ? [] : radiusAnchors.map((a, i) => (a.arc
+      ? { id: `~hR${i}`, type: "arcRadius", arc: a.id, value: a.radius }
+      : { id: `~hR${i}`, type: "circleRadius", circle: a.id, value: a.radius }));
+    const attempt = async (nudge: boolean): Promise<SolveResult | null> => {
+      const holds: SConstraint[] = [...radiusHolds];
+      const soft = anchors.slice(hard ? biasAnchorCount : 0);
+      const turns: [ShapeHold, number][] = [];
+      for (const h of shapeHolds) {
+        const rung = rungOf.get(h.id);
+        if (rung === undefined) continue; // not in question: `still`
+        const turnFree = rung === free || rung.includes("T");
+        if (nudge && turnFree && h.spin.length) turns.push([h, nudgeOf.get(h) ?? 0]);
+        if (rung === free) continue;
+        if (!rung.includes("P")) holds.push(...h.place);
+        else soft.push({ point: h.centre, x: h.at.x, y: h.at.y });
+        if (!rung.includes("T")) holds.push(...h.turn);
+        if (!rung.includes("Z")) holds.push(...h.size);
+      }
+      if (nudge && !turns.length) return null; // nothing to nudge: no second try
+      if (tries-- <= 0) return null;
+      const start = nudge ? nudged(model, turns) : model;
+      const radii = hard ? [] : radiusAnchors;
+      const r = await solveSketch({
+        ...start,
+        points: start.points.map((p) => {
+          const a = pinned.get(p.id);
+          return a ? { ...p, x: a.x, y: a.y, fixed: true } : still.has(p.id) ? { ...p, fixed: true } : p;
+        }),
+        constraints: [...rules, ...holds],
+        ...(soft.length || radii.length ? { anchors: soft, radiusAnchors: radii } : {}),
+      });
+      // judged as the answer would be, guards and all: a seed that squashed a
+      // line to a point to keep a shape still is no seed
+      const fin = r.ok && r.conflicts.length === 0 ? finish(r) : null;
+      const ok = !!fin && fin.ok && fin.conflicts.length === 0 && (hard || biasMoved(r) <= plainMoved + 1e-6);
+      return ok ? r : null;
+    };
+    let seed: SolveResult | null = null;
+    try {
+      if (pins?.length) {
+        for (const h of order) rungOf.set(h.id, "P");
+        seed = await attempt(false);
+      } else {
+        for (const h of order) {
+          const seen = new Set<string>();
+          let took: SolveResult | null = null;
+          for (const rung of ["", "T", "P", "Z", "TP", "ZP", "TZ", "TZP"]) {
+            // the same holds as a step already tried (a group the shape has
+            // none of: a rectangle's turn, a radius a parameter sets)
+            const same = ["P", "T", "Z"].map((g) => (rung.includes(g) || !(g === "P" ? h.place : g === "T" ? h.turn : h.size).length ? "-" : g)).join("")
+              + (rung.includes("P") ? "~" : "");
+            if (seen.has(same)) continue;
+            seen.add(same);
+            rungOf.set(h.id, rung);
+            took = (await attempt(false)) ?? (await attempt(true));
+            if (took) break;
+          }
+          if (took) seed = took;
+          else rungOf.set(h.id, free);
+          if (tries <= 0) break;
+        }
+      }
+    } catch {
+      return null; // the heap: the plain solve stands
+    }
+    return seed ? startedAt(model, seed) : null;
+  };
   /** The ROUND entities whose tangency the LAST `finish()` found on the wrong
    *  root — the seed pass's pin list. Rewritten by every finish(), so a caller
    *  that means to act on it must read it before running another one. */
@@ -1075,6 +1504,9 @@ export async function compileAndSolve(
           case "pointOnLine": return fx(c.p) && fxLine(c.line) ? perpDist(c.p, c.line) : null;
           case "pointOnCircle": return fx(c.p) && fxRound(c.circle) ? Math.abs(dist(c.p, centerOf.get(c.circle)!) - roundAt(c.circle)) : null;
           case "pointOnArc": return fx(c.p) && fxRound(c.arc) ? Math.abs(dist(c.p, centerOf.get(c.arc)!) - roundAt(c.arc)) : null;
+          // a shape's own rules (the rectangle centre, a parameter's pin):
+          // implicit, so never reached by the user-constraint loop below
+          case "symmetricPoint": case "coordX": case "coordY": case "pointAngle": return null;
           case "pointOnPerpBisector": { if (!fx(c.p) || !fxLine(c.line)) return null; const l = lineEnds.get(c.line)!; return Math.abs(dist(c.p, l.p1) - dist(c.p, l.p2)); }
           case "symmetric": { if (!fx(c.a) || !fx(c.b) || !fxLine(c.line)) return null; const l = lineEnds.get(c.line)!; const A = P(l.p1), d = lineDir(c.line), a = P(c.a), b = P(c.b); const t = (a.x - A.x) * d.x + (a.y - A.y) * d.y; const mx = 2 * (A.x + t * d.x) - a.x, my = 2 * (A.y + t * d.y) - a.y; return Math.hypot(mx - b.x, my - b.y); }
           // rim dims: the same measures entityDims defines, over the pinned params
@@ -1160,6 +1592,28 @@ export async function compileAndSolve(
         const p = r.points[pointMap.get(e.id)!];
         return p ? { ...e, x: p.x, y: p.y } : e;
       }
+      // A shape in the solver is written back from its centre(s), radius and
+      // corner 0, each number KEPT as it was when the solve left it where it
+      // was: re-deriving a radius or an angle from solved points changes its
+      // last digits, and an untouched polygon must not come back different.
+      // The guard below checks the rest of the shape against these numbers.
+      if (e.type === "polygon") {
+        const pg = polyMap.get(e.id);
+        if (!pg) return e;
+        const c = r.points[pg.centre], v0 = r.points[pg.verts[0]!], rad = r.circles[pg.circle];
+        if (!c || !v0 || rad === undefined) return e;
+        const deg = (Math.atan2(v0.y - c.y, v0.x - c.x) * 180) / Math.PI;
+        // the turn nearest the angle it had, so a polygon at 390 degrees stays
+        // there and does not jump to 30 on its first solve
+        const angle = deg + 360 * Math.round((e.angle - deg) / 360);
+        return { ...e, x: kept(e.x, c.x), y: kept(e.y, c.y), radius: kept(e.radius, rad), angle: kept(e.angle, angle) };
+      }
+      if (e.type === "slot") {
+        const sl = slotMap.get(e.id);
+        const a = sl && r.points[sl.c1], b = sl && r.points[sl.c2];
+        if (!a || !b) return e;
+        return { ...e, x1: kept(e.x1, a.x), y1: kept(e.y1, a.y), x2: kept(e.x2, b.x), y2: kept(e.y2, b.y) };
+      }
       return e;
     });
 
@@ -1172,7 +1626,8 @@ export async function compileAndSolve(
     // "keep last good on conflict" path paints a red chip instead of a broken part.
     const badGeom = new Set<string>();
     for (const [eid, rad] of Object.entries(r.circles)) {
-      if (!(rad > 0) || !Number.isFinite(rad)) badGeom.add(eid);
+      // a polygon's circle (`P~c`) is the polygon's own radius
+      if (!(rad > 0) || !Number.isFinite(rad)) badGeom.add(shapeOf(eid) ?? eid);
     }
     for (const [eid, a] of Object.entries(r.arcs)) {
       if (!(a.radius > 0) || !Number.isFinite(a.radius)) badGeom.add(eid);
@@ -1273,15 +1728,65 @@ export async function compileAndSolve(
         badGeom.add(before.id);
       }
     }
+    // A POLYGON or SLOT in the solver is the same class again, and the same
+    // two failures, in their own terms. Written back above from its centre,
+    // radius and corner 0, it is rebuilt from those numbers wherever it is
+    // drawn or read, so every OTHER solved point has to sit where that rebuild
+    // puts it, or the constraint holding it is true in the solver and false in
+    // the document (the rectangle's mirror relabel, m:5RDM85). The signed
+    // spoke angles above leave the solver no fold or mirror to find, so this
+    // fires only for a solve that did not converge on the shape; it is checked
+    // all the same, because it is exactly the silent ok:true class. And a size
+    // through zero is a collapse, judged only against a shape that had size.
+    const shapeTol = (size: number) => 1e-6 * Math.max(1, Math.abs(size));
+    for (const before of entities) {
+      if (before.type === "polygon") {
+        const pg = polyMap.get(before.id);
+        const after = solvedById.get(before.id);
+        if (!pg || after?.type !== "polygon") continue;
+        if (!(after.radius > RECT_COLLAPSE_MIN) || !Number.isFinite(after.radius)) { badGeom.add(before.id); continue; }
+        const want = polygonPoints(after.x, after.y, after.radius, after.sides, (after.angle * Math.PI) / 180);
+        const off = pg.verts.some((pid, k) => {
+          const got = r.points[pid], w = want[k];
+          return !got || !w || Math.hypot(got.x - w.x, got.y - w.y) > shapeTol(after.radius);
+        });
+        if (off) badGeom.add(before.id);
+      } else if (before.type === "slot") {
+        const sl = slotMap.get(before.id);
+        const after = solvedById.get(before.id);
+        if (!sl || after?.type !== "slot") continue;
+        const len = Math.hypot(after.x2 - after.x1, after.y2 - after.y1);
+        if (!(len > RECT_COLLAPSE_MIN)) { badGeom.add(before.id); continue; }
+        const one = new Map([[before.id, after as ResolvedEntity]]);
+        const s0 = lineOperand(one, `${before.id}~0`), s1 = lineOperand(one, `${before.id}~1`);
+        const want = s0 && s1 ? [[s0.x1, s0.y1], [s0.x2, s0.y2], [s1.x1, s1.y1], [s1.x2, s1.y2]] : [];
+        const off = want.length !== 4 || sl.ends.some((pid, k) => {
+          const got = r.points[pid], w = want[k]!;
+          return !got || Math.hypot(got.x - w[0]!, got.y - w[1]!) > shapeTol(len);
+        });
+        if (off) badGeom.add(before.id);
+      }
+    }
     const guardIds = new Set<string>();
     if (badGeom.size) {
+      // A compiled constraint names a corner or a centre by its SOLVER point,
+      // which says nothing about whose it is: a polygon pulled flat by a
+      // distance from its centre to its corner would blame nobody, and the
+      // caller would withdraw it with the wrong message or keep it. So a
+      // refused polygon's or slot's own points blame too.
+      const badPts = new Set<string>();
+      for (const id of badGeom) {
+        const pg = polyMap.get(id), sl = slotMap.get(id);
+        if (pg) [pg.centre, ...pg.verts].forEach((q) => badPts.add(q));
+        if (sl) [sl.c1, sl.c2, ...sl.ends, sl.mid].forEach((q) => badPts.add(q));
+      }
       for (const c of cons) {
         if (constraintIndexOf(c.id) === null) continue; // implicit pins aren't the user's fault
         // A collapsed line or rectangle has to blame the constraint that asked
         // for it. This used to consult a roundRefs() that enumerated circle and
         // arc operands only, so it named nothing for the two shapes the guard
         // above actually catches; that function had no other caller and is gone.
-        if (entityRefs(c).some((id) => badGeom.has(id))) guardIds.add(c.id);
+        if (entityRefs(c).some((id) => badGeom.has(id) || badPts.has(id))) guardIds.add(c.id);
       }
     }
     // branch invariants: a rim dim must still describe the SAME configuration it
@@ -1410,12 +1915,29 @@ export async function compileAndSolve(
   // free solve has no heap either and the throw goes through, which is correct.
   // Not pinned by a test on purpose: the threshold moves with how many solves ran
   // before it, so any such test would be a coin flip on its neighbours.
-  let pass: SolvePass;
+  let plain: SolveResult;
   try {
-    pass = finish(await solveSketch(biased ? { ...model, anchors, radiusAnchors } : model));
+    plain = await solveSketch(biased ? { ...model, anchors, radiusAnchors } : model);
   } catch (err) {
     if (!biased) throw err;
     return { ...finish(await solveSketch(model)), ...(bias ? { biasAnchors: anchors.length } : {}) };
+  }
+  // The shapes' holds (above), when the plain solve changed a shape. Not on a
+  // POINT drag's frame: the cursor decides there, and dragging a corner is how
+  // a polygon is turned and sized by hand. The real pass after a seed runs
+  // WITHOUT the anchors: it starts on a solution, finds nothing to do, and
+  // only reports its own diagnostics, so the holds never reach a dof, a
+  // conflict or an amber glyph. Handed the anchors again it would undo the
+  // seed's choice: a body drag's pins are at every corner, and without the
+  // holds their least-squares compromise turned and grew a polygon its join
+  // could not let follow the cursor (measured: radius 10 -> 10.2).
+  let pass = finish(plain);
+  const seed = !drag && shapeHolds.length ? await holdSeed(plain, pass.ok && pass.conflicts.length === 0) : undefined;
+  if (seed !== undefined) {
+    const held = seed && finish(await solveSketch(seed));
+    // finish(plain) again, not `pass`: every finish() rewrites the
+    // tangent-root list read below, and the seed's tries ran theirs since
+    pass = held && held.ok && held.conflicts.length === 0 ? held : finish(plain);
   }
   if (biased && !(pass.ok && pass.conflicts.length === 0)) pass = finish(await solveSketch(model));
 
@@ -1498,6 +2020,41 @@ export async function compileAndSolve(
     if (seeded) {
       const alt = finish(await solveSketch(seeded));
       if (alt.ok && alt.conflicts.length === 0) pass = alt;
+    }
+  }
+  // A number a parameter sets (the pins above) is the one thing no solve may
+  // change, and a constraint that needs it changed conflicts with nothing the
+  // user can see: the plain refusal blamed "the constraints already on this
+  // sketch" of a sketch that had none. When the same solve without those
+  // pins is clean, they are why, and the refusal says which number it was.
+  if (!drag && boundPins.length && !(pass.ok && pass.conflicts.length === 0) && !pass.reason) {
+    const pinSet = new Set(boundPins.map((b) => b.c));
+    try {
+      const free = await solveSketch({ ...model, constraints: cons.filter((c) => !pinSet.has(c)) });
+      const freePass = free.ok && free.conflicts.length === 0 ? finish(free) : null;
+      if (freePass?.ok && freePass.conflicts.length === 0) {
+        const off = (c: SConstraint): number => {
+          if (c.type === "coordX") return Math.abs((free.points[c.p]?.x ?? Number.NaN) - c.value);
+          if (c.type === "coordY") return Math.abs((free.points[c.p]?.y ?? Number.NaN) - c.value);
+          if (c.type === "circleRadius") return Math.abs((free.circles[c.circle] ?? Number.NaN) - c.value);
+          if (c.type === "pointAngle") {
+            const a = free.points[c.a], b = free.points[c.b];
+            if (!a || !b) return Number.NaN;
+            return Math.abs(((Math.atan2(b.y - a.y, b.x - a.x) - c.value) % TAU + TAU + Math.PI) % TAU - Math.PI);
+          }
+          return 0;
+        };
+        const hit = boundPins.find((b) => !(off(b.c) <= 1e-6)) ?? boundPins[0]!;
+        pass = {
+          ...pass,
+          reason: t("sketch.constraint.boundShape", {
+            shape: t(`sketch.entity.${hit.shape}`),
+            field: t(`sketch.constraint.boundField.${hit.field}`),
+          }),
+        };
+      }
+    } catch {
+      // the heap: the plain refusal stands
     }
   }
   return bias ? { ...pass, biasAnchors: anchors.length } : pass;

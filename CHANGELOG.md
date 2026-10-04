@@ -304,6 +304,11 @@ This file starts on 2026-08-03. For anything before that, see the
   a sixteenth of a millimetre, and `1/16 in` came out as one divided by 16
   inches.
 
+- **Equal and Tangent from the right-click menu hold on circles and arcs.**
+  Equal on two circles, and Tangent on an arc or on two circles, added a
+  constraint that did nothing and was dropped by the next edit. They now add
+  the same constraints the Equal and Tangent tools do.
+
 - **Move, Rotate and Scale no longer move the origin's axes.** A click at 0,0
   in Select picks an axis, and moving a selection that included one moved the
   axis too. For the rest of the session, anything put on that axis or made
@@ -507,6 +512,16 @@ This file starts on 2026-08-03. For anything before that, see the
   origin when you turn it about its middle, is not rotated at all, and I say
   what to do: the constraint would have pulled it back part of the way, to an
   angle you did not type.
+
+- **Move and Rotate leave a tied shape where it is, and say why.** Moving a
+  rectangle, polygon or slot that a constraint ties to something you did not
+  select, such as a rectangle with a corner on the origin, used to go through
+  and then stretch or resize the shape to put the corner back. Now nothing
+  moves and I say what to do: select that geometry too, or remove the
+  constraint. A move the constraint leaves free still goes through, such as
+  along the line a corner is held on, or sideways when only a vertical
+  distance holds the shape. Rotate does the same for a polygon or slot as for
+  a rectangle.
 
 - **Fillet and Chamfer keep a corner that was held to a point.** A corner joined
   to the origin, or to the end of another line, came loose without a word when
@@ -887,6 +902,32 @@ This file starts on 2026-08-03. For anything before that, see the
   the other sides keep their last shape and say they lost their source, instead
   of all landing on the first side.
 
+- **Constrain and dimension the corners, centres and sides of rectangles,
+  polygons and slots.** A rectangle's centre, a polygon's corners and centre
+  and a slot's two centres are points that every constraint and dimension tool
+  takes, and a polygon's sides and a slot's sides and centre line are lines.
+  Horizontal on a polygon side turns the polygon, Coincident puts its corner or
+  centre on a point, a dimension on one side sets its size, and Midpoint of a
+  slot's centre line on the origin centres the slot. The pointer lights what a
+  click would take, a line drawn from a polygon corner or a slot centre is
+  joined to it, and a centre rectangle started on a point has its centre joined
+  to that point. A polygon or slot moves as a whole and keeps its size and its
+  turn unless a constraint needs them changed, so Vertical on a side of a level
+  hexagon turns it about its centre, and of two shapes the one you pick first
+  is the one that moves. A rectangle still stretches from a corner, as before.
+  A polygon or slot number that a parameter sets stays at that value: a
+  constraint that would change it is refused, and the message names that
+  number. A slot's width is still set on its own width dimension. When a polygon's side count changes, what is
+  constrained to its corners and sides moves to the nearest ones. With a
+  selection, right-click on a shape's side or corner for the constraints that
+  fit it: Parallel to a selected line, Horizontal and Vertical for a polygon
+  side, Coincident and Midpoint for a corner and a line, Fix for a corner on
+  its own. Two sketch points get Coincident there, and a lone one Fix. A sketch
+  that uses this still opens in an older beta, but those constraints hold
+  nothing there, and that beta drops the ones on polygons and slots the next
+  time you edit the sketch. Requested in
+  [#17](https://github.com/MakerViking/sindricad/issues/17).
+
 - **Put a point on a line, circle or arc.** Coincident now takes a point and a
   curve, in either order: click an end, a corner, a centre or a sketch point,
   and a line, a rectangle side, a circle or an arc, and the point stays on that
@@ -894,10 +935,9 @@ This file starts on 2026-08-03. For anything before that, see the
   cannot, as the origin cannot, the curve moves to it instead. A line counts as
   endless, as in other CAD programs, so the point may sit past its end, and an
   arc counts as its whole circle. A polygon or slot side takes a point too, and
-  so do the origin's axes, and the origin itself can go on a curve. A polygon's
-  corner can't take a point yet, and Coincident says so instead of using the
-  nearest side. When a polygon's side count changes, a point on one of its
-  sides moves to the side it is nearest. Where two shapes share a corner or an
+  so do the origin's axes, and the origin itself can go on a curve. When a
+  polygon's side count changes, a point on one of its sides moves to the side
+  it is nearest. Where two shapes share a corner or an
   edge, the click takes the one that works instead of refusing. A small ∈
   badge marks the constraint; right-click it to delete it. With a sketch point
   and a curve selected, the right-click menu offers Coincident for the same

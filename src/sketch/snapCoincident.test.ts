@@ -121,8 +121,8 @@ describe("rectangle corners use the SOLVER's order", () => {
     expect(tl.ref, "index 3 is not top-left — the corner order regressed").toEqual({ id: "r1", idx: 3 });
   });
 
-  it("does not name the rectangle's centre", () => {
-    expect(at([rect], 0, 0).ref).toBeUndefined();
+  it("names the rectangle's centre as point 4, which the solver has once a constraint names it", () => {
+    expect(at([rect], 0, 0).ref).toEqual({ id: "r1", idx: 4 });
   });
 });
 
@@ -327,8 +327,8 @@ describe("every commit path that can owe a coincident calls the emitter", () => 
     ["arcClick", "private arcClick(", "this.emitSnapCoincidences(ent, this.arcStartRef, this.arcEndRef)"],
     ["commitFromCursor", "private commitFromCursor(", "this.emitSnapCoincidences(entity, this.baseRef, this.lastSnapRef)"],
     // the corner click commits, so its own ref is still lastSnapRef; the centre
-    // click placed no solver point, hence null
-    ["centerRectClick", "private centerRectClick(", "this.emitSnapCoincidences(ent, null, this.lastSnapRef)"],
+    // was captured at its click (a rectangle's centre is point 4)
+    ["centerRectClick", "private centerRectClick(", "this.emitSnapCoincidences(ent, null, this.lastSnapRef, this.rectCenterRef)"],
     // the centre and start were captured at their clicks; the end click commits
     ["arcCenterClick", "private arcCenterClick(", "this.emitSnapCoincidences(ent, this.arcStartRef, this.lastSnapRef, this.arcCenterRef)"],
   ] as const;

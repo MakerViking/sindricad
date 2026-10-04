@@ -11,7 +11,7 @@ import type { ResolvedEntity } from "./snap";
 import type { SketchConstraint } from "../types";
 import { pickEntity, PROJECTED_FIXED_MSG } from "./modify";
 import { coincKey } from "./sketchSolve";
-import { curveKind, dimRefPoints, lineOperand, lineOperandAt, refPoint, shapeSideAt } from "./entityDims";
+import { POLYGON_CENTRE, RECT_CENTRE, curveKind, dimRefPoints, lineOperand, lineOperandAt, refPoint, slotAxisAt } from "./entityDims";
 import { isOriginGeometry } from "./origin";
 import type { SketchTool } from "./sketchMode";
 
@@ -31,9 +31,10 @@ export const CONSTRAINT_TOOLS = new Set<SketchTool>([
 ]);
 
 /** What a click landed on, expressed as a constraint OPERAND rather than as an
- *  entity. The two differ for exactly one shape: a rectangle presents four line
- *  operands (`<rectId>~<k>`) and no operand of its own, so an entity id is not
- *  enough to say what was clicked. */
+ *  entity. The two differ for the shapes: a rectangle presents four line
+ *  operands (`<rectId>~<k>`), a polygon one per side and a slot its two sides
+ *  and its axis, and none of them an operand of its own, so an entity id is
+ *  not enough to say what was clicked. */
 interface Operand {
   /** the id to put in the constraint — a rect EDGE, not the rectangle */
   id: string;
@@ -52,10 +53,13 @@ const baseOf = (id: string) => { const t = id.indexOf("~"); return t < 0 ? id : 
 
 /** Whether point `p` of `e` (dimRefPoints numbering) is one the solver MERGES
  *  with whatever else sits at its position: an end, a corner, a sketch point.
- *  A centre is not: it keeps a solver point of its own (sketchSolve.getPoint). */
+ *  A centre is not: it keeps a solver point of its own (sketchSolve.getPoint),
+ *  and that includes a rectangle's, a polygon's and both of a slot's. */
 const merges = (e: ResolvedEntity | undefined, p: number): boolean => {
-  if (!e || e.type === "circle") return false;
+  if (!e || e.type === "circle" || e.type === "slot") return false;
   if (e.type === "arc") return p !== 2;
+  if (e.type === "rectangle") return p !== RECT_CENTRE;
+  if (e.type === "polygon") return p !== POLYGON_CENTRE;
   if (e.type === "projected") return e.curve.kind !== "circle" && !(e.curve.kind === "arc" && p === 2);
   return true;
 };
@@ -216,15 +220,28 @@ export class ConstraintTools {
     }
   }
 
-  /** THE operand under the cursor. Rectangles are the reason this exists: they
-   *  present four line operands and none of their own, so "which entity" is not
-   *  the same question as "which operand" — see entityDims.lineOperandAt for why
-   *  the seam is there and not in curveKind. */
-  private pickOperand(p: THREE.Vector2): Operand | null {
-    const entities = this.host.entities();
-    const index = pickEntity(entities, p, this.host.pickTol());
-    const ent = index >= 0 ? entities[index] : undefined;
-    if (!ent) return null;
+  /** THE operand under the cursor. The shapes are the reason this exists: a
+   *  rectangle, polygon or slot presents line operands and none of its own, so
+   *  "which entity" is not the same question as "which operand" — see
+   *  entityDims.lineOperandAt for why the seam is there and not in curveKind.
+   *  `skip` leaves one entity out, for resolvePointOn's second try.
+   *
+   *  A slot's AXIS is inside the slot, where no curve is, so it is taken only
+   *  when the click found nothing else of the user's (slotAxisAt). */
+  private pickOperand(p: THREE.Vector2, skip: string | null = null): Operand | null {
+    const all = this.host.entities();
+    const entities = skip == null ? all : all.filter((e) => e.id !== skip);
+    const tol = this.host.pickTol();
+    const ent = entities[pickEntity(entities, p, tol)];
+    // your own geometry beats the origin's (pickEntity), and a slot's axis is
+    // yours: a slot drawn along the X axis has its axis on top of it
+    if (!ent || isOriginGeometry(ent.id)) {
+      const axis = slotAxisAt(entities, p, tol);
+      const slot = axis ? all.find((e) => e.id === axis.slice(0, axis.indexOf("~"))) : undefined;
+      if (axis && slot) return { id: axis, kind: "line", ent: slot, index: all.indexOf(slot) };
+      if (!ent) return null;
+    }
+    const index = all.indexOf(ent);
     const lineId = lineOperandAt(ent, p);
     if (lineId) return { id: lineId, kind: "line", ent, index };
     const k = curveKind(ent);
@@ -319,29 +336,6 @@ export class ConstraintTools {
     return q ? { x: q.x, y: q.y } : null;
   }
 
-  /** The operand a Coincident click on a curve BODY takes: whatever
-   *  pickOperand takes (a line, a rectangle edge, a circle, an arc), and, for
-   *  this tool alone, a polygon or slot SIDE (entityDims.shapeSideAt says why
-   *  only here, and why a polygon's corner is no side).
-   *
-   *  `skip` leaves one entity out, for resolvePointOn's second try. The index
-   *  stays one into the LIVE list, which is what the first-pick highlight
-   *  reads. */
-  private pickCurve(p: THREE.Vector2, skip: string | null = null): Operand | null {
-    const all = this.host.entities();
-    const entities = skip == null ? all : all.filter((e) => e.id !== skip);
-    const tol = this.host.pickTol();
-    const ent = entities[pickEntity(entities, p, tol)];
-    if (!ent) return null;
-    const index = all.indexOf(ent);
-    const lineId = lineOperandAt(ent, p);
-    if (lineId) return { id: lineId, kind: "line", ent, index };
-    const k = curveKind(ent);
-    if (k === "circle" || k === "arc") return { id: ent.id, kind: k, ent, index };
-    const side = shapeSideAt(ent, p, tol);
-    return side ? { id: side, kind: "line", ent, index } : null;
-  }
-
   /** Coincident: two points, or a point and a curve, in either order.
    *
    *  Two points join (`coincident`). A point and a line, circle or arc put the
@@ -403,9 +397,9 @@ export class ConstraintTools {
     // used to be a bare `return`: no constraint, no message, no highlight,
     // indistinguishable from a broken tool, and the reason both a field
     // reporter and the author concluded sketch lines were not selectable.
-    const op = this.pickCurve(p);
+    const op = this.pickOperand(p);
     if (!op) {
-      this.host.warn(t(this.atPolygonCorner(p) ? "sketch.constraint.polygonCorner" : "sketch.constraint.coincidentMiss"));
+      this.host.warn(t("sketch.constraint.coincidentMiss"));
       return; // keep whatever is held: a stray click must not lose the first pick
     }
     if (this.pendingEndpoint) {
@@ -424,25 +418,13 @@ export class ConstraintTools {
     this.firstOperand = null;
     if (held.id === op.id) return;
     // Two line BODIES: apply collinear, the way SolidWorks and Fusion do,
-    // instead of doing nothing. Not for a polygon or slot side: only a point
-    // may go on one of those (shapeSideAt), and a collinear naming one would
-    // compile to nothing.
-    const rigid = (o: Operand) => o.ent.type === "polygon" || o.ent.type === "slot";
-    if (held.kind === "line" && op.kind === "line" && !rigid(held) && !rigid(op)) {
+    // instead of doing nothing. A shape's side is a line like any other.
+    if (held.kind === "line" && op.kind === "line") {
       this.addConstraint({ type: "collinear", l1: held.id, l2: op.id }, held.ent.id);
       this.host.warn(t("sketch.constraint.collinearApplied"));
       return;
     }
     this.host.warn(t("sketch.constraint.pointOnNeedsPoint"));
-  }
-
-  /** whether the nearest thing to `p` is a polygon CORNER, which pickCurve
-   *  refuses (shapeSideAt): its miss gets its own message */
-  private atPolygonCorner(p: THREE.Vector2): boolean {
-    const entities = this.host.entities();
-    const tol = this.host.pickTol();
-    const ent = entities[pickEntity(entities, p, tol)];
-    return ent?.type === "polygon" && shapeSideAt(ent, p, tol) === null;
   }
 
   /** Put a picked point on a curve operand, or say why not (resolvePointOn).
@@ -475,7 +457,7 @@ export class ConstraintTools {
   ): { pt: { id: string; idx: number }; curve: Operand } | null {
     const named = this.nameOffCurve(pt, curve);
     if (named) return { pt: named, curve };
-    const other = this.pickCurve(at, curve.ent.id);
+    const other = this.pickOperand(at, curve.ent.id);
     const otherNamed = other ? this.nameOffCurve(pt, other) : null;
     return other && otherNamed ? { pt: otherNamed, curve: other } : null;
   }
@@ -529,11 +511,11 @@ export class ConstraintTools {
   }
 
   /** What the Coincident hover lights: the curve a click at `p` would take,
-   *  through the same pickCurve and resolvePointOn the click goes through. So
-   *  it is the other shape's edge where a held point would be refused on the
-   *  nearer one, and nothing on a polygon's corner or a slot's round end. */
+   *  through the same pickOperand and resolvePointOn the click goes through.
+   *  So it is the other shape's edge where a held point would be refused on
+   *  the nearer one, and nothing on a slot's round end. */
   hoverCurve(p: THREE.Vector2): ResolvedEntity | null {
-    const near = this.pickCurve(p);
+    const near = this.pickOperand(p);
     const held = this.pendingEndpoint;
     const op = near && held ? (this.resolvePointOn(held, near, p)?.curve ?? near) : near;
     if (!op) return null;

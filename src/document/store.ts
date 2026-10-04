@@ -13,7 +13,7 @@ import { isDimConstraint } from "../sketch/id";
 import { resolveRealEntities, toSketchEntity } from "../sketch/resolve";
 import * as params from "../params/engine";
 import type { FieldKind } from "./numFields";
-import { DEFAULT_EXTRUDE_DISTANCE, hasUpToTarget, writeTarget } from "./numFields";
+import { DEFAULT_EXTRUDE_DISTANCE, boundShapeFields, hasUpToTarget, writeTarget } from "./numFields";
 import { p2lSideFlipped, paramStep, paramSteps, refreshStep, refreshSteps } from "./projectionWalk";
 import { copySketch, moveSketchPlane, ownDatumOf, type SketchPlaneMove, type SketchTarget } from "./sketchPlaneEdits";
 import { t } from "../i18n";
@@ -692,7 +692,11 @@ export class DocumentStore {
   /** Injected (main.ts): headless planegcs re-solve of one sketch feature —
    *  kept out of the store so the document layer doesn't depend on the WASM
    *  solver (and tests don't need it). */
-  headlessSolve?: (sketch: Extract<Feature, { type: "sketch" }>, parameters: CadDocument["parameters"]) => Promise<{ entities: Extract<Feature, { type: "sketch" }>["entities"] } | null>;
+  headlessSolve?: (
+    sketch: Extract<Feature, { type: "sketch" }>,
+    parameters: CadDocument["parameters"],
+    bound?: ReadonlySet<string>,
+  ) => Promise<{ entities: Extract<Feature, { type: "sketch" }>["entities"] } | null>;
   /** Injected: the sketch feature id currently OPEN in the sketch editor (it
    *  re-solves itself live and must not be overwritten headlessly). */
   openSketchId?: () => string | null;
@@ -1004,7 +1008,8 @@ export class DocumentStore {
     if (!(f.constraints ?? []).length) return { status: "nothing" };
     if (!this.headlessSolve) return { status: "unavailable" };
     try {
-      const solved = await this.headlessSolve(f, parameters);
+      // a polygon's or slot's number a parameter sets is held where it is
+      const solved = await this.headlessSolve(f, parameters, boundShapeFields(this.doc, f.id));
       return solved ? { status: "solved", entities: solved.entities } : { status: "failed" };
     } catch (e) {
       // solveSketchFeature only lets SolverUnavailable out; anything else is a

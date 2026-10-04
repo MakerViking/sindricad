@@ -148,11 +148,14 @@ export type SketchEntity =
   | { type: "spline"; id?: string; points: { x: Num; y: Num }[]; construction?: boolean }
   // a sketch point: reference/snap geometry only — never forms a profile
   | { type: "point"; id?: string; x: Num; y: Num; construction?: boolean }
-  // parametric shapes: rigid regular polygon (center/radius/sides + first-vertex
+  // parametric shapes: regular polygon (center/radius/sides + first-vertex
   // angle, DEGREES — like every other angle field; pre-v2 files stored radians
   // and are migrated on load) and center-to-center slot (two arc centers +
-  // width). The solver treats them as fixed; they're edited via their own
-  // parameter dimensions.
+  // width). They're edited via their own parameter dimensions, and stay rigid
+  // until a constraint names one of their points or sides: then the solver
+  // takes them in (sketchSolve), a polygon free to move, turn and resize and a
+  // slot free to move its two centres, its width kept. A number a parameter
+  // sets is held still there.
   | { type: "polygon"; id?: string; x: Num; y: Num; radius: Num; sides: Num; angle: Num; construction?: boolean; dimPlace?: DimPlace }
   | { type: "slot"; id?: string; x1: Num; y1: Num; x2: Num; y2: Num; width: Num; construction?: boolean; dimPlace?: DimPlace }
   // Fusion-parity text: filled glyph faces from a system font; extrudes like any profile
@@ -184,8 +187,11 @@ export type SketchEntity =
 // ids can never be blamed for a conflict). Anything that validates a line
 // operand must decode the compound form; in the sketcher that is
 // entityDims.lineOperand and SketchMode.pruneConstraints. A polygon or slot
-// SIDE (`P~k`, `S~0`, `S~1`) has the same shape of id but is taken by
-// `pointOn` alone for now: those two shapes are rigid in the solver.
+// SIDE has the same shape of id and is a line operand the same way (2026-10):
+// `P~k` runs from polygon vertex k to vertex k+1 (polygonPoints order), `S~0`
+// runs along the left of a slot's axis and `S~1` back along its right, and
+// `S~2` is the slot's AXIS, centre to centre. A side-count change re-aims what
+// names a polygon's sides and corners (entityDims.rebindPolygonSides).
 //
 // LABEL PLACEMENT: a dimension's label position is user-adjustable — dragging a
 // label in the sketch persists where it went. Placement is stored in sketch MM
@@ -255,8 +261,15 @@ export type SketchConstraint =
   | { type: "diameter"; id?: string; circle: string; value: number }
   // p2pDistance: driving distance between two picked points. `p*` selects the
   // point on each entity: 0/1 = start/end (lines, arcs, spline ends), 0..3 =
-  // rectangle corner (rectCorners CCW order), 2 = arc center; a circle always
-  // resolves to its center. Point entities ignore the index.
+  // rectangle corner (rectCorners CCW order) and 4 its centre, 2 = arc center,
+  // 0..n-1 = polygon corner (polygonPoints order) and -1 its centre, 0/1 = a
+  // slot's centre (x1,y1)/(x2,y2); a circle always resolves to its center.
+  // Point entities ignore the index. A side (`R~k`, `P~k`, `S~k`) with p 0/1
+  // names that side's start/end, the only spelling a slot side's ends have.
+  // (Centres and polygon/slot points and sides: 2026-10. An older build
+  // compiles nothing for a constraint naming one, so it holds nothing there,
+  // and its pruneConstraints drops one naming a polygon's or slot's point or
+  // side at the next edit in that sketch. A rectangle centre it keeps.)
   | { type: "p2pDistance"; id?: string; e1: string; p1: number; e2: string; p2: number; value: number; driven?: boolean; place?: PlaceOffset }
   // Smart dimensioning (GH #17): the HORIZONTAL and VERTICAL distances between
   // two points, as opposed to p2pDistance's direct (aligned) one. Same operands,
@@ -308,11 +321,10 @@ export type SketchConstraint =
   // midpoint of a line operand (`line` may be a rect edge)
   | { type: "midpoint"; e: string; p: number; line: string }
   // pointOn: a point (`e`/`p`, same semantics as coincident) lies ON a curve.
-  // `curve` is a line operand (a line, a projected line, an origin axis or a
-  // rect edge `R~k`), a circle or an arc (native or projected), or a SIDE of
-  // one of the rigid shapes: `P~k` for a polygon (vertex k to vertex k+1, in
-  // polygonPoints order) and `S~0` / `S~1` for a slot's two straight sides
-  // (see entityDims.lineOperand). A line counts as INFINITE, as it does in
+  // `curve` is a line operand (a line, a projected line, an origin axis, a
+  // rect edge `R~k`, or a polygon's or slot's side or a slot's axis, see the
+  // LINE OPERAND note above), or a circle or an arc (native or projected).
+  // A line counts as INFINITE, as it does in
   // other CAD packages, so the point may sit on its extension; a circle or an
   // arc counts as its whole circle (planegcs point_on_line_pl /
   // point_on_circle / point_on_arc).

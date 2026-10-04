@@ -315,8 +315,9 @@ export function asLineSeg(e: ResolvedEntity): { x1: number; y1: number; x2: numb
 }
 
 /** THE decoder for a line OPERAND id: either a plain entity id (native or
- *  projected line, via asLineSeg) or the compound rectangle-edge form
- *  `"<rectId>~<k>"`, k = 0..3 in rectCorners CCW order — see types.ts. The one
+ *  projected line, via asLineSeg) or the compound form `"<shapeId>~<k>"`: a
+ *  rectangle edge, k = 0..3 in rectCorners CCW order, or a polygon or slot
+ *  side (shapeSide), or a slot's axis (SLOT_AXIS) — see types.ts. The one
  *  place that knows the compound form; every renderer/validator of a line
  *  operand goes through it (SketchMode.pruneConstraints mirrors the id shape
  *  check, since it validates ids without resolving geometry). */
@@ -339,21 +340,50 @@ export function lineOperand(
   return a && b ? { x1: a.x, y1: a.y, x2: b.x, y2: b.y } : null;
 }
 
-/** Side `k` of a RIGID shape, or null when the shape has no such side: a
+/** The `p` of a shape's CENTRE (types.ts): a rectangle's comes after its four
+ *  corners, and a polygon's sits at -1, below its vertices 0..n-1, so that a
+ *  new side count never renumbers it. A slot's two centres are its points 0
+ *  and 1, (x1,y1) and (x2,y2). */
+export const RECT_CENTRE = 4;
+export const POLYGON_CENTRE = -1;
+/** A slot's AXIS, centre to centre, as a line operand: `<slotId>~2`. Its
+ *  straight sides are `~0` and `~1`. */
+export const SLOT_AXIS = 2;
+
+/** The ids of the entities the constraints NAME, a side (`P~k`) counting as
+ *  its shape: what brings a polygon or a slot into the solver (sketchSolve),
+ *  and so what makes its corners or centres points anything can be joined
+ *  to. A reference dimension names nothing: it constrains nothing. */
+export function namedEntityIds(constraints: readonly SketchConstraint[]): Set<string> {
+  const out = new Set<string>();
+  for (const c of constraints) {
+    if (isDriven(c)) continue;
+    const ops = c.type === "offset"
+      ? c.pairs.flatMap((pr) => [pr.src, pr.cpy])
+      : Object.entries(c).flatMap(([k, v]) => (k === "type" || k === "id" ? [] : [v])); // a dim's id is no operand
+    for (const v of ops) if (typeof v === "string") out.add(v.includes("~") ? v.slice(0, v.indexOf("~")) : v);
+  }
+  return out;
+}
+
+/** Side `k` of a polygon or slot, or null when the shape has no such side: a
  *  polygon's side k runs from vertex k to vertex k+1 in polygonPoints order,
  *  and a slot's side 0 runs along the left of its axis (x1,y1)->(x2,y2) and
- *  side 1 back along the right, each half the width out from it.
+ *  side 1 back along the right, each half the width out from it. Side 2 of a
+ *  slot is its axis (SLOT_AXIS), which is not on its outline.
  *
- *  Decoded here so the glyphs, the hover and pruneConstraints read these the
- *  way they read a rectangle edge. Only `pointOn` names one today (types.ts):
- *  a polygon or slot is not in the solver, so a side is FIXED geometry there,
- *  the way a projected line is, and putting a point on it is the one
- *  constraint that means something against fixed geometry. */
+ *  Decoded here so the glyphs, the hover, the solver and pruneConstraints read
+ *  these the way they read a rectangle edge: every line constraint and
+ *  dimension takes one (sketchSolve brings the shape into the solver when one
+ *  is named). */
 function shapeSide(e: ResolvedEntity, k: number): { x1: number; y1: number; x2: number; y2: number } | null {
   if (e.type === "polygon") {
     const vs = polygonPoints(e.x, e.y, e.radius, e.sides, (e.angle * Math.PI) / 180);
     const a = vs[k], b = vs[(k + 1) % vs.length];
     return a && b ? { x1: a.x, y1: a.y, x2: b.x, y2: b.y } : null;
+  }
+  if (e.type === "slot" && k === SLOT_AXIS) {
+    return Math.hypot(e.x2 - e.x1, e.y2 - e.y1) > 0 ? { x1: e.x1, y1: e.y1, x2: e.x2, y2: e.y2 } : null;
   }
   if (e.type === "slot" && (k === 0 || k === 1)) {
     const len = Math.hypot(e.x2 - e.x1, e.y2 - e.y1);
@@ -370,17 +400,10 @@ function shapeSide(e: ResolvedEntity, k: number): { x1: number; y1: number; x2: 
 /** The side of a polygon or slot a click at `p` names (`P~k`, `S~0`, `S~1`),
  *  or null: for any other entity, and for a click on one of a slot's round
  *  ends, which are not sides. The encoder for shapeSide, and the polygon and
- *  slot half of lineOperandAt, kept apart from it on purpose: lineOperandAt
- *  feeds every line tool, and Horizontal or Parallel on a side the solver
- *  holds fixed would only ever be redundant or refused. Coincident is the one
- *  caller, for `pointOn`.
- *
- *  `cornerTol` (a click): within it of a polygon CORNER names no side either. A
- *  corner is a point to the user, and the nearest side's line ran straight
- *  through it, so a point put "on the corner" landed on that side's line off
- *  the corner, with nothing said. Corners are not points yet (they are not in
- *  the solver), so a click there is refused instead. */
-export function shapeSideAt(e: ResolvedEntity, p: { x: number; y: number }, cornerTol = 0): string | null {
+ *  slot half of lineOperandAt. A polygon's corner is a POINT (dimRefPoints),
+ *  which every point picker tries before a side, so a click on one never gets
+ *  as far as this. */
+export function shapeSideAt(e: ResolvedEntity, p: { x: number; y: number }): string | null {
   if (e.type === "polygon") {
     const n = Math.max(3, Math.round(e.sides));
     let best: string | null = null;
@@ -388,7 +411,6 @@ export function shapeSideAt(e: ResolvedEntity, p: { x: number; y: number }, corn
     for (let k = 0; k < n; k++) {
       const s = shapeSide(e, k);
       if (!s) continue;
-      if (Math.hypot(s.x1 - p.x, s.y1 - p.y) < cornerTol) return null;
       const d = distToSeg(v(s.x1, s.y1), v(s.x2, s.y2), p);
       if (d < bestD) { bestD = d; best = `${e.id}~${k}`; }
     }
@@ -405,30 +427,88 @@ export function shapeSideAt(e: ResolvedEntity, p: { x: number; y: number }, corn
   return null;
 }
 
-/** After polygon `polyId`'s side COUNT changed: re-aim each `pointOn` on one of
- *  its sides at the side nearest that point now. Side k of a hexagon and side
- *  k of an octagon are different sides, so the stored k named a side somewhere
- *  else on the outline, and the next solve pulled the point onto that side's
- *  line, off the polygon, without a word. `ents` must hold the polygon with its
- *  NEW count and the points where they are BEFORE that solve. Mutates
- *  `constraints`; true when it changed any. */
+/** The AXIS of a slot within `tol` of `p` (`<slotId>~2`, SLOT_AXIS), or null.
+ *  The axis is inside the slot, away from the outline every other pick hits,
+ *  so a picker asks this only when the click found no curve. */
+export function slotAxisAt(ents: ResolvedEntity[], p: { x: number; y: number }, tol: number): string | null {
+  let best: string | null = null;
+  let bestD = tol;
+  for (const e of ents) {
+    if (e.type !== "slot") continue;
+    const d = distToSeg(v(e.x1, e.y1), v(e.x2, e.y2), p);
+    if (d < bestD) { bestD = d; best = `${e.id}~${SLOT_AXIS}`; }
+  }
+  return best;
+}
+
+/** After polygon `polyId`'s side COUNT changed from `oldSides`: re-aim what
+ *  names one of its sides or corners. Side k of a hexagon and side k of an
+ *  octagon are different sides, so a stored k named somewhere else on the
+ *  outline, and the next solve pulled the geometry there without a word.
+ *
+ *    a point ON a side  goes to the side nearest that point now
+ *    anything else      a side goes to the side whose middle is nearest the
+ *                       old one's, a corner to the corner nearest the old one
+ *                       (by angle about the centre, which the count does not
+ *                       move), when `oldSides` is known
+ *
+ *  `ents` must hold the polygon with its NEW count and the points where they
+ *  are BEFORE the solve. The centre (POLYGON_CENTRE) is never renumbered.
+ *  Mutates `constraints`; true when it changed any. */
 export function rebindPolygonSides(
   ents: ResolvedEntity[],
   constraints: SketchConstraint[],
   polyId: string,
+  oldSides?: number,
 ): boolean {
   const byId = new Map(ents.map((e) => [e.id, e]));
   const poly = byId.get(polyId);
   if (poly?.type !== "polygon") return false;
+  const n = Math.max(3, Math.round(poly.sides));
+  const was = oldSides === undefined ? null : Math.max(3, Math.round(oldSides));
+  const renumber = was !== null && was !== n;
+  // side k's middle sits (k + 1/2) n-ths of a turn round, corner k at k n-ths
+  const sideTo = (k: number) => ((Math.round(((k + 0.5) * n) / was! - 0.5) % n) + n) % n;
+  const cornerTo = (k: number) => Math.round((k * n) / was!) % n;
+  // `<polyId>~k` and nothing else: an id with no `~` cut at lastIndexOf
+  // (-1) loses its last character, so polygon e1 claimed lines e10..e19 as
+  // its side 0 and every constraint on them moved onto the polygon
+  const ownSide = (id: string) => id.startsWith(`${polyId}~`);
+  const side = (id: unknown): string | null => {
+    if (typeof id !== "string" || !ownSide(id)) return null;
+    const k = Number(id.slice(polyId.length + 1));
+    return Number.isInteger(k) && k >= 0 && k < was! ? `${polyId}~${sideTo(k)}` : null;
+  };
   let changed = false;
   for (const c of constraints) {
-    if (c.type !== "pointOn" || c.curve.slice(0, c.curve.lastIndexOf("~")) !== polyId) continue;
-    const owner = byId.get(c.e);
-    const at = owner ? refPoint(owner, c.p) : null;
-    const side = at ? shapeSideAt(poly, at) : null;
-    if (side && side !== c.curve) {
-      c.curve = side;
-      changed = true;
+    if (c.type === "pointOn" && ownSide(c.curve)) {
+      const owner = byId.get(c.e);
+      const at = owner ? refPoint(owner, c.p) : null;
+      const near = at ? shapeSideAt(poly, at) : null;
+      if (near && near !== c.curve) {
+        c.curve = near;
+        changed = true;
+      }
+    }
+    if (!renumber) continue;
+    const rec = c as unknown as Record<string, unknown>;
+    for (const [key, val] of Object.entries(rec)) {
+      if (c.type === "pointOn" && key === "curve") continue; // re-aimed above
+      const to = side(val);
+      if (to && to !== val) { rec[key] = to; changed = true; }
+    }
+    if (c.type === "offset") {
+      for (const pr of c.pairs) {
+        const src = side(pr.src), cpy = side(pr.cpy);
+        if (src && src !== pr.src) { pr.src = src; changed = true; }
+        if (cpy && cpy !== pr.cpy) { pr.cpy = cpy; changed = true; }
+      }
+    }
+    for (const [e, p] of [["e", "p"], ["e1", "p1"], ["e2", "p2"]] as const) {
+      const k = rec[p];
+      if (rec[e] !== polyId || typeof k !== "number" || !Number.isInteger(k) || k < 0 || k >= was!) continue;
+      const to = cornerTo(k);
+      if (to !== k) { rec[p] = to; changed = true; }
     }
   }
   return changed;
@@ -436,8 +516,9 @@ export function rebindPolygonSides(
 
 /** The ENCODER, and the inverse of lineOperand: which line operand an entity
  *  presents to a click at `p` — its own id for a native/projected line, or
- *  `"<rectId>~<k>"` for whichever of a rectangle's four edges the click is
- *  nearest. Null when the entity presents no line at all.
+ *  `"<shapeId>~<k>"` for whichever of a rectangle's four edges, or a polygon's
+ *  or slot's sides, the click is nearest. Null when the entity presents no
+ *  line at all.
  *
  *  This is the seam the constraint tools pick a rect EDGE through, and it is
  *  deliberately NOT curveKind. curveKind answers "what KIND of curve is this
@@ -448,6 +529,8 @@ export function rebindPolygonSides(
  *  the constraint would emit, compile to nothing, and vanish silently — the
  *  exact failure class the rectangle work exists to remove. */
 export function lineOperandAt(e: ResolvedEntity, p: { x: number; y: number }): string | null {
+  // a polygon's or slot's sides (shapeSideAt): a slot's round end is no side
+  if (e.type === "polygon" || e.type === "slot") return shapeSideAt(e, p);
   if (e.type === "rectangle") {
     const c = rectCorners(e.x, e.y, e.width, e.height);
     let best: string | null = null;
@@ -476,16 +559,20 @@ export function lineOperandAt(e: ResolvedEntity, p: { x: number; y: number }): s
  *  was not an assembly of lines at all. The pick was always per-edge; only the
  *  feedback was not.
  *
+ *  A polygon's or slot's side is lit the same way; a slot's round end, which
+ *  no line tool takes, lights nothing (null).
+ *
  *  Comes back as a `line` ENTITY rather than as a segment because that is what
  *  the overlay draws (curveObjects), and it carries the OPERAND's id, so
  *  whatever reads the preview can say which edge was meant. Everything else is
  *  returned as itself, not as a copy: a projected line renders in its own style
  *  and a synthetic stand-in would quietly lose it. */
-export function hoverOperandCurve(e: ResolvedEntity, p: { x: number; y: number }): ResolvedEntity {
-  if (e.type !== "rectangle") return e;
+export function hoverOperandCurve(e: ResolvedEntity, p: { x: number; y: number }): ResolvedEntity | null {
+  if (e.type !== "rectangle" && e.type !== "polygon" && e.type !== "slot") return e;
   const id = lineOperandAt(e, p);
   const seg = id ? lineOperand(new Map([[e.id, e]]), id) : null;
-  return id && seg ? ({ type: "line", id, ...seg } as ResolvedEntity) : e;
+  // a slot's round end takes no line: light nothing rather than the outline
+  return id && seg ? ({ type: "line", id, ...seg } as ResolvedEntity) : e.type === "slot" ? null : e;
 }
 
 /** The center + radius a round entity presents to snap/marker/dimension flows:
@@ -593,9 +680,10 @@ export function lineRimPoints(
 
 /** THE enumeration of an entity's dimensionable reference points, with each
  *  one's pick index `p` (the SketchConstraint p2p/p2l semantics: 0/1 =
- *  endpoints, 0..3 = rectangle corners, 2 = arc center; circles and sketch
- *  points expose their single point at 0). The picker, the label renderer, and
- *  the docs in types.ts all hang off this one list. */
+ *  endpoints, 0..3 = rectangle corners and 4 its centre, 2 = arc center,
+ *  0..n-1 = polygon corners and -1 its centre, 0/1 = a slot's two centres;
+ *  circles and sketch points expose their single point at 0). The picker, the
+ *  label renderer, and the docs in types.ts all hang off this one list. */
 export function dimRefPoints(e: ResolvedEntity): { p: number; pos: V }[] {
   if (e.type === "line") return [{ p: 0, pos: v(e.x1, e.y1) }, { p: 1, pos: v(e.x2, e.y2) }];
   if (e.type === "arc") {
@@ -606,8 +694,17 @@ export function dimRefPoints(e: ResolvedEntity): { p: number; pos: V }[] {
   }
   if (e.type === "circle" || e.type === "point") return [{ p: 0, pos: v(e.x, e.y) }];
   if (e.type === "rectangle") {
-    return rectCorners(e.x, e.y, e.width, e.height).map((q, k) => ({ p: k, pos: v(q.x, q.y) }));
+    const out = rectCorners(e.x, e.y, e.width, e.height).map((q, k) => ({ p: k, pos: v(q.x, q.y) }));
+    out.push({ p: RECT_CENTRE, pos: v(e.x, e.y) });
+    return out;
   }
+  if (e.type === "polygon") {
+    const out = polygonPoints(e.x, e.y, e.radius, e.sides, (e.angle * Math.PI) / 180)
+      .map((q, k) => ({ p: k, pos: v(q.x, q.y) }));
+    out.push({ p: POLYGON_CENTRE, pos: v(e.x, e.y) });
+    return out;
+  }
+  if (e.type === "slot") return [{ p: 0, pos: v(e.x1, e.y1) }, { p: 1, pos: v(e.x2, e.y2) }];
   if (e.type === "spline") {
     const out: { p: number; pos: V }[] = [];
     const a = e.points[0], b = e.points[e.points.length - 1];
@@ -636,6 +733,19 @@ export function dimRefPoints(e: ResolvedEntity): { p: number; pos: V }[] {
 /** resolve a dimension pick (entity + p index) to its current 2D position */
 export function refPoint(e: ResolvedEntity, p: number): V | null {
   return dimRefPoints(e).find((r) => r.p === p)?.pos ?? null;
+}
+
+/** Where a POINT operand of a constraint is: an entity and its `p`, or a line
+ *  operand (`R~k`, `P~k`, `S~k`) and one of its two ends, p 1 its end and
+ *  anything else its start. The second spelling reaches the same solver point
+ *  through the side's registration (sketchSolve), and it is the only one a
+ *  slot side's ends have; the renderers read both through here. */
+export function operandPoint(byId: Map<string, ResolvedEntity>, id: string, p: number): V | null {
+  const e = byId.get(id);
+  if (e) return refPoint(e, p);
+  if (!id.includes("~")) return null;
+  const seg = lineOperand(byId, id);
+  return seg ? (p === 1 ? v(seg.x2, seg.y2) : v(seg.x1, seg.y1)) : null;
 }
 
 export interface ConstraintDim {
@@ -729,18 +839,16 @@ export function constraintDims(ents: ResolvedEntity[], constraints: SketchConstr
       return e ? asRound(e) : null;
     };
     if (c.type === "p2pDistance") {
-      const e1 = byId.get(c.e1), e2 = byId.get(c.e2);
-      a = e1 ? refPoint(e1, c.p1) : null;
-      b = e2 ? refPoint(e2, c.p2) : null;
+      a = operandPoint(byId, c.e1, c.p1);
+      b = operandPoint(byId, c.e2, c.p2);
       value = c.value;
     } else if (c.type === "p2pDistanceX" || c.type === "p2pDistanceY") {
       // Smart dimensioning's horizontal/vertical distances. The witness line
       // spans ONE axis at the first point's other coordinate — the same anchors
       // dimensionTool.p2pPlan draws while you place it, so the badge and the
       // preview agree instead of the badge showing a diagonal.
-      const e1 = byId.get(c.e1), e2 = byId.get(c.e2);
-      const p = e1 ? refPoint(e1, c.p1) : null;
-      const q = e2 ? refPoint(e2, c.p2) : null;
+      const p = operandPoint(byId, c.e1, c.p1);
+      const q = operandPoint(byId, c.e2, c.p2);
       if (p && q) {
         a = p;
         b = c.type === "p2pDistanceX" ? v(q.x, p.y) : v(p.x, q.y);
@@ -748,8 +856,7 @@ export function constraintDims(ents: ResolvedEntity[], constraints: SketchConstr
       }
       value = c.value;
     } else if (c.type === "p2lDistance") {
-      const pe = byId.get(c.e);
-      a = pe ? refPoint(pe, c.p) : null;
+      a = operandPoint(byId, c.e, c.p);
       const seg = lineOperand(byId, c.line);
       if (a && seg) {
         const A = v(seg.x1, seg.y1), B = v(seg.x2, seg.y2);
@@ -772,8 +879,7 @@ export function constraintDims(ents: ResolvedEntity[], constraints: SketchConstr
       if (pts) ({ a, b } = pts);
       value = c.value;
     } else if (c.type === "p2cDistance") {
-      const pe = byId.get(c.e);
-      const q = pe ? refPoint(pe, c.p) : null;
+      const q = operandPoint(byId, c.e, c.p);
       const cr = round(c.circle);
       const pts = q && cr ? pointRimPoints(q, cr) : null;
       if (pts) ({ a, b } = pts);

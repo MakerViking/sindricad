@@ -241,7 +241,7 @@ describe("a body-drag frame is solved with the dragged entity pinned (c0bf7020)"
     const want = { x1: before.x1 + DX, y1: before.y1 + DY, x2: before.x2 + DX, y2: before.y2 + DY };
 
     const frame = bodyDragFrame(ents, at(ents, "e6"), DX, DY, cons)!;
-    const pins = attachmentPoints(byId(frame, "e6")).map((q) => ({ x: q.x, y: q.y }));
+    const pins = attachmentPoints(byId(frame, "e6"), cons).map((q) => ({ x: q.x, y: q.y }));
     const r = await compileAndSolve(frame, cons, undefined, undefined, pins);
 
     expect(r.ok).toBe(true);

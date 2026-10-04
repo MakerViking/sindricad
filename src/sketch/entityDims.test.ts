@@ -218,7 +218,7 @@ describe("hoverOperandCurve (what a constraint tool highlights under the cursor)
   it("is a SEGMENT, not the rectangle: three of the four sides are not in it", () => {
     // The teeth. A helper that returned the rectangle would satisfy "one curve"
     // and still light every side, which is the bug.
-    const c = hoverOperandCurve(r, { x: 2, y: -5.4 });
+    const c = hoverOperandCurve(r, { x: 2, y: -5.4 })!;
     expect(c.type, "a rectangle came back as itself").toBe("line");
     const seg = c as { x1: number; y1: number; x2: number; y2: number };
     expect(Math.hypot(seg.x2 - seg.x1, seg.y2 - seg.y1), "one 20 mm side, not a 60 mm perimeter")

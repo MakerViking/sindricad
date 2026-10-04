@@ -99,36 +99,46 @@ describe("what the solver makes of it", () => {
   });
 });
 
-describe("a polygon or slot side is fixed geometry to put a point on", () => {
+// A polygon or slot comes into the solver once a constraint names it
+// (shapeOperands.test.ts has the rest), so a side is a line of the shape, and
+// the shape can move to the point as well as the point to it: the tool names
+// the point as the mover, which is what holds the shape still.
+describe("a point on a polygon or slot side", () => {
   it("the point comes to the side, and the polygon stays exactly as drawn", async () => {
     const ents = [HEX(), PT("P", 30, 4)];
-    const r = await compileAndSolve(ents, [on("P", "H~0")]);
+    const r = await compileAndSolve(ents, [on("P", "H~0")], undefined, { moves: ["P"] });
     expect(r.ok).toBe(true);
     expect(r.conflicts).toEqual([]);
     expect(offLine(r.entities, pos(r.entities, "P"), "H~0")).toBeLessThan(1e-9);
-    expect(r.entities.find((e) => e.id === "H")).toEqual(HEX());
+    expect(r.entities.find((e) => e.id === "H"), "every number kept, digit for digit").toEqual(HEX());
   });
 
   it("a slot's sides lie half its width out from the axis", async () => {
     const slot: ResolvedEntity = { type: "slot", id: "S", x1: 0, y1: 0, x2: 20, y2: 0, width: 6 };
-    const r = await compileAndSolve([slot, PT("P", 10, 9), PT("Q", 4, -12)], [on("P", "S~0"), on("Q", "S~1")]);
+    const r = await compileAndSolve([slot, PT("P", 10, 9), PT("Q", 4, -12)], [on("P", "S~0"), on("Q", "S~1")], undefined, { moves: ["P", "Q"] });
     expect(r.conflicts).toEqual([]);
     expect(pos(r.entities, "P").y).toBeCloseTo(3, 9);
     expect(pos(r.entities, "Q").y).toBeCloseTo(-3, 9);
+    expect(r.entities.find((e) => e.id === "S")).toEqual(slot);
   });
 
-  it("naming a side does not pin a user end that sits on the polygon's corner", async () => {
+  it("a user end that sits on the polygon's corner is JOINED to it once the polygon is in the solver", async () => {
     // L starts on the hexagon's corner (10,0), the start of side 0, with no
-    // constraint between them. Grabbing L's start must still drag it, with or
-    // without some point on that side: the side's ends are pinned, and the drag
-    // takes the NEAREST solver point, the first one on a tie.
+    // constraint between them. Unnamed, the polygon is rigid and out of the
+    // solver, so L's start drags alone. Named, the corner is a solver point
+    // and merges by position, as a rectangle's corner always has: the drag
+    // takes the corner with it, and the hexagon stays regular.
     const ents = [HEX(), L("L", 10, 0, 30, 20), PT("P", 30, 4)];
     const drag = { fromX: 10, fromY: 0, toX: 12, toY: -3 };
     for (const cons of [[], [on("P", "H~0")]]) {
       const r = await compileAndSolve(ents, cons, drag);
       expect(r.dragRefused, `refused with ${cons.length} pointOn`).toBeUndefined();
       const l = r.entities.find((e) => e.id === "L") as Extract<ResolvedEntity, { type: "line" }>;
-      expect([l.x1, l.y1]).toEqual([12, -3]);
+      expect(l.x1).toBeCloseTo(12, 9);
+      expect(l.y1).toBeCloseTo(-3, 9);
+      const h = r.entities.find((e) => e.id === "H") as Extract<ResolvedEntity, { type: "polygon" }>;
+      if (cons.length) expect(Math.hypot(h.x + h.radius * Math.cos((h.angle * Math.PI) / 180) - 12, h.y + h.radius * Math.sin((h.angle * Math.PI) / 180) + 3)).toBeLessThan(1e-6);
+      else expect(h).toEqual(HEX());
     }
   });
 
@@ -159,15 +169,15 @@ describe("the selection's right-click menu", () => {
   const circle: ResolvedEntity = { type: "circle", id: "c", x: 0, y: 0, radius: 5 };
   const point = PT("p", 3, 3);
 
-  it("offers Coincident for a sketch point and a line, circle or arc, in either order", () => {
-    expect(applicableConstraints([point, line])).toEqual(["coincident"]);
-    expect(applicableConstraints([line, point])).toEqual(["coincident"]);
+  it("offers Coincident for a sketch point and a line, circle or arc, in either order, and Midpoint on a line", () => {
+    expect(applicableConstraints([point, line])).toEqual(["coincident", "midpoint"]);
+    expect(applicableConstraints([line, point])).toEqual(["coincident", "midpoint"]);
     expect(applicableConstraints([point, circle])).toEqual(["coincident"]);
   });
 
-  it("and nothing for a point alone, two points, or a point and a rectangle", () => {
-    expect(applicableConstraints([point])).toEqual([]);
-    expect(applicableConstraints([point, PT("q", 1, 1)])).toEqual([]);
+  it("Fix for a point alone, Coincident for two, and nothing for a point and a rectangle nobody named a side of", () => {
+    expect(applicableConstraints([point])).toEqual(["fix"]);
+    expect(applicableConstraints([point, PT("q", 1, 1)])).toEqual(["coincident"]);
     expect(applicableConstraints([point, { type: "rectangle", id: "r", x: 0, y: 0, width: 4, height: 4 }])).toEqual([]);
   });
 

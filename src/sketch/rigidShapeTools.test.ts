@@ -69,6 +69,8 @@ const PX = 10;
 const viewport = {
   screenToPlane: (cx: number, cy: number) => new THREE.Vector3(cx / PX, -cy / PX, 0),
   projectToScreen: (w: THREE.Vector3) => ({ x: w.x * PX, y: -w.y * PX }),
+  // mm per pixel, for the size of a hovered point's marker
+  pixelWorldSize: () => 1 / PX,
   domElement: { setPointerCapture() {}, releasePointerCapture() {} },
 };
 
@@ -315,15 +317,29 @@ describe("Rotate pivots on a polygon's centre", () => {
     expect(p.angle).toBeCloseTo(47, 9);
   });
 
-  it("snaps onto a corner, too", () => {
+  it("snaps onto a corner, too, and the line's end is JOINED to it", () => {
     const { s } = makeMode([clone(POLY)], "line");
     const a = (17 * Math.PI) / 180;
     const corner = { x: 3.3 + 10 * Math.cos(a), y: 7.7 + 10 * Math.sin(a) };
     s.onPointerDown(at(corner.x + 0.3, corner.y + 0.3)); // a line starts here
     s.onPointerDown(at(40, 40));
-    const line = s.entities.find((e) => e.type === "line") as { x1: number; y1: number } | undefined;
+    const line = s.entities.find((e) => e.type === "line") as { id: string; x1: number; y1: number } | undefined;
     expect(line?.x1).toBeCloseTo(corner.x, 9);
     expect(line?.y1).toBeCloseTo(corner.y, 9);
+    // the corner is a point the solver has now (point 0), so the snap records
+    // the join the way it does on a rectangle's corner
+    expect((s as unknown as { constraints: unknown[] }).constraints)
+      .toContainEqual({ type: "coincident", e1: "p", p1: 0, e2: line!.id, p2: 0 });
+  });
+
+  it("a centre rectangle drawn from a point joins its CENTRE to it", () => {
+    const { s } = makeMode([{ type: "point", id: "q", x: 20, y: 10 }], "centerRectangle");
+    s.onPointerDown(at(20.2, 10.3)); // the centre, snapped onto the point
+    s.onPointerDown(at(35, 20)); // a corner, on nothing
+    const rect = s.entities.find((e) => e.type === "rectangle") as { id: string; x: number; y: number } | undefined;
+    expect([rect?.x, rect?.y]).toEqual([20, 10]);
+    expect((s as unknown as { constraints: unknown[] }).constraints)
+      .toEqual([{ type: "coincident", e1: "q", p1: 0, e2: rect!.id, p2: 4 }]);
   });
 });
 
@@ -484,10 +500,12 @@ describe("Coincident and the sides of a polygon or slot", () => {
     expect(lit(lastPreview())).toEqual(["p~0"]);
   });
 
-  it("and nothing on a polygon's corner, which the click refuses", () => {
+  it("and on a polygon's corner, the corner the click takes, painted over the side beside it", () => {
     const { s, lastPreview } = coincidentMode([clone(POLY)]);
     s.modifyHover(at(CORNER1.x, CORNER1.y));
-    expect(lit(lastPreview())).toEqual([]);
+    const ids = lit(lastPreview());
+    expect(ids.length, `lit: ${ids.join(", ")}`).toBe(2);
+    expect(["p~0", "p~1"]).toContain(ids[0]);
   });
 
   it("and nothing on a slot's round end, which it would refuse", () => {

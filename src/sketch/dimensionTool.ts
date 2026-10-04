@@ -11,7 +11,8 @@
 //
 // A rectangle edge is a first-class line operand (`"<rectId>~<k>"`, see
 // types.ts), which is what makes rect-edge lengths, rect-edge-to-circle
-// distances and rect-edge angles fall out of the same three pair rules.
+// distances and rect-edge angles fall out of the same three pair rules. A
+// polygon's or slot's side, and a slot's axis, are the same kind of operand.
 
 import { t } from "../i18n";
 import * as THREE from "three";
@@ -19,11 +20,11 @@ import type { ResolvedEntity } from "./snap";
 import type { PlaceOffset, SketchConstraint } from "../types";
 import type { DimFieldDef } from "./dimInput";
 import {
-  asLineSeg, asRound, dimRefPoints, lineRimPoints, pointRimPoints,
-  radialGapPoints, rimGap, rimGapPoints, type Round,
+  SLOT_AXIS, asLineSeg, asRound, dimRefPoints, lineOperand, lineOperandAt, lineRimPoints, pointRimPoints,
+  radialGapPoints, refPoint, rimGap, rimGapPoints, slotAxisAt, type Round,
 } from "./entityDims";
 import { pickEntity } from "./modify";
-import { rectCorners } from "./region";
+import { isOriginGeometry } from "./origin";
 import { distToSeg, signedAngleDeg } from "./geom2d";
 
 type V = THREE.Vector2;
@@ -33,7 +34,7 @@ export type Seg = { x1: number; y1: number; x2: number; y2: number };
 
 /** One dimension pick. `entity` is a whole-curve pick (a line body, a circle
  *  rim); `point` is a dimensionable reference point (dimRefPoints); `edge` is
- *  one side of a rectangle.
+ *  one side of a rectangle, polygon or slot, or a slot's axis (`k` 2).
  *
  *  `rim` is Fusion's "Pick Circle/Arc Tangent": it arms ONE pick (right-click
  *  menu, before the pick) so a circle/arc contributes its EDGE rather than its
@@ -119,7 +120,8 @@ export type DimErrorCode =
   | "crossing"
   | "unsupported"
   | "need-second"
-  | "projected-single";
+  | "projected-single"
+  | "slot-width";
 
 /** A pick combination that yields no dimension. `message` is the toast text
  *  ("" = deliberately silent); `keepPicks` marks the "not an error, just not
@@ -287,21 +289,39 @@ export function pickDimTarget(ents: ResolvedEntity[], p: V, tol: number): DimTar
   }
   const idx = pickEntity(ents, p, tol);
   const e = idx >= 0 ? ents[idx] : undefined;
-  if (!e) return null;
-  if (e.type === "rectangle") {
-    const c = rectCorners(e.x, e.y, e.width, e.height);
-    let bk = 0, bd = Infinity;
-    for (let k = 0; k < 4; k++) {
-      const a = c[k], b = c[(k + 1) % 4];
-      if (!a || !b) continue;
-      const d = distToSeg(a, b, p);
-      if (d < bd) { bd = d; bk = k; }
-    }
-    const a = c[bk], b = c[(bk + 1) % 4];
-    if (!a || !b) return null;
-    return { kind: "edge", e, k: bk, a: a.clone(), b: b.clone() };
+  // a slot's axis is inside it, away from every curve: only where nothing of
+  // the user's is (it beats an origin axis it lies on, as pickEntity would)
+  const axis = e && !isOriginGeometry(e.id) ? null : slotAxisAt(ents, p, tol);
+  const owner = axis ? ents.find((x) => x.id === axis.slice(0, axis.indexOf("~"))) : e;
+  if (!owner) return null;
+  const sideId = axis ?? (owner.type === "rectangle" || owner.type === "polygon" || owner.type === "slot" ? lineOperandAt(owner, p) : null);
+  if (sideId) return edgeTarget(owner, Number(sideId.slice(sideId.indexOf("~") + 1)));
+  return { kind: "entity", e: owner };
+}
+
+/** side `k` of a rectangle, polygon or slot as an edge pick, or null when the
+ *  shape has no such side */
+function edgeTarget(e: ResolvedEntity, k: number): DimTarget | null {
+  const seg = lineOperand(new Map([[e.id, e]]), `${e.id}~${k}`);
+  return seg ? { kind: "edge", e, k, a: v(seg.x1, seg.y1), b: v(seg.x2, seg.y2) } : null;
+}
+
+/** The two POINT operands an edge pick runs between, start first: a
+ *  rectangle's or polygon's two corners, a slot axis's two centres, and for a
+ *  slot side the ends of the side itself (`S~k` p0/p1, the only spelling they
+ *  have; see entityDims.operandPoint). */
+function edgeEnds(t: Extract<DimTarget, { kind: "edge" }>): [{ eid: string; p: number }, { eid: string; p: number }] {
+  const e = t.e, k = t.k;
+  if (e.type === "polygon") {
+    const n = Math.max(3, Math.round(e.sides));
+    return [{ eid: e.id, p: k }, { eid: e.id, p: (k + 1) % n }];
   }
-  return { kind: "entity", e };
+  if (e.type === "slot") {
+    return k === SLOT_AXIS
+      ? [{ eid: e.id, p: 0 }, { eid: e.id, p: 1 }]
+      : [{ eid: `${e.id}~${k}`, p: 0 }, { eid: `${e.id}~${k}`, p: 1 }];
+  }
+  return [{ eid: e.id, p: k }, { eid: e.id, p: (k + 1) % 4 }];
 }
 
 /** Re-resolve a pick against a fresh entity list (the solver hands back NEW
@@ -316,10 +336,7 @@ export function rebindTarget(t: DimTarget, ents: ResolvedEntity[]): DimTarget | 
     const r = dimRefPoints(e).find((q) => q.p === t.p);
     return r ? { kind: "point", e, p: t.p, pos: r.pos.clone(), ...rim } : null;
   }
-  if (e.type !== "rectangle") return null;
-  const c = rectCorners(e.x, e.y, e.width, e.height);
-  const a = c[t.k], b = c[(t.k + 1) % 4];
-  return a && b ? { kind: "edge", e, k: t.k, a: a.clone(), b: b.clone() } : null;
+  return edgeTarget(e, t.k);
 }
 
 /** Clamp a frozen label placement into the sane screen-space band. `mmPerPx <= 0`
@@ -343,7 +360,10 @@ export function clampPlace(dx: number, dy: number, mmPerPx: number): PlaceOffset
 // --- operand reduction -------------------------------------------------------
 
 interface PointOp { kind: "point"; eid: string; p: number; pos: V; round: boolean; fixed: boolean; roundOf?: Round }
-interface LineOp { kind: "line"; opId: string; eid: string; p0: number; seg: Seg; fixed: boolean }
+/** `eid` is the entity the line belongs to (a side's shape), and `p0` its
+ *  START as a point operand of `p0e`: the shape and a corner index for a
+ *  rectangle or polygon side, the side itself for a slot side (edgeEnds). */
+interface LineOp { kind: "line"; opId: string; eid: string; p0e: string; p0: number; seg: Seg; fixed: boolean; slot?: true }
 /** a circle/arc contributing its RIM (tangent mode) rather than its centre */
 interface RoundOp { kind: "round"; eid: string; c: Round; fixed: boolean }
 type Operand = PointOp | LineOp | RoundOp;
@@ -396,9 +416,11 @@ function reduce(t: DimTarget): Operand | DimError {
     return { kind: "point", eid: t.e.id, p: t.p, pos: t.pos.clone(), round, fixed, ...(rd0 ? { roundOf: rd0 } : {}) };
   }
   if (t.kind === "edge") {
+    const [start] = edgeEnds(t);
     return {
-      kind: "line", opId: `${t.e.id}~${t.k}`, eid: t.e.id, p0: t.k,
+      kind: "line", opId: `${t.e.id}~${t.k}`, eid: t.e.id, p0e: start.eid, p0: start.p,
       seg: { x1: t.a.x, y1: t.a.y, x2: t.b.x, y2: t.b.y }, fixed,
+      ...(t.e.type === "slot" ? { slot: true as const } : {}),
     };
   }
   const e = t.e;
@@ -407,7 +429,7 @@ function reduce(t: DimTarget): Operand | DimError {
     // asLineSeg hands back the entity itself for a native line — copy only the
     // 4 coordinates so a Seg never carries an entity's id/type along
     const seg: Seg = { x1: ls.x1, y1: ls.y1, x2: ls.x2, y2: ls.y2 };
-    return { kind: "line", opId: e.id, eid: e.id, p0: 0, seg, fixed };
+    return { kind: "line", opId: e.id, eid: e.id, p0e: e.id, p0: 0, seg, fixed };
   }
   const rd = asRound(e);
   const ci = centreIndex(e);
@@ -673,10 +695,15 @@ function resolveSingle(target: DimTarget, opts: DimOptions): DimResolution {
   if (target.kind === "edge") {
     const len = target.a.distanceTo(target.b);
     if (len < MEASURE_EPS) return degenerate("edge");
-    // a rectangle edge's length IS the distance between its two corners
-    const a: PointOp = { kind: "point", eid: e.id, p: target.k, pos: target.a, round: false, fixed: false };
-    const b: PointOp = { kind: "point", eid: e.id, p: (target.k + 1) % 4, pos: target.b, round: false, fixed: false };
-    return p2pPlan(a, b, false, t("sketch.dimension.hint.rectEdge"));
+    // A rectangle edge's length IS the distance between its two corners, and
+    // a polygon side's too. A slot side is as long as its axis, so it is
+    // measured between the two centres, which the solver can drive: the ends
+    // of the side itself follow the centres.
+    const [s, f] = target.e.type === "slot" ? [{ eid: e.id, p: 0 }, { eid: e.id, p: 1 }] : edgeEnds(target);
+    const at = (q: { eid: string; p: number }, fallback: V) => (q.eid === e.id ? refPoint(e, q.p) : null) ?? fallback;
+    const a: PointOp = { kind: "point", eid: s.eid, p: s.p, pos: at(s, target.a), round: false, fixed: false };
+    const b: PointOp = { kind: "point", eid: f.eid, p: f.p, pos: at(f, target.b), round: false, fixed: false };
+    return p2pPlan(a, b, false, t(e.type === "rectangle" ? "sketch.dimension.hint.rectEdge" : "sketch.dimension.hint.shapeSide"));
   }
   if (target.kind === "point") {
     return {
@@ -876,9 +903,13 @@ function lineLine(l1: LineOp, l2: LineOp, forceDriven: boolean): DimResolution {
   // parallel"), which is exactly what "distance between two parallel lines"
   // means. Same-entity edges (two sides of one rectangle) are already held
   // parallel by the rectangle itself, so they don't ask for it.
+  // A slot's width is its own badge's, held rigid by the solver (sketchSolve):
+  // a dimension across its sides, or from a side to its axis, could only ever
+  // agree with it or conflict.
+  if (l1.slot && l2.slot && l1.eid === l2.eid) return { error: "slot-width", message: t("sketch.dimension.error.slotWidth") };
   const [pl, ll] = l1.opId <= l2.opId ? [l1, l2] : [l2, l1];
   const pt: PointOp = {
-    kind: "point", eid: pl.eid, p: pl.p0, pos: v(pl.seg.x1, pl.seg.y1), round: false, fixed: pl.fixed,
+    kind: "point", eid: pl.p0e, p: pl.p0, pos: v(pl.seg.x1, pl.seg.y1), round: false, fixed: pl.fixed,
   };
   if (perpDist(pt.pos, ll.seg) < MEASURE_EPS) {
     return { error: "point-on-line", message: t("sketch.dimension.error.collinearLines") };

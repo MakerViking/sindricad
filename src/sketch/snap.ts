@@ -5,7 +5,7 @@
 
 import * as THREE from "three";
 import type { DimPlace, ProjectedCurve, ProjectedSource, SketchConstraint } from "../types";
-import { asRound, dimRefPoints, refPoint } from "./entityDims";
+import { RECT_CENTRE, asRound, dimRefPoints, refPoint } from "./entityDims";
 import { polygonPoints, rectCorners } from "./region";
 
 export type SnapKind =
@@ -29,7 +29,8 @@ export type SnapKind =
  *  nothing else: that one list is what the dimension picker, the label renderer
  *  and sketchSolve's `endpointPoint` all agree on (line ends 0/1, arc ends 0/1
  *  and centre 2, a circle's or point's single point 0, rectangle corners 0..3 in
- *  `rectCorners` order, spline and projected-poly ends 0/1). A wrong index still
+ *  `rectCorners` order and its centre 4, polygon corners 0..n-1 and its centre
+ *  -1, a slot's centres 0/1, spline and projected-poly ends 0/1). A wrong index still
  *  SOLVES, it just joins the wrong point, so candidatesFromEntities looks every
  *  index up there instead of writing the convention out a second time.
  *
@@ -48,8 +49,9 @@ export interface SnapCandidate {
   kind: SnapKind;
   priority: number; // higher wins
   /** absent when the solver cannot address this point. A line's MIDPOINT, an
-   *  arc's through-point and a rectangle's centre are real snap targets but not
-   *  points `dimRefPoints` lists, so they snap the coordinate and emit nothing. */
+   *  arc's through-point and a rectangle side's middle are real snap targets
+   *  but not points `dimRefPoints` lists, so they snap the coordinate and emit
+   *  nothing. */
   ref?: PointRef;
 }
 
@@ -77,11 +79,11 @@ const JOIN_TOL = 1e-6;
  *     tool only picks an angle, so its ref joins only where the end really
  *     landed on the point, like a typed length below.)
  *   - a RECTANGLE's corners. Corner to corner, both clicks are corners; drawn
- *     from the centre, only the second is (the centre is no solver point, so
- *     the caller passes null for it). WHICH corner a click is depends on the
- *     way the drag went, so it is the one of `dimRefPoints` that sits on the
- *     snapped point, never an assumed 0: the two corner orders in this codebase
- *     agree on corner 0 and nowhere else.
+ *     from the centre, only the second is, and the first, passed as
+ *     `centerRef`, is its centre (point 4). WHICH corner a click is depends on
+ *     the way the drag went, so it is the one of `dimRefPoints` that sits on
+ *     the snapped point, never an assumed 0: the two corner orders in this
+ *     codebase agree on corner 0 and nowhere else.
  *  A CIRCLE is not emitted for: its second click lands on the rim, which is no
  *  solver point. SPLINES are excluded for a duller reason — their ends carry
  *  refs (see candidatesFromEntities) but `finishSpline` commits them by a path
@@ -116,7 +118,7 @@ export function snapCoincidences(
   const placed: [PointRef | null, number[]][] =
     entity.type === "line" ? [[startRef, [0]], [endRef, [1]]]
     : entity.type === "arc" ? [[startRef, [0]], [endRef, [1]], [centerRef, [2]]]
-    : entity.type === "rectangle" ? [[startRef, corners], [endRef, corners]]
+    : entity.type === "rectangle" ? [[startRef, corners], [endRef, corners], [centerRef, [RECT_CENTRE]]]
     : [];
   const out: SketchConstraint[] = [];
   for (const [ref, candidates] of placed) {
@@ -193,8 +195,7 @@ export function candidatesFromEntities(
   for (const e of entities) {
     // A candidate's solver index is looked up, never written out here: it is
     // the `p` of whichever of the entity's dimRefPoints sits on it, and a
-    // candidate none of them sits on (a midpoint, a rectangle's centre) gets no
-    // ref. Hand-written indices covered lines, arcs, points and rectangle
+    // candidate none of them sits on (a midpoint) gets no ref. Hand-written indices covered lines, arcs, points and rectangle
     // corners and silently left circle centres and projected endpoints out,
     // though the solver resolves both.
     const refs = dimRefPoints(e);
@@ -226,9 +227,8 @@ export function candidatesFromEntities(
       // A polygon's centre and corners, and a slot's two arc centres, are where
       // a Rotate or Move wants its pivot, and none of them was offered: rotating
       // a polygon in place meant guessing its centre (reports a237de6b,
-      // ffae1a6e). Copy-only, like every snap here: the solver treats both
-      // shapes as rigid and names none of these points, so snapping to one
-      // copies the coordinate and records no join.
+      // ffae1a6e). They are solver points too now (dimRefPoints), so a line
+      // drawn from one records the join, as from a rectangle's corner.
       add(e.x, e.y, "center", 90);
       for (const v of polygonPoints(e.x, e.y, e.radius, e.sides, (e.angle * Math.PI) / 180)) {
         add(v.x, v.y, "endpoint", 100);

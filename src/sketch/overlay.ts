@@ -21,7 +21,7 @@ import {
   type Region,
 } from "./region";
 import { worldPointInRegion } from "./regionSelect";
-import { dimensionSegments, asRound, dimRefPoints } from "./entityDims";
+import { POLYGON_CENTRE, RECT_CENTRE, dimensionSegments, asRound, dimRefPoints } from "./entityDims";
 import { Line2 } from "three/examples/jsm/lines/Line2.js";
 import { LineGeometry } from "three/examples/jsm/lines/LineGeometry.js";
 import { LineMaterial } from "three/examples/jsm/lines/LineMaterial.js";
@@ -859,17 +859,22 @@ export function curveObjects(
         // bumps": you cannot aim carefully at a handle you cannot see, so you
         // grab whichever one the cursor happens to be nearest.
         for (const q of e.points) add(endpointDot(plane, q.x, q.y, ENDPOINT_COLOR, endpointR));
-      } else if (e.type === "rectangle") {
-        // Corners 0..3, from dimRefPoints — the SAME source pickEndpoint reads,
+      } else if (e.type === "rectangle" || e.type === "polygon") {
+        // Corners, from dimRefPoints — the SAME source pickEndpoint reads,
         // so the two cannot drift about which corners are addressable. Not a
         // blanket switch to dimRefPoints for every type: it also returns an
-        // arc's CENTRE as p2, which is a dimension target and not an endpoint.
+        // arc's CENTRE as p2, which is a dimension target and not an endpoint,
+        // and a rectangle's (4) and a polygon's (-1) centre, which are lit on
+        // hover the way a circle's is.
         //
         // Without this the four corners were pickable and invisible, which is
         // the exact shape of GH #17 — a tool whose targets carry no dot reads
         // as dead, and the corners are the only click targets opening the
-        // rectangle affordance added.
-        for (const { pos } of dimRefPoints(e)) {
+        // rectangle affordance added. A polygon's corners joined them when
+        // they became points too.
+        for (const { p, pos } of dimRefPoints(e)) {
+          if (p === RECT_CENTRE && e.type === "rectangle") continue;
+          if (p === POLYGON_CENTRE) continue;
           add(endpointDot(plane, pos.x, pos.y, ENDPOINT_COLOR, endpointR));
         }
       }

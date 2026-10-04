@@ -17,17 +17,18 @@
 // propagates; every other failure still resolves to null.
 
 import type { Feature, Params, SketchEntity } from "../types";
-import { compileAndSolve } from "./sketchSolve";
+import { compileAndSolve, type BoundFields } from "./sketchSolve";
 import { resolveRealEntities, toSketchEntity } from "./resolve";
 import { SolverUnavailable } from "./solver";
 
 export async function solveSketchFeature(
   sketch: Extract<Feature, { type: "sketch" }>,
   params: Params,
+  bound?: BoundFields,
 ): Promise<{ entities: SketchEntity[] } | null> {
   try {
     const entities = resolveRealEntities(sketch, params);
-    const r = await compileAndSolve(entities, sketch.constraints ?? []);
+    const r = await compileAndSolve(entities, sketch.constraints ?? [], undefined, undefined, undefined, bound);
     if (!r.ok || r.conflicts.length > 0) return null;
     return { entities: r.entities.map(toSketchEntity) };
   } catch (err) {

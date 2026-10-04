@@ -100,10 +100,12 @@ export const FEATURE_NUM_FIELDS: Partial<Record<Feature["type"], NumFieldRow[]>>
   textOnFace: [["height", t("inspector.field.textSize"), "length"], ["depth", t("inspector.field.depth"), "length"], ["bevel", t("inspector.field.bevel"), "length"], ["angle", t("inspector.field.angle"), "angle"], ["boxWidth", t("inspector.field.boxWidth"), "length"], ["u", t("inspector.field.across"), "length"], ["v", t("inspector.field.up"), "length"]],
 };
 
-/** Numeric fields on the solver-RIGID parametric shapes (the solver never writes
- *  these, so a parameter may own them directly). Solved geometry (lines, circles,
- *  rectangles…) is parameter-driven through a dimension constraint instead — the
- *  solver overwrites raw coordinates every pump. */
+/** Numeric fields on the parametric shapes, which a parameter may own
+ *  directly. Solved geometry (lines, circles, rectangles…) is parameter-driven
+ *  through a dimension constraint instead — the solver overwrites raw
+ *  coordinates every pump. A polygon or slot is solver geometry too once a
+ *  constraint names it, and then the solver holds still whichever of these a
+ *  parameter owns (boundShapeFields, sketchSolve.BoundFields). */
 export const RIGID_ENTITY_NUM_FIELDS: Partial<Record<SketchEntity["type"], [string, FieldKind][]>> = {
   polygon: [["x", "length"], ["y", "length"], ["radius", "length"], ["sides", "count"], ["angle", "angle"]],
   slot: [["x1", "length"], ["y1", "length"], ["x2", "length"], ["y2", "length"], ["width", "length"]],
@@ -254,23 +256,39 @@ export function writeTarget(doc: CadDocument, target: ParamTarget, value: number
   const rt = resolveTarget(doc, target);
   if (!rt) return null;
   const v = coerceForField(rt.field, value);
-  if (rt.holder[rt.field] === v) return null;
+  const was = rt.holder[rt.field];
+  if (was === v) return null;
   rt.holder[rt.field] = v;
-  if (target.kind === "entity" && rt.field === "sides") rebindSketchSides(doc, target.sketch, target.entity);
+  if (target.kind === "entity" && rt.field === "sides") {
+    rebindSketchSides(doc, target.sketch, target.entity, typeof was === "number" ? was : undefined);
+  }
   const ownerId = target.kind === "feature" ? target.feature : target.sketch;
   const i = doc.features.findIndex((f) => f.id === ownerId);
   if (i >= 0) doc.features[i] = { ...doc.features[i] } as Feature;
   return rt.sketch !== undefined ? { sketch: rt.sketch } : {};
 }
 
-/** A polygon's new side count renumbers its sides, so a point put on one
- *  (`pointOn` on `P~k`) is re-aimed at the side nearest it
- *  (entityDims.rebindPolygonSides). Here, because every writer passes through
- *  writeTarget: the parameter recompute of a CLOSED sketch never reaches the
- *  sketch editor, and its headless solve would pull the point onto the wrong
- *  side. The open sketch re-aims its own session copy (syncParamValues). */
-function rebindSketchSides(doc: CadDocument, sketchId: string, entityId: string) {
+/** A polygon's new side count renumbers its sides and corners, so what a
+ *  constraint names on it is re-aimed (entityDims.rebindPolygonSides). Here,
+ *  because every writer passes through writeTarget: the parameter recompute
+ *  of a CLOSED sketch never reaches the sketch editor, and its headless solve
+ *  would pull the geometry onto the wrong side. The open sketch re-aims its
+ *  own session copy (syncParamValues). */
+function rebindSketchSides(doc: CadDocument, sketchId: string, entityId: string, oldSides?: number) {
   const f = doc.features.find((x) => x.id === sketchId);
-  if (f?.type !== "sketch" || !f.constraints?.some((c) => c.type === "pointOn")) return;
-  rebindPolygonSides(resolveRealEntities(f, doc.parameters), f.constraints, entityId);
+  if (f?.type !== "sketch" || !f.constraints?.length) return;
+  rebindPolygonSides(resolveRealEntities(f, doc.parameters), f.constraints, entityId, oldSides);
+}
+
+/** `<entityId>:<field>` for every polygon or slot number in sketch `sketchId`
+ *  a model parameter sets: what the headless solve of that sketch holds still
+ *  (sketchSolve.BoundFields). The open sketch asks its own bindings instead,
+ *  which also see a formula typed but not yet committed. */
+export function boundShapeFields(doc: CadDocument, sketchId: string): Set<string> {
+  const out = new Set<string>();
+  for (const def of Object.values(doc.paramDefs ?? {})) {
+    const tg = def.target;
+    if (tg?.kind === "entity" && tg.sketch === sketchId) out.add(`${tg.entity}:${tg.field}`);
+  }
+  return out;
 }

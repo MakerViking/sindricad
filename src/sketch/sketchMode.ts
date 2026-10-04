@@ -17,13 +17,13 @@ import { isEditableTarget } from "../ui/focus";
 import { SketchDimensions, dimBadgeFields, type ExtraDim } from "./sketchDimensions";
 import { SketchGlyphs } from "./sketchGlyphs";
 import { constraintGlyphs, diagnosisOf, type ConstraintGlyph } from "./glyphs";
-import { entityDims, constraintDims, dimRefPoints, curveKind, hoverOperandCurve, lineOperand, lineOperandAt, linearDim, rebindPolygonSides, setDimPixelScale, shapeSideAt, staggeredDefaults, type DimField, type ConstraintDim } from "./entityDims";
+import { entityDims, constraintDims, dimRefPoints, curveKind, hoverOperandCurve, lineOperand, lineOperandAt, linearDim, rebindPolygonSides, setDimPixelScale, shapeSideAt, slotAxisAt, staggeredDefaults, type DimField, type ConstraintDim } from "./entityDims";
 import {
   clampPlace, isDimError, isRoundTarget, pickDimTarget, rebindTarget, resolveDim, targetIdentity,
   targetKey, unsupportedMessage,
   type DimOptions, type DimPlan, type DimTarget,
 } from "./dimensionTool";
-import { pickEntity, trimSpan, trimWithConstraints, detachEndpoint, detachableEnd, filletCorner, chamferCorner, cornerJoins, explodeCompound, rotationTie, offsetEntity, offsetChain, offsetChainJunction, signedOffsetAt, breakWithConstraints, extendLine, breakLink, attachmentPoints, bodyDragBlocked, bodyDragFrame, fixPinnedIds, pickDragPoint, FIXED_POINT_MSG, PROJECTED_FIXED_MSG, type ExplodeResult, type OffsetResult } from "./modify";
+import { pickEntity, trimSpan, trimWithConstraints, detachEndpoint, detachableEnd, filletCorner, chamferCorner, cornerJoins, explodeCompound, rotationTie, translationTie, offsetEntity, offsetChain, offsetChainJunction, signedOffsetAt, breakWithConstraints, extendLine, breakLink, attachmentPoints, bodyDragBlocked, bodyDragFrame, fixPinnedIds, pickDragPoint, FIXED_POINT_MSG, PROJECTED_FIXED_MSG, type ExplodeResult, type OffsetResult } from "./modify";
 import { newEntityId, newConstraintId, isDimConstraint, notePatternId } from "./id";
 import { SketchHistory, cloneSnapshot, type SketchSnapshot } from "./history";
 import { isPlainNumber, parseField, dimValueOk, fmtLength, fieldText, canonicalDecimal, fieldExpr } from "../ui/units";
@@ -53,7 +53,7 @@ import { contextMenu, dismissContextMenu, type CtxItem } from "../ui/menu";
 import { niceStep } from "../ui/units";
 import { isOriginGeometry, originGeometry } from "./origin";
 import { boxFromDrag, entitiesInBox } from "./boxSelect";
-import { applicableConstraints, constraintLabel } from "./constraintMenu";
+import { applicableConstraints, constraintLabel, menuOperands, operandUnder, type MenuOperand } from "./constraintMenu";
 import { ConstraintTools, CONSTRAINT_TOOLS, type ConstraintHost } from "./constraintTools";
 import { PatternFlow, PATTERN_TOOLS, ENTITY_PATTERNS, type PatternHost } from "./patternFlow";
 import { ProjectPanel } from "./projectPanel";
@@ -268,6 +268,9 @@ export class SketchMode {
   private arcStartRef: PointRef | null = null;
   private arcEndRef: PointRef | null = null;
   private arcCenterRef: PointRef | null = null;
+  /** what a centre rectangle's first click, its CENTRE, was snapped onto: set
+   *  with its `clickPts` entry, for the same reason as the arc's */
+  private rectCenterRef: PointRef | null = null;
   private splinePts: THREE.Vector2[] = []; // in-progress spline fit points
   private clickPts: THREE.Vector2[] = []; // accumulated clicks for multi-point primitives (polygon/slot/circle variants, centre arc)
   /** centre-point arc: the running signed sweep (radians) from the start, kept
@@ -1502,6 +1505,21 @@ export class SketchMode {
     return this.pendingBindings.get(key)?.expr ?? this.docBinding(key)?.expr;
   }
 
+  /** The polygon and slot numbers a parameter or a formula sets, for the
+   *  solver to hold (sketchSolve.BoundFields): once a constraint names one of
+   *  their points or sides they are solver geometry, and a solve that moved a
+   *  bound number would be undone by the next parameter sync. */
+  private boundShapeFields(): Set<string> | undefined {
+    let out: Set<string> | undefined;
+    for (const e of this.entities) {
+      if (e.type !== "polygon" && e.type !== "slot") continue;
+      for (const [field] of RIGID_ENTITY_NUM_FIELDS[e.type] ?? []) {
+        if (this.exprFor(`e:${e.id}:${field}`) !== undefined) (out ??= new Set()).add(`${e.id}:${field}`);
+      }
+    }
+    return out;
+  }
+
   /** Evaluate raw dim input for the binding slot `key`: a plain number in
    *  display units, or an expression in canonical units — including the
    *  `name=expr` form (names the dim's model parameter). The number/formula
@@ -1629,20 +1647,20 @@ export class SketchMode {
       }
     }
     for (const e of this.entities) {
-      let resided = false;
+      let oldSides: number | undefined;
       for (const [field] of RIGID_ENTITY_NUM_FIELDS[e.type] ?? []) {
         const next = valueFor(`e:${e.id}:${field}`);
         if (next == null) continue;
         const rec = e as unknown as Record<string, unknown>;
         const coerced = coerceForField(field, next);
         if (rec[field] !== coerced) {
+          if (field === "sides") oldSides = rec[field] as number;
           rec[field] = coerced;
           touched = true;
-          resided ||= field === "sides";
         }
       }
-      // a new side count renumbers the sides a point may have been put on
-      if (resided) rebindPolygonSides(this.entities, this.constraints, e.id);
+      // a new side count renumbers the sides and corners constraints name
+      if (oldSides !== undefined) rebindPolygonSides(this.entities, this.constraints, e.id, oldSides);
     }
     if (touched) {
       this.armPreEdit(); // parameter sync is DERIVED — never an undo step
@@ -2757,14 +2775,15 @@ export class SketchMode {
       }
       writes.push({ field, key, kind, r });
     }
+    const oldSides = e.sides;
     for (const w of writes) {
       this.recordBinding(w.key, w.r, w.kind);
       e[w.field] = coerceForField(w.field, w.r.value);
     }
     this.cancelPolygonEdit();
     if (!writes.length) return;
-    // a new side count renumbers the sides a point may have been put on (`P~k`)
-    if (writes.some((w) => w.field === "sides")) rebindPolygonSides(this.entities, this.constraints, e.id);
+    // a new side count renumbers the sides and corners constraints name
+    if (e.sides !== oldSides) rebindPolygonSides(this.entities, this.constraints, e.id, oldSides);
     this.refreshActive();
     this.requestSolve(); // banks the undo step, like every other sketch edit
     this.onState?.();
@@ -2861,6 +2880,7 @@ export class SketchMode {
   private centerRectClick(p: THREE.Vector2) {
     if (!this.clickPts.length) {
       this.clickPts = [p.clone()];
+      this.rectCenterRef = this.lastSnapRef;
       this.showMultiDimFields(); // W/H
       return;
     }
@@ -2875,9 +2895,10 @@ export class SketchMode {
     if (this.constructionMode) ent.construction = true;
     this.entities.push(ent);
     // This click placed a CORNER, so a corner snapped onto a point is joined to
-    // it, as the corner-to-corner rectangle's are. The centre click placed no
-    // solver point (a rectangle's centre is not one), so it has nothing to join.
-    this.emitSnapCoincidences(ent, null, this.lastSnapRef);
+    // it, as the corner-to-corner rectangle's are. The first click placed the
+    // CENTRE, which is a point too now (point 4), so it joins what it was
+    // snapped onto, the origin most often.
+    this.emitSnapCoincidences(ent, null, this.lastSnapRef, this.rectCenterRef);
     this.refreshActive();
     this.requestSolve();
     this.onState?.();
@@ -2961,6 +2982,10 @@ export class SketchMode {
     for (const id of ids) {
       const e = this.entities.find((x) => x.id === id);
       if (!e) return;
+      // A whole rectangle, polygon or slot names no side or corner, which is
+      // what the tool dimensions on one: start clean, the prompt saying what
+      // to click, rather than refuse "there" before any click was made.
+      if (e.type === "rectangle" || e.type === "polygon" || e.type === "slot") return;
       picks.push({ kind: "entity", e });
     }
     // A lone LINE reads the cursor for its extents (resolveSingle), but the key
@@ -4032,14 +4057,20 @@ export class SketchMode {
     // was then dropped without a word (reports 5650b766, be869d55), so they
     // light only the side the click would take, and nothing on a slot, which
     // has no corner to take.
-    if (hit) {
-      const curve = this.tool === "trim" ? this.trimPreview(idx, hit, p)
+    //
+    // A slot's AXIS is a line every constraint tool takes, and it is inside
+    // the slot where no curve is under the cursor: lit on its own when the
+    // cursor is on it and on nothing else (slotAxisAt, the pick's own rule).
+    const axis = (!hit || isOriginGeometry(hit.id)) && CONSTRAINT_TOOLS.has(this.tool) ? this.slotAxisCurve(p) : null;
+    const curve = axis ?? (hit
+      ? (this.tool === "trim" ? this.trimPreview(idx, hit, p)
         : this.tool === "coincident" ? this.constraintTools.hoverCurve(p)
         : cornerTool ? this.cornerSideCurve(hit, p)
         : CONSTRAINT_TOOLS.has(this.tool) ? hoverOperandCurve(hit, p)
-        : hit;
-      if (curve) preview.push(...curveObjects([curve], this.plane, 0xff5555, true));
-    }
+        : hit)
+      : this.tool === "coincident" ? this.constraintTools.hoverCurve(p)
+      : null);
+    if (curve) preview.push(...curveObjects([curve], this.plane, 0xff5555, true));
     // The point under the cursor, for the tools that consume one. It goes on
     // AFTER the entity highlight so it paints on top: an endpoint and the curve
     // owning it are both under the cursor at once, and the click takes the
@@ -4051,6 +4082,13 @@ export class SketchMode {
       );
     }
     this.overlay.setPreview(preview);
+  }
+
+  /** the slot axis under `p` as a synthetic line, for the hover, or null */
+  private slotAxisCurve(p: THREE.Vector2): ResolvedEntity | null {
+    const axis = slotAxisAt(this.entities, p, this.pickTol());
+    const seg = axis ? lineOperand(new Map(this.entities.map((e) => [e.id, e])), axis) : null;
+    return axis && seg ? ({ type: "line", id: axis, ...seg } as ResolvedEntity) : null;
   }
 
   /** What the Trim hover lights: the piece the click would remove, or nothing
@@ -4106,18 +4144,29 @@ export class SketchMode {
 
   /** Right-click in select mode: select the entity under the cursor (if any) and
    *  offer Delete. Leaves camera navigation alone when nothing is hit/selected. */
-  /** Apply a constraint straight to an already-chosen selection.
+  /** Apply a constraint straight to an already-chosen selection, as the
+   *  operands constraintMenu read off it (menuOperands): whole lines and
+   *  rounds, sketch points, and a shape's side or corner the right-click named.
    *
-   *  Only reached for selections `applicableConstraints` vouched for, so every
-   *  operand here is a whole entity that IS a line or a round — no rectangle
-   *  edges to disambiguate. The constraint objects are the same shapes
-   *  ConstraintTools builds; this is a second ENTRY POINT to them, not a second
-   *  implementation of them. `moves` names the first-picked entity, matching the
-   *  solver-bias convention the click tools already stamp. */
-  private applyConstraintToSelection(t: SketchTool, sel: ResolvedEntity[]) {
-    const a = sel[0], b = sel[1];
+   *  Only reached for selections `applicableConstraints` vouched for. The
+   *  constraint objects are the same shapes ConstraintTools builds; this is a
+   *  second ENTRY POINT to them, not a second implementation of them. `moves`
+   *  names one entity for the solver bias, as the click tools stamp their
+   *  first pick: a selection has no pick order, so it is the first selected,
+   *  except that the side or corner the right-click NAMED (`named`) stays and
+   *  the other one comes to it (made parallel to a rectangle's side, a line has
+   *  to turn, and naming the rectangle the mover resized it on the way). A
+   *  point put On a curve or at a Midpoint is what moves, named or not, as
+   *  with the tool. Equal on two
+   *  rounds and Tangent are the tools' forms too (equalRadius, tangent2): the
+   *  line-only `equal` and the circle-only `tangent` this used to emit
+   *  compiled to nothing on circles and arcs, and were dropped by the next
+   *  edit. */
+  private applyConstraintToSelection(t: SketchTool, ops: MenuOperand[], named: MenuOperand | null = null) {
+    const a = ops[0], b = ops[1];
     if (!a) return;
-    const push = (c: SketchConstraint, moves = a.id) => {
+    const mover = (named && ops.find((o) => o !== named)) || a;
+    const push = (c: SketchConstraint, moves = mover.ent.id) => {
       this.constraints.push(c);
       this.trial = { cons: [c], msg: SketchMode.CONSTRAINT_CONFLICT_MSG }; // withdrawn again if this solve conflicts
       this.pendingBias = { moves: [moves] };
@@ -4126,26 +4175,26 @@ export class SketchMode {
     };
     if (t === "horizontal") return push({ type: "horizontal", line: a.id });
     if (t === "vertical") return push({ type: "vertical", line: a.id });
+    if (t === "fix") return push({ type: "fix", e: a.id, p: a.p });
     if (!b) return;
     if (t === "parallel") return push({ type: "parallel", l1: a.id, l2: b.id });
     if (t === "perpendicular") return push({ type: "perpendicular", l1: a.id, l2: b.id });
     if (t === "collinear") return push({ type: "collinear", l1: a.id, l2: b.id });
     if (t === "concentric") return push({ type: "concentric", c1: a.id, c2: b.id });
-    if (t === "equal") return push({ type: "equal", l1: a.id, l2: b.id });
+    if (t === "equal") {
+      return push(a.kind === "line" ? { type: "equal", l1: a.id, l2: b.id } : { type: "equalRadius", a: a.id, b: b.id });
+    }
+    if (t === "tangent") return push({ type: "tangent2", a: a.id, b: b.id });
+    const point = a.kind === "point" ? a : b;
+    const other = point === a ? b : a;
+    if (point.kind !== "point") return;
     if (t === "coincident") {
-      // a sketch point and a line, circle or arc (constraintMenu): the point
-      // goes ON the curve, and it is the point that moves, as with the tool
-      const point = a.type === "point" ? a : b;
-      const curve = point === a ? b : a;
-      if (point.type !== "point") return;
-      return push({ type: "pointOn", e: point.id, p: 0, curve: curve.id }, point.id);
+      // two points join; a point goes ON a line, circle or arc, and it is the
+      // point that moves, as with the tool
+      if (other.kind === "point") return push({ type: "coincident", e1: a.id, p1: a.p, e2: b.id, p2: b.p });
+      return push({ type: "pointOn", e: point.id, p: point.p, curve: other.id }, point.ent.id);
     }
-    if (t === "tangent") {
-      // the wire wants (line, circle) in that order whichever way round they were picked
-      const line = a.type === "line" ? a : b;
-      const round = a.type === "line" ? b : a;
-      return push({ type: "tangent", line: line.id, circle: round.id });
-    }
+    if (t === "midpoint") return push({ type: "midpoint", e: point.id, p: point.p, line: other.id }, point.ent.id);
   }
 
   private onContextMenu(e: MouseEvent) {
@@ -4176,7 +4225,18 @@ export class SketchMode {
     // an overflow menu on a laptop-width window, which is how two testers
     // independently failed to find them.
     const selEnts = this.entities.filter((e) => this.selected.has(e.id));
-    const cons = applicableConstraints(selEnts);
+    // On a rectangle, polygon or slot the right-click names the corner, centre
+    // or side under the cursor, the way a click of a constraint tool would
+    // (constraintMenu.operandUnder): that is what makes the menu able to offer
+    // anything for a shape at all.
+    // A shape's CENTRE is inside it, away from the outline a right-click hits:
+    // it is named when a selected shape has one under the cursor.
+    const tol = this.pickTol();
+    const named = !raw ? null
+      : hit ? operandUnder(hit, raw, tol)
+        : selEnts.filter(isCompoundShape).map((s) => operandUnder(s, raw, tol)).find((o) => o?.kind === "point") ?? null;
+    const cons = applicableConstraints(selEnts, named);
+    const ops = menuOperands(selEnts, named) ?? [];
     // Lock and the construction toggle are offered here for the same reason the
     // constraints are: this menu is where a selection's actions get found
     // (reports d3338e3a and 2fc27cf1).
@@ -4200,7 +4260,7 @@ export class SketchMode {
         : []),
       ...cons.map((tool) => ({
         label: constraintLabel(tool),
-        onClick: () => this.applyConstraintToSelection(tool, selEnts),
+        onClick: () => this.applyConstraintToSelection(tool, ops, named),
       })),
       ...(lockable
         ? [{ label: t("sketch.menu.lockDimensions"), onClick: () => this.lockMeasuredDims(this.selected) }]
@@ -4769,25 +4829,25 @@ export class SketchMode {
     return true;
   }
 
-  /** True, after saying so, when a selection with a rectangle in it is held
-   *  by a constraint to geometry that is not turning with it (rotationTie).
-   *  The rectangle's constraints now come along onto its lines, so the settle
-   *  after the rotation would pull it part of the way back: the user would get
-   *  another angle than the one typed, under a note saying it was rotated.
-   *  Measured: 18.5 degrees and a resized rectangle for 30 typed, on a
-   *  rectangle drawn from the origin and turned about its centre. Decision C8
-   *  (refuse, and say so), here for the selections this tool now explodes;
-   *  the rest of C8 (Move, and Rotate of lines alone) is still to come. */
-  private refuseTiedRectangles(cx: number, cy: number): boolean {
-    const turning = new Set(
+  /** True, after saying so, when a selection with a rectangle, polygon or
+   *  slot in it is held by a constraint to geometry that is not moving with
+   *  it (`tie`: rotationTie or translationTie). The settle after the motion
+   *  would pull it part of the way back or stretch it: the user would get
+   *  another angle than the one typed, or a rectangle with a corner on the
+   *  origin resized instead of moved (measured: 18.5 degrees and a resized
+   *  rectangle for 30 typed; 60x50 -> 80x40 for a move of 20,10). Decision
+   *  C8: refuse, and say so. A selection of lines alone is left as it was:
+   *  the decision is about shapes, and a moved line stretching its neighbour
+   *  is the gesture a body drag makes too. */
+  private refuseTiedShapes(tie: (c: SketchConstraint, moving: ReadonlySet<string>) => boolean, msg: string): boolean {
+    const moving = new Set(
       this.entities
         .filter((e) => this.selected.has(e.id) && e.type !== "projected" && !isOriginGeometry(e.id))
         .map((e) => e.id),
     );
-    if (!this.entities.some((e) => e.type === "rectangle" && turning.has(e.id))) return false;
-    const pivot = { x: cx, y: cy };
-    if (!this.constraints.some((c) => rotationTie(c, this.entities, turning, pivot))) return false;
-    toast(t("sketch.transform.rotateTied"), { timeout: 8000 });
+    if (!this.entities.some((e) => isCompoundShape(e) && moving.has(e.id))) return false;
+    if (!this.constraints.some((c) => tie(c, moving))) return false;
+    toast(msg, { timeout: 8000 });
     return true;
   }
 
@@ -4842,6 +4902,9 @@ export class SketchMode {
       this.selected = sel; // leave the copies selected (Fusion-style)
       this.afterModify();
     } else {
+      if (this.refusePinnedSelection()) return;
+      const d = { x: dx, y: dy };
+      if (this.refuseTiedShapes((c, moving) => translationTie(c, this.entities, moving, d), t("sketch.transform.moveTied"))) return;
       this.transformSelection((e) => [translated(e, dx, dy, e.id)]);
     }
   }
@@ -4855,7 +4918,8 @@ export class SketchMode {
       const ang = ((this.dim.getValue("angle") ?? 0) * Math.PI) / 180;
       this.dim.hide();
       if (this.refusePinnedSelection()) return;
-      if (this.refuseTiedRectangles(cx, cy)) return;
+      const pivot = { x: cx, y: cy };
+      if (this.refuseTiedShapes((c, moving) => rotationTie(c, this.entities, moving, pivot), t("sketch.transform.rotateTied"))) return;
       this.explodeSelectedRectangles();
       this.transformSelection((e) => this.reid(rotated(e, cx, cy, ang, e.id)));
     });
@@ -5245,15 +5309,27 @@ export class SketchMode {
     // rectangles were missing from it until 2026-08-17 and circles until now.
     const refIds = ids((e) => dimRefPoints(e).length > 0);
     const rectIds = ids((e) => e.type === "rectangle");
-    // A line OPERAND is either a live line entity or a rectangle EDGE
-    // ("<rectId>~<k>", k = 0..3 — see types.ts). Every line-operand check goes
-    // through here: a bare `lineIds.has(id)` would reject every rect-edge dim
-    // and silently drop it on the next trim/fillet/delete.
+    // A polygon or slot SIDE (`P~k`, `S~0`, `S~1`) or a slot's axis (`S~2`).
+    // Resolved through lineOperand, the decoder the solver and the glyphs use,
+    // so a side the shape does not have is dropped here instead of sitting in
+    // the sketch holding nothing. (A side-count edit re-aims these first:
+    // rebindPolygonSides.)
+    const byId = new Map(this.entities.map((e) => [e.id, e]));
+    const hasShapeSide = (id: string) => {
+      const cut = id.lastIndexOf("~");
+      const shape = cut > 0 ? byId.get(id.slice(0, cut)) : undefined;
+      return (shape?.type === "polygon" || shape?.type === "slot") && lineOperand(byId, id) !== null;
+    };
+    // A line OPERAND is either a live line entity, a rectangle EDGE
+    // ("<rectId>~<k>", k = 0..3 — see types.ts) or a polygon's or slot's side.
+    // Every line-operand check goes through here: a bare `lineIds.has(id)`
+    // would reject every rect-edge dim and silently drop it on the next
+    // trim/fillet/delete.
     const hasLineOperand = (id: string): boolean => {
       const t = id.indexOf("~");
       if (t < 0) return lineIds.has(id);
       const k = Number(id.slice(t + 1));
-      return rectIds.has(id.slice(0, t)) && Number.isInteger(k) && k >= 0 && k <= 3;
+      return (rectIds.has(id.slice(0, t)) && Number.isInteger(k) && k >= 0 && k <= 3) || hasShapeSide(id);
     };
     // A CURVE operand (tangent2's two picks) is any line/circle/arc — and a rect
     // edge is a line, so it has to decode too or the tangent the edge picker now
@@ -5267,17 +5343,6 @@ export class SketchMode {
     // constraint the solver honours is the silent-drop failure again, one layer
     // up.
     const hasPointOperand = (id: string) => refIds.has(id) || hasLineOperand(id);
-    // A polygon or slot SIDE (`P~k`, `S~0`, `S~1`), which only `pointOn` takes
-    // (types.ts). Resolved through lineOperand, the decoder the solver and the
-    // glyphs use, so a side the shape does not have is dropped here instead of
-    // sitting in the sketch holding nothing. (A side-count edit re-aims these
-    // first: rebindPolygonSides.)
-    const byId = new Map(this.entities.map((e) => [e.id, e]));
-    const hasShapeSide = (id: string) => {
-      const cut = id.lastIndexOf("~");
-      const shape = cut > 0 ? byId.get(id.slice(0, cut)) : undefined;
-      return (shape?.type === "polygon" || shape?.type === "slot") && lineOperand(byId, id) !== null;
-    };
     this.constraints = this.constraints.filter((c) => {
       switch (c.type) {
         case "horizontal": case "vertical": case "distance": return hasLineOperand(c.line);
@@ -5290,19 +5355,21 @@ export class SketchMode {
         case "coincident": return hasPointOperand(c.e1) && hasPointOperand(c.e2);
         case "concentric": return roundIds.has(c.c1) && roundIds.has(c.c2);
         case "midpoint": return hasPointOperand(c.e) && hasLineOperand(c.line);
-        case "pointOn": return hasPointOperand(c.e) && (hasCurveOperand(c.curve) || hasShapeSide(c.curve));
+        case "pointOn": return hasPointOperand(c.e) && hasCurveOperand(c.curve);
         case "symmetric": return hasPointOperand(c.e1) && hasPointOperand(c.e2) && hasLineOperand(c.line);
         case "radius": return roundIds.has(c.e);
-        case "p2pDistance": return refIds.has(c.e1) && refIds.has(c.e2);
+        // a dimension's point may be a side's end (`S~0` p0) too: the only
+        // spelling a slot side's ends have (dimensionTool's parallel distance)
+        case "p2pDistance": return hasPointOperand(c.e1) && hasPointOperand(c.e2);
         case "p2pDistanceX":
-        case "p2pDistanceY": return refIds.has(c.e1) && refIds.has(c.e2);
-        case "p2lDistance": return refIds.has(c.e) && hasLineOperand(c.line);
+        case "p2pDistanceY": return hasPointOperand(c.e1) && hasPointOperand(c.e2);
+        case "p2lDistance": return hasPointOperand(c.e) && hasLineOperand(c.line);
         // rim (edge-to-edge) dims — a round operand is a circle OR an arc
         case "radialGap": return roundIds.has(c.inner) && roundIds.has(c.outer);
         case "c2cDistance": return roundIds.has(c.c1) && roundIds.has(c.c2);
         case "c2lDistance": return roundIds.has(c.circle) && hasLineOperand(c.line);
-        case "p2cDistance": return refIds.has(c.e) && roundIds.has(c.circle);
-        case "fix": return refIds.has(c.e);
+        case "p2cDistance": return hasPointOperand(c.e) && roundIds.has(c.circle);
+        case "fix": return hasPointOperand(c.e);
         // offset: a composite over N source→copy pairs. Deleting ONE copy must
         // break only that member's link (Fusion behavior) — so SHRINK the pair
         // list the way prunePatterns shrinks sources, and drop the whole
@@ -5495,9 +5562,9 @@ export class SketchMode {
           this.pendingDrag = null;
           this.pendingPinIdxs = null;
           const pins = pinEnts.length
-            ? pinEnts.flatMap((e) => attachmentPoints(e).map((q) => ({ x: q.x, y: q.y })))
+            ? pinEnts.flatMap((e) => attachmentPoints(e, this.constraints).map((q) => ({ x: q.x, y: q.y })))
             : undefined;
-          const r = await compileAndSolve(this.entities, this.constraints, d ?? undefined, undefined, pins);
+          const r = await compileAndSolve(this.entities, this.constraints, d ?? undefined, undefined, pins, this.boundShapeFields());
           // The gesture this result belongs to ended, was cancelled, or was
           // replaced mid-solve: drop the result (and its toast) rather than
           // apply it to a gesture that never asked for it. Asked per KIND —
@@ -5554,7 +5621,7 @@ export class SketchMode {
           // a copy, so the indices the solve reports still name the constraints
           // it saw if the live list is edited while it runs
           const solved = [...this.constraints];
-          const r = await compileAndSolve(this.entities, solved, undefined, bias ?? undefined);
+          const r = await compileAndSolve(this.entities, solved, undefined, bias ?? undefined, undefined, this.boundShapeFields());
           if (!this.active) break;
           // geometry changed mid-solve (a draw committed): discard, re-solve.
           // Re-arm the bias with it — this result never reached the document, so
@@ -5730,8 +5797,8 @@ export class SketchMode {
    *  requestSolve() — that banks an undo step, and a drag is ONE step (banked by
    *  endDrag), not one per pointermove.
    *
-   *  A body with no attachment points (text, polygon, slot) gets the frame's
-   *  redraw and no solve: it owns no solver point, so nothing rides along with
+   *  A body with no attachment points (text, or a polygon or slot no
+   *  constraint names) gets the frame's redraw and no solve: it owns no solver point, so nothing rides along with
    *  it and nothing can be pinned — the solve would re-satisfy constraints that
    *  never went out of agreement, at the price of a full solve every frame.
    *  So does every body once the solver is gone (solverDead): pump() would
@@ -5746,7 +5813,7 @@ export class SketchMode {
   private queueBodyDrag(group: number[]) {
     const pins = group.reduce((n, i) => {
       const e = this.entities[i];
-      return n + (e ? attachmentPoints(e).length : 0);
+      return n + (e ? attachmentPoints(e, this.constraints).length : 0);
     }, 0);
     if (pins > 0 && pins <= MAX_BIAS_ANCHORS && !this.solverDead) this.pendingPinIdxs = group;
     else this.bodyDragUndrawn = true;
