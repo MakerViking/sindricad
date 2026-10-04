@@ -67,9 +67,11 @@ const DOC = {
   });
   const boxFocused = () => page.evaluate(() => document.activeElement?.closest(".dim-input") != null);
   const esc = async () => { await page.keyboard.press("Escape"); await page.waitForTimeout(500); };
-  // The DRAG prompt also mentions "T = extrude up to a face or plane", so only
-  // the pick prompt's own sentence can tell the two states apart.
-  const AIMING = /Click the face or plane to extrude UP TO/;
+  // The DRAG prompt also mentions "T = extrude up to a face, plane, point or
+  // line", so only the pick prompt's own capitalised "UP TO" can tell the two
+  // states apart. Its wording grew with the corner, point and line targets
+  // ("Click what to extrude UP TO: ..."), so match the part both share.
+  const AIMING = /to extrude UP TO/;
 
   await page.goto(`${BASE}/?token=${TOKEN}`, { waitUntil: "domcontentloaded" });
   await page.waitForFunction(() => !!window.__sindri, null, { timeout: 30000 });
