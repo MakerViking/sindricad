@@ -171,8 +171,6 @@ function lineMat(color: number): THREE.LineBasicMaterial {
   }
   return m;
 }
-// construction geometry: dashed orange (referenceable, not a profile)
-const CONSTRUCTION_COLOR = 0xffa64d;
 // projected reference geometry: purple (linked/fixed, Fusion-style); a stale
 // projection (source no longer resolves — last shape kept) tints amber
 const PROJECTED_COLOR = 0xb07fe8;
@@ -823,15 +821,11 @@ export function curveObjects(
       // is the RESTING look, and an emphasis pass (selection, hover) must still
       // win — the origin is selectable precisely so you can constrain to it, and
       // a selection you cannot see reads as a selection that did not happen.
-      const marker = pointMarker(
-        plane,
-        e.x,
-        e.y,
-        isOriginId(e.id) && !highlight ? ORIGIN_COLOR : e.construction && !highlight ? CONSTRUCTION_COLOR : color,
-      );
-      // A "+" has no dash to flip (see constructionLine below), and the
-      // selection orange is within a few shades of the construction orange, so
-      // a selected construction point also gets the endpoint square around it.
+      const marker = pointMarker(plane, e.x, e.y, isOriginId(e.id) && !highlight ? ORIGIN_COLOR : color);
+      // Construction draws in the colour everything else does, and a "+" has
+      // no dashes to show it is construction, so a SELECTED construction point
+      // gets the endpoint square around it: selected, it must still look
+      // different from a selected ordinary point, as a construction line does.
       if (highlight && e.construction && !isOriginId(e.id)) {
         const g = new THREE.Group();
         g.add(marker, endpointDot(plane, e.x, e.y, color, POINT_MARKER_HALF));
@@ -844,7 +838,7 @@ export function curveObjects(
     if (e.type === "text") {
       const faces = getCachedText(e);
       if (faces && faces.length) {
-        add(textObjects(faces, plane, color, !!e.construction && !highlight));
+        add(textObjects(faces, plane, color, !!e.construction));
       } else {
         // A text that draws nothing still gets a dashed frame in its place, the
         // one sketchMode's textEntityAt hit-tests: something to see, select,
@@ -903,22 +897,22 @@ export function curveObjects(
     // and they must not read as something you drew and forgot. Same colour as
     // the origin point, so the three together read as one datum. On an emphasis
     // pass they draw SOLID in the pass colour: an axis IS selectable (that is
-    // what "make this line collinear with the X axis" needs), and falling
-    // through to constructionLine() made a deliberate selection look like the
-    // axis had gone dotted by itself.
+    // what "make this line collinear with the X axis" needs), and drawing it
+    // dashed made a deliberate selection look like the axis had gone dotted by
+    // itself.
     //
-    // Construction lines follow the same rule, for the same reason (report
-    // 3f16187e: "when I click on it there is no visual indication that it has
-    // been selected"). constructionLine() ignored the pass colour, and the
-    // selection orange is within a few shades of the construction orange
-    // anyway, so an emphasis pass draws them SOLID: the dashes going away is
-    // the change you can see.
+    // Construction is DASHED in the same colour as everything else: the pass
+    // colour, or the link colour for a projection. The dashes, not a colour of
+    // their own, are what say "construction", so they stay on an emphasis
+    // pass too: a selected construction line is dashed in the selection
+    // colour, which tells it from a selected ordinary line (report cd7b5ac6).
+    // It used to be orange, a few shades from the selection orange, so a
+    // selection showed only as the dashes going solid (report 3f16187e), and
+    // then looked exactly like a selected ordinary line.
     const curve = isOriginGeometry(e.id)
       ? polyline(pts, highlight ? drawColor : ORIGIN_COLOR)
-      : e.construction && !highlight
-        ? projected
-          ? dashedPolyline(pts, drawColor)
-          : constructionLine(pts)
+      : e.construction
+        ? dashedPolyline(pts, drawColor)
         : polyline(pts, drawColor);
     // Circles/arcs (native or projected) get a visible center "+": the center is
     // a snap target and the dimension tool's position handle — invisible, nobody
@@ -927,8 +921,7 @@ export function curveObjects(
     const center = asRound(e);
     if (center) {
       const g = new THREE.Group();
-      const markerColor = projected ? drawColor : e.construction && !highlight ? CONSTRUCTION_COLOR : color;
-      g.add(curve, pointMarker(plane, center.x, center.y, markerColor));
+      g.add(curve, pointMarker(plane, center.x, center.y, drawColor));
       g.renderOrder = 12;
       add(g);
     } else {
@@ -951,7 +944,7 @@ function textObjects(
   for (const f of faces) {
     for (const loop of [f.outer, ...f.holes]) {
       const pts = loop.map(([x, y]) => plane.to3D(x, y));
-      g.add(construction ? constructionLine(pts) : polyline(pts, color));
+      g.add(construction ? dashedPolyline(pts, color) : polyline(pts, color));
     }
     // The solid glyph fill is drawn by the region layer (fillMesh) so it can show
     // hover/selection state and be picked for extrude — see glyphWorldRegions.
@@ -1060,11 +1053,6 @@ export function dimensionLineObjects(
   const line = new THREE.LineSegments(g, lineMat(color));
   line.renderOrder = 11;
   return [line];
-}
-
-function constructionLine(points: THREE.Vector3[]): THREE.Object3D {
-  const line = fatLine(points, CONSTRUCTION_COLOR, true);
-  return line;
 }
 
 function fillMesh(region: Region, plane: SketchPlane, material: THREE.Material): THREE.Mesh {

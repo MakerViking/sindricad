@@ -27,6 +27,9 @@ export type SketchSnapshot = {
   /** what an edit renamed, for the extrude points and lines that name it
    *  (SketchMode.pointCarry); absent when there are none */
   pointCarry?: PointCarry;
+  /** the curves a Trim cut that kept their id (SketchMode.trimmedCurves);
+   *  absent when there are none */
+  trimmed?: string[];
 };
 
 export function cloneSnapshot(s: SketchSnapshot): SketchSnapshot {

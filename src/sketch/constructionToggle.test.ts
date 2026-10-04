@@ -126,11 +126,12 @@ describe("the palette's Construction switch acts on a selection too (2fc27cf1)",
   });
 });
 
-describe("a toggle says what it changed, because the selection hides it (2fc27cf1)", () => {
-  // The selection stays after a toggle, and a selected entity draws solid in
-  // the selection colour whether it is construction or not (3f16187e). So the
-  // dashes only appear once it is deselected; until then the only visible
-  // change was a closed profile losing its fill.
+describe("a toggle says what it changed, and what that means for the profile (2fc27cf1)", () => {
+  // The selection stays after a toggle. When a selected entity drew solid in
+  // the selection colour whether it was construction or not (3f16187e), the
+  // only visible change was a closed profile losing its fill. It is dashed
+  // while selected now (cd7b5ac6), and the note also says what the switch
+  // means for the profile.
   beforeEach(() => vi.mocked(toast).mockClear());
   const toasts = () => vi.mocked(toast).mock.calls.map((c) => c[0]);
 
@@ -140,10 +141,10 @@ describe("a toggle says what it changed, because the selection hides it (2fc27cf
     live.click(5, 10, true);
     item(menuAt(live, 5, 10), "Make construction")!.onClick?.();
     await live.settle();
-    expect(toasts()).toEqual(["Made 2 entities construction geometry: they show dashed once deselected"]);
+    expect(toasts()).toEqual(["Made 2 entities construction geometry: they draw dashed and are never part of a profile"]);
     item(menuAt(live, 5, 10), "Make normal")!.onClick?.();
     await live.settle();
-    expect(toasts().at(-1)).toBe("Made 2 entities normal geometry: they show solid once deselected");
+    expect(toasts().at(-1)).toBe("Made 2 entities normal geometry: they draw solid and can be part of a profile");
   });
 
   it("so does the palette switch converting a selection left over from before", async () => {
@@ -151,7 +152,7 @@ describe("a toggle says what it changed, because the selection hides it (2fc27cf
     live.click(5, 0);
     live.s.setConstruction(true);
     await live.settle();
-    expect(toasts()).toEqual(["Made 1 entity construction geometry: it shows dashed once deselected"]);
+    expect(toasts()).toEqual(["Made 1 entity construction geometry: it draws dashed and is never part of a profile"]);
   });
 
   it("and says nothing, and banks nothing, when the selection already was that kind", async () => {

@@ -104,6 +104,7 @@ function drawing(
       hide: () => {},
       updateFromCursor: () => {},
       position: () => {},
+      placeAt: () => {},
     },
     dims: { clearSelection: () => {} },
     viewport: {

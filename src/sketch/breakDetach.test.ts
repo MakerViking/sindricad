@@ -40,6 +40,7 @@ vi.mock("../ui/menu", () => ({
 }));
 
 import { SketchMode } from "./sketchMode";
+import { isBreakCut } from "./modify";
 import { t } from "../i18n";
 import type { ResolvedEntity } from "./snap";
 import type { SketchConstraint } from "../types";
@@ -268,5 +269,67 @@ describe("pressed on the cut itself, the drag picks the half", () => {
     const { left, right } = halves(sk.lines());
     expect([left.x2, left.y2]).toEqual([expect.closeTo(13, 6), expect.closeTo(3, 6)]);
     expect([right.x1, right.y1]).toEqual([10, 0]);
+  });
+});
+
+// Round 2 decision C3: Shift-drag pulls ends apart ONLY at a cut Break made.
+// It used to do it at any spot two curve ends shared with no constraint
+// holding them, so a Shift-drag of a polyline corner tore the outline open.
+// Anywhere but a cut, a Shift-drag is the plain drag it always was, and the
+// right-click Disconnect still pulls one end off anywhere.
+describe("Shift-drag pulls ends apart only at a Break's cut (C3)", () => {
+  /** an L-shaped polyline: A along the x axis, B up from its end, joined by position only */
+  const corner = (): ResolvedEntity[] => [
+    { type: "line", id: "A", x1: 0, y1: 0, x2: 10, y2: 0 },
+    { type: "line", id: "B", x1: 10, y1: 0, x2: 10, y2: 10 },
+  ];
+  const ends = (sk: ReturnType<typeof sketch>) => {
+    const ls = sk.lines();
+    const a = ls.find((l) => l.id === "A")!, b = ls.find((l) => l.id === "B")!;
+    return { aEnd: [a.x2, a.y2], bStart: [b.x1, b.y1] };
+  };
+
+  it("a Shift-drag of a polyline corner moves the corner, both ends together", async () => {
+    const sk = sketch();
+    sk.priv.entities = corner();
+    sk.priv.tool = "select";
+    await sk.drag(v(10, 0), v(9.8, 0.05), [v(11, 3), v(12, 4)], true);
+    const { aEnd, bStart } = ends(sk);
+    expect(aEnd).toEqual([expect.closeTo(12, 6), expect.closeTo(4, 6)]);
+    expect(bStart, "the corner was pulled apart").toEqual([expect.closeTo(12, 6), expect.closeTo(4, 6)]);
+  });
+
+  it("the right-click Disconnect still pulls one end off a polyline corner", async () => {
+    const sk = sketch();
+    sk.priv.entities = corner();
+    sk.priv.tool = "select";
+    sk.rightClick(v(9.9, 0.02));
+    menus.at(-1)!.find((i) => i.label === t("sketch.menu.disconnect"))!.onClick!();
+    // pressed on the corner's dot and dragged up, the way B goes: B's end leaves
+    await sk.drag(v(10, 0), v(9.8, 0.05), [v(11, 3), v(12, 4)], false);
+    const { aEnd, bStart } = ends(sk);
+    expect(bStart).toEqual([expect.closeTo(12, 6), expect.closeTo(4, 6)]);
+    expect(aEnd).toEqual([10, 0]);
+  });
+
+  it("knows a cut from the geometry, so it still reads as one in a sketch opened again", () => {
+    const line = (id: string, x1: number, y1: number, x2: number, y2: number): ResolvedEntity => ({ type: "line", id, x1, y1, x2, y2 });
+    const P = { x: 10, y: 0 };
+    // Two lines drawn end to end in one straight line read the same: the
+    // geometry cannot tell them from a cut, so those pull apart too (the
+    // CHANGELOG says so).
+    expect(isBreakCut([line("a", 0, 0, 10, 0), line("b", 10, 0, 20, 0)], P), "two halves of one line").toBe(true);
+    expect(isBreakCut([line("a", 10, 0, 0, 0), line("b", 20, 0, 10, 0)], P), "either way round").toBe(true);
+    expect(isBreakCut([line("a", 0, 0, 10, 0), line("b", 10, 0, 10, 10)], P), "a corner").toBe(false);
+    expect(isBreakCut([line("a", 0, 0, 10, 0), line("b", 10, 0, 5, 0)], P), "one doubling back over the other").toBe(false);
+    expect(isBreakCut([line("a", 0, 0, 10, 0), line("b", 10, 0, 20, 0), line("c", 10, 0, 10, 5)], P), "a line drawn onto the cut later").toBe(true);
+    expect(isBreakCut([line("a", 0, 0, 10, 0), line("c", 10, 0, 10, 5), line("d", 10, 0, 15, 5)], P), "three corners in one spot").toBe(false);
+    // an arc broken at its top, the way Break leaves it, and arcs that only share an end
+    const arc = (id: string, x1: number, y1: number, x2: number, y2: number, mx: number, my: number): ResolvedEntity =>
+      ({ type: "arc", id, x1, y1, x2, y2, mx, my });
+    const top = { x: 0, y: 10 }, s = Math.SQRT1_2 * 10;
+    expect(isBreakCut([arc("l", 0, 10, -10, 0, -s, s), arc("r", 10, 0, 0, 10, s, s)], top), "two halves of one arc").toBe(true);
+    expect(isBreakCut([arc("l", 0, 10, -10, 0, -s, s), arc("r", 0, 10, -s, s, -5, 8.660254037844386)], top), "overlapping").toBe(false);
+    expect(isBreakCut([arc("l", 0, 10, -10, 0, -s, s), arc("r", 0, 10, 10, 20, 7.0710678, 12.9289322)], top), "another circle").toBe(false);
   });
 });

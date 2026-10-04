@@ -5,7 +5,7 @@ import { t } from "../i18n";
 import * as THREE from "three";
 import type { ResolvedEntity } from "./snap";
 import type { PlaceOffset, SketchConstraint } from "../types";
-import { dimPlaceOf, isDriven } from "../types";
+import { TRIMMED_AWAY, dimPlaceOf, isDriven } from "../types";
 import { entitySegments, polygonPoints, rectCorners } from "./region";
 import { POLYGON_CENTRE, RECT_CENTRE, asRound, dimRefPoints, lineOperand, namedEntityIds, refPoint } from "./entityDims";
 import { isOriginGeometry } from "./origin";
@@ -582,34 +582,80 @@ export type TrimResult = {
 
 /** Trim, keeping every constraint that still applies to what is left.
  *
- *  Trim mints a new id for every piece it keeps, and used to let the caller
- *  prune whatever named the old one, which silently deleted constraints that
- *  still held: an offset link on a trimmed copy, a tangency on the kept arc
- *  (report 356b2693). remapTrimmed now rewrites each of them for the new ids.
+ *  Trim used to let the caller prune whatever named the trimmed curve, which
+ *  silently deleted constraints that still held: an offset link on a trimmed
+ *  copy, a tangency on the kept arc (report 356b2693). remapTrimmed rewrites
+ *  each of them for the pieces.
  *
- *  The ids stay NEW, never the trimmed entity's. An extrude remembers the ids
- *  bounding the area it picked and trusts a unique id match before its stored
- *  point, so an old id left on a piece that now bounds a DIFFERENT area moved
- *  the extrude there without a word (measured: a quadrant extrude jumped to the
- *  quadrant beside it). With every id new, the stale ids match nothing and the
- *  point decides, as it always has. The piece holding the entity's start (or
- *  the only piece) leads, for remapTrimmed's dimensions. */
+ *  The piece holding the curve's start (or the only piece) keeps the curve's
+ *  own id, because it IS that curve, shortened: a pattern that copies it, and
+ *  an extrude that starts from or runs up to a point of it the trim kept,
+ *  still find it. Every other piece is new. A rectangle's id goes to the piece
+ *  of its first side that starts at corner 0, the side explodeCompound gives
+ *  it to. That piece also leads, for remapTrimmed's dimensions.
+ *
+ *  A kept id is not free. An extrude remembers the ids bounding the area it
+ *  picked and trusts a unique id match before its stored point, so the id on
+ *  a piece that now bounds a DIFFERENT area moved the extrude there without a
+ *  word (measured: a quadrant extrude jumped to the quadrant beside it). The
+ *  caller re-points those references (SketchMode.carryRegionRefs). A line has
+ *  only two ends, and the kept piece's ends are not the curve's: `points` says
+ *  where each point went, or that the trim removed it, for the caller to
+ *  re-point an extrude that names it. And a projection of the curve in another
+ *  sketch would follow the kept piece without a word, so the caller stops it
+ *  following (SketchMode.trimClick). */
 export function trimWithConstraints(
   ents: ResolvedEntity[],
   index: number,
   click: THREE.Vector2,
   cons: SketchConstraint[],
-): TrimResult {
+): TrimResult & { points: Record<number, { e: string; p: number }> } {
   const e = ents[index];
   const plan = planTrim(ents, index, click);
   if (!e || !plan) return { entities: ents, constraints: cons, dropped: 0, points: {}, lines: {} };
   const start = dimRefPoints(e).find((r) => r.p === 0)?.pos;
-  const lead = e.type === "rectangle"
-    ? null
-    : plan.kept.find((pc) => start && endsAt(pc.geom, start)) ?? plan.kept[0];
-  const pieces = plan.kept.map((pc) => ({ ...pc, lead: pc === lead, geom: { ...pc.geom, id: newEntityId() } }));
+  const startsHere = (pc: TrimPiece) => !!start && endsAt(pc.geom, start);
+  const lead = e.type === "rectangle" ? null : plan.kept.find(startsHere) ?? plan.kept[0];
+  const side0 = plan.kept.filter((pc) => pc.from === `${e.id}~0`);
+  const keeper = e.type === "rectangle" ? side0.find(startsHere) ?? side0[0] : lead;
+  const pieces = plan.kept.map((pc) => ({
+    ...pc,
+    lead: pc === lead,
+    geom: { ...pc.geom, id: pc === keeper ? e.id : newEntityId() },
+  }));
   const entities = ents.flatMap((o, i) => (i === index ? pieces.map((pc) => pc.geom) : [o]));
-  return { entities, ...remapTrimmed(e, pieces, cons, entities) };
+  return { entities, ...remapTrimmed(e, pieces, cons, entities), points: trimmedPoints(e, pieces) };
+}
+
+/** Where each of `e`'s points (by dimRefPoints index) is after a trim, when
+ *  that is not the same index on `e`'s own id: the piece that still has it,
+ *  the one that kept the id first. A circle's centre becomes its arc's centre
+ *  (index 2).
+ *
+ *  A point the trim removed goes to TRIMMED_AWAY on `e`'s id, so an extrude
+ *  on it is refused and says so, as when Trim made every id new. Left as it
+ *  was, it would name whatever the kept piece has at that index now: the
+ *  cut, or on a clockwise arc (arcFromSpan rebuilds it counter-clockwise) the
+ *  arc's other end, and the extrude would move there without a word. A
+ *  dimension on such a point is dropped and said (remapTrimmed), for the same
+ *  reason. When no piece kept the id, nothing is removed that way: the id is
+ *  gone, and a reference to it is refused as it always was. */
+function trimmedPoints(e: ResolvedEntity, pieces: TrimPiece[]): Record<number, { e: string; p: number }> {
+  const out: Record<number, { e: string; p: number }> = {};
+  const order = [...pieces.filter((pc) => pc.geom.id === e.id), ...pieces.filter((pc) => pc.geom.id !== e.id)];
+  const idKept = order[0]?.geom.id === e.id;
+  for (const { p, pos } of dimRefPoints(e)) {
+    let found = false;
+    for (const pc of order) {
+      const hit = dimRefPoints(pc.geom).find((r) => r.pos.distanceTo(pos) < 1e-6);
+      if (!hit) continue;
+      if (pc.geom.id !== e.id || hit.p !== p) out[p] = { e: pc.geom.id, p: hit.p };
+      found = true;
+      break;
+    }
+    if (!found && idKept) out[p] = { e: e.id, p: TRIMMED_AWAY };
+  }
+  return out;
 }
 
 /** does a line or arc end at `p`? */
@@ -937,14 +983,15 @@ export type ExplodeResult = {
  *  The shape's id goes to its first line, on purpose. An extrude records the
  *  ids that bound the area it picked (types.ts, `regionEntities`) and trusts
  *  them before its stored point, so an id that vanished would leave it on the
- *  point alone. Kept on a side of the SAME area, it still names that area. (A
- *  trim makes every id new for the opposite reason: there a piece can end up
- *  bounding a different area.) Only on its first side, though, so where the
- *  shape bounded several areas the id alone can name the wrong one: the
- *  caller re-points the extrudes on the sketch (SketchMode.carryRegionRefs).
- *  An extrude that starts from or runs up to one of the shape's points, from
- *  any sketch, is re-pointed too (`points`, SketchMode.commitExplodes): the
- *  first line has only two ends, so its corner 2 or 3 would name nothing.
+ *  point alone. Kept on a side of the SAME area, it still names that area.
+ *  Only on its first side, though, so where the shape bounded several areas
+ *  the id alone can name the wrong one: the caller re-points the extrudes on
+ *  the sketch (SketchMode.carryRegionRefs). An extrude that starts from or
+ *  runs up to one of the shape's points, from any sketch, is re-pointed too
+ *  (`points`, SketchMode.commitExplodes): the first line has only two ends,
+ *  so its corner 2 or 3 would name nothing. A trim keeps the trimmed curve's
+ *  id on one piece too, and its caller re-points the same two kinds of
+ *  reference.
  *
  *  Every constraint that named the shape is rewritten for the lines: a side
  *  (`R~k`, `P~k`, `S~k`) becomes its line, and a rectangle corner becomes the
@@ -2007,18 +2054,19 @@ export function breakAt(
 
 /** Break, keeping every constraint that still applies to the pieces.
  *
- *  breakAt gives every piece a NEW id, as Trim does (and for the same reason:
- *  an extrude trusts a unique id match before its stored point), and the
- *  caller then pruned whatever named the old one. So a snapped join on either
- *  end, a horizontal, a tangency all went without a word, and the join opened
- *  on the next solve. The rewrite is Trim's, remapTrimmed: a point constraint
- *  follows its point to the piece that still has it (the start's to the first
- *  half, the end's to the second), a direction such as horizontal or parallel
- *  goes to every piece, a dimension of the carrier stays once on the piece
- *  holding the start, and a constraint on the curve's EXTENT (a length, an
- *  equal length, a midpoint) holds for no piece and is counted in `dropped`
- *  for the caller to say so. No constraint is added at the cut: the halves
- *  stay free to pull apart there (breakJoined). */
+ *  breakAt gives every piece a NEW id (an extrude trusts a unique id match
+ *  before its stored point, so the id left on one half could name an area
+ *  only the other half bounds), and the caller then pruned whatever named the
+ *  old one. So a snapped join on either end, a horizontal, a tangency all
+ *  went without a word, and the join opened on the next solve. The rewrite is
+ *  Trim's, remapTrimmed: a point constraint follows its point to the piece
+ *  that still has it (the start's to the first half, the end's to the
+ *  second), a direction such as horizontal or parallel goes to every piece, a
+ *  dimension of the carrier stays once on the piece holding the start, and a
+ *  constraint on the curve's EXTENT (a length, an equal length, a midpoint)
+ *  holds for no piece and is counted in `dropped` for the caller to say so.
+ *  No constraint is added at the cut: the halves stay free to pull apart
+ *  there (breakJoined). */
 export function breakWithConstraints(
   ents: ResolvedEntity[],
   index: number,
@@ -2041,6 +2089,59 @@ export type Detach =
   | { kind: "detached"; entities: ResolvedEntity[]; idx: number }
   | { kind: "coincident" }
   | { kind: "fixed" };
+
+/** Is `at` a cut Break made: two ends meet there that are the halves of one
+ *  line (on one straight line, leaving the spot in opposite directions) or of
+ *  one arc (on one circle, one ending where the other starts)? Other curves
+ *  may end there too, one drawn onto the cut later. That is the only place a
+ *  Shift-drag pulls ends apart (SketchMode.detachFrame). Anywhere else, a
+ *  polyline's corner, a line end on a rectangle corner or on the origin,
+ *  Shift-drag is the plain drag it always was, and the right-click Disconnect
+ *  still pulls one end off.
+ *
+ *  Read from the geometry, because nothing else records a Break: it adds no
+ *  constraint at the cut (breakWithConstraints), and the cut has to read as
+ *  one after the sketch is closed and opened again. It stops reading as one
+ *  once the halves are bent apart there; Disconnect still works then. And it
+ *  cannot tell a cut from a joint that looks like one: two lines drawn end to
+ *  end along one straight line, or two arcs of one circle meeting end to
+ *  start, read as a cut, so Shift-drag pulls those apart too. Telling them
+ *  apart needs the cut recorded in the document. */
+export function isBreakCut(ents: readonly ResolvedEntity[], at: { x: number; y: number }): boolean {
+  const key = coincKey(at.x, at.y);
+  const P = v(at.x, at.y);
+  type Curve = Extract<ResolvedEntity, { type: "line" } | { type: "arc" }>;
+  const ends: { e: Curve; p: 0 | 1 }[] = [];
+  for (const e of ents) {
+    if (e.type !== "line" && e.type !== "arc") continue;
+    if (coincKey(e.x1, e.y1) === key) ends.push({ e, p: 0 });
+    if (coincKey(e.x2, e.y2) === key) ends.push({ e, p: 1 });
+  }
+  /** the way a line leaves the spot from its end `p` */
+  const away = (l: Extract<ResolvedEntity, { type: "line" }>, p: 0 | 1) =>
+    (p === 0 ? v(l.x2, l.y2) : v(l.x1, l.y1)).sub(P).normalize();
+  /** whether an arc STARTS at the spot, running counter-clockwise from aStart */
+  const startsHere = (g: NonNullable<ReturnType<typeof arcGeom>>) => {
+    const ang = Math.atan2(P.y - g.C.y, P.x - g.C.x);
+    const off = (x: number) => Math.min(ccwDelta(x, ang), ccwDelta(ang, x));
+    return off(g.aStart) < off(g.aStart + g.delta);
+  };
+  const halves = (a: { e: Curve; p: 0 | 1 }, b: { e: Curve; p: 0 | 1 }): boolean => {
+    if (a.e === b.e) return false;
+    if (a.e.type === "line" && b.e.type === "line") {
+      const da = away(a.e, a.p), db = away(b.e, b.p);
+      return Math.abs(da.cross(db)) < 1e-6 && da.dot(db) < 0;
+    }
+    if (a.e.type !== "arc" || b.e.type !== "arc") return false;
+    const ga = arcGeom(a.e), gb = arcGeom(b.e);
+    if (!ga || !gb) return false;
+    const tol = 1e-6 * Math.max(1, ga.R);
+    if (ga.C.distanceTo(gb.C) > tol || Math.abs(ga.R - gb.R) > tol) return false;
+    // one has to end at the cut and the other start there, or they lie over each other
+    return startsHere(ga) !== startsHere(gb);
+  };
+  return ends.some((a, i) => ends.slice(i + 1).some((b) => halves(a, b)));
+}
 
 /** Which end a detach at the shared point `at` would pull away: of the ends
  *  that sit there, the one whose curve is nearest `press` (where the user

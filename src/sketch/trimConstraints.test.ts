@@ -4,8 +4,9 @@
 // arc offset from the outer profile and then TRIMMED lost its offset link, and
 // with it the tangency the reporter had built on it. Trim minted a new id for
 // every piece it kept, and the modify tail pruned every constraint that named
-// the old one, without a word. Trim still mints new ids (the last test says
-// why), and now rewrites each constraint for them.
+// the old one, without a word. Trim now rewrites each constraint for the
+// pieces, and the piece that is still the curve keeps its id
+// (trimKeepsId.test.ts, which also covers what that id must not do).
 //
 // Each test clicks Trim where a user would (onPointerDown with Trim armed ->
 // trimClick), then checks the EFFECT through the real solver where there is one
@@ -79,7 +80,7 @@ describe("trim keeps what still applies", () => {
     const link = after.constraints.find((c) => c.type === "offset");
     expect(link, "trim deleted the offset link").toBeDefined();
     const kept = after.entities.find((e) => e.type === "arc" && e.id !== "src") as Arc;
-    expect(after.entities.some((e) => e.id === copyId)).toBe(false);
+    expect(kept.id, "the trimmed copy is still the copy").toBe(copyId);
     expect(link!.type === "offset" && link!.pairs.map((p) => p.cpy)).toEqual([kept.id]);
     expect(toasts).toEqual([]);
 
@@ -130,7 +131,7 @@ describe("trim keeps what still applies", () => {
     step = trimAt(step.entities, step.constraints, v(34, 0));
     const arcs = step.entities.filter((e) => e.type === "arc") as Arc[];
     expect(arcs).toHaveLength(2);
-    // which arc is which pulley: by centre, since both ids are new
+    // which arc is which pulley: by centre, so the check does not lean on the ids
     const pulley = new Map(arcs.map((a) => [arcCenterRadius(a)!.c.x < 20 ? "cA" : "cB", a.id] as const));
     const renamed = (id: string) => pulley.get(id as "cA" | "cB") ?? id;
     expect(step.constraints).toEqual(cons.map((c) => (c.type === "tangent2" ? { ...c, b: renamed(c.b) } : c)));
@@ -257,44 +258,6 @@ describe("trim says what it had to remove", () => {
     ];
     trimAt(ents, [{ type: "horizontal", line: "L" }], v(35, 0.1));
     expect(toasts).toEqual([]);
-  });
-});
-
-describe("trim gives every piece a NEW id", () => {
-  // Why the constraints are rewritten rather than kept by keeping the id. An
-  // extrude records the ids of the curves around the area it picked
-  // (regionEntities) and the sidecar trusts a unique id match before the stored
-  // point (_region_face_from_entities). Here R, L and V cut four quadrants, each
-  // bounded by {L, R, V}, and an extrude picked the bottom-left one. Trimming L's
-  // left half merges the two left quadrants. Measured in the sidecar: with the
-  // id L left on the surviving right half, {L, R, V} named only the bottom-RIGHT
-  // quadrant, and the extrude moved there without an error; with new ids nothing
-  // matches and the stored point picks the merged left half it sits in.
-  it("leaves no piece holding the trimmed curve's id, so a stale region reference cannot re-bind", () => {
-    const ents: ResolvedEntity[] = [
-      { type: "rectangle", id: "R", x: 0, y: 0, width: 20, height: 10 },
-      { type: "line", id: "L", x1: -10, y1: 0, x2: 10, y2: 0 },
-      { type: "line", id: "V", x1: 0, y1: -5, x2: 0, y2: 5 },
-    ];
-    const after = trimAt(ents, [], v(-5, 0.1));
-    const lines = after.entities.filter((e) => e.type === "line") as Line[];
-    const piece = lines.find((l) => l.id !== "V")!;
-    expect([piece.x1, piece.y1, piece.x2, piece.y2]).toEqual([0, 0, 10, 0]);
-    expect(after.entities.map((e) => e.id)).not.toContain("L");
-  });
-
-  it("does the same for a trimmed arc and circle", () => {
-    const ents: ResolvedEntity[] = [
-      { type: "circle", id: "c", x: 0, y: 0, radius: 10 },
-      { type: "arc", id: "a", x1: 30, y1: 0, x2: 10, y2: 0, mx: 20, my: 10 },
-      { type: "line", id: "x", x1: -40, y1: 3, x2: 40, y2: 3 },
-    ];
-    let after = trimAt(ents, [], v(0, 10.1));
-    after = trimAt(after.entities, [], v(20, 10.1));
-    const ids = after.entities.map((e) => e.id);
-    expect(ids).not.toContain("c");
-    expect(ids).not.toContain("a");
-    expect(after.entities.filter((e) => e.type === "arc")).toHaveLength(3);
   });
 });
 

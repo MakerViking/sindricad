@@ -1398,6 +1398,7 @@ sketch.onState = () => {
   refreshUndoButtons();
   ribbon.setContext(sketch.active ? "sketch" : "model");
   ribbon.setActiveSketchTool(sketch.tool);
+  palette.setActiveTool(sketch.tool);
   // Only while a sketch is open: sketch.tool keeps its last value after Finish,
   // and the modeling tools have no equivalent broadcast to hook (each owns its
   // own phase inside src/features), so outside a sketch there is nothing armed
@@ -1428,6 +1429,7 @@ palette.onToggle = (key, value) => {
   }
 };
 palette.onLookAt = () => sketch.lookAt();
+palette.onAction = handleAction; // the constraint grid: the ribbon's own dispatch
 
 // The ribbon's ⋯ overflow list and its split-button ▾ dropdowns drop into the
 // band the Sketch Palette is docked in, at z-index 3000 against the palette's

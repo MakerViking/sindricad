@@ -1142,6 +1142,7 @@
     }
   },
   "palette": {
+    "constraints": "Constraints",
     "lookAt": "Look At",
     "lookAtTitle": "Square the view to the sketch plane",
     "noMatch": "No matching command",
@@ -1536,12 +1537,12 @@
     },
     "constructionToggle": {
       "construction": {
-        "one": "Made 1 entity construction geometry: it shows dashed once deselected",
-        "other": "Made {count} entities construction geometry: they show dashed once deselected"
+        "one": "Made 1 entity construction geometry: it draws dashed and is never part of a profile",
+        "other": "Made {count} entities construction geometry: they draw dashed and are never part of a profile"
       },
       "normal": {
-        "one": "Made 1 entity normal geometry: it shows solid once deselected",
-        "other": "Made {count} entities normal geometry: they show solid once deselected"
+        "one": "Made 1 entity normal geometry: it draws solid and can be part of a profile",
+        "other": "Made {count} entities normal geometry: they draw solid and can be part of a profile"
       }
     },
     "copyName": "{name} (copy)",
@@ -1821,7 +1822,7 @@
       "rectangle": "Rectangle: click two corners · type W, Tab, H · Enter · Esc",
       "rotate": "Rotate: select entities, click a center, then type an angle + Enter · Esc",
       "scale": "Scale: select entities, click a base point, then type a factor + Enter · Esc",
-      "select": "Select: click geometry to pick it · Shift-click or drag a box to select several · drag to move them · Delete to remove · or pick a tool: Line (L) · Rectangle (R) · Circle (C) · Arc (A)",
+      "select": "Select: click geometry to pick it · Shift- or Ctrl-click (Cmd on a Mac) adds or removes, or drag a box · drag to move · Delete to remove · while drawing, hold Ctrl to place without snapping · or pick a tool: Line (L) · Rectangle (R) · Circle (C) · Arc (A)",
       "slot": "Slot: click the two arc centers, then a point for the width · Esc",
       "spline": "Spline: click to place fit points · click the last point or press Enter to finish · Esc to cancel",
       "symmetric": "Symmetric: click two endpoints, then the symmetry axis line · Esc",

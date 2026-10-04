@@ -620,6 +620,12 @@ def test_start_and_end_references_that_are_gone():
     _expect_error([_sq(), _ref_sketch([]), _ext(upToRef=pt)], "deleted from its sketch", "no such point")
     _expect_error([_sq(), _ext(upToRef=pt), _ref_sketch([{"id": "p1", "type": "point", "x": 0, "y": 9}])],
                   "comes after this extrude", "a sketch later in the timeline")
+    # The end a Trim removed from a line that kept its id: the app writes
+    # TRIMMED_AWAY (-2, src/types.ts) so the extrude is refused, not moved onto
+    # whatever end the shortened line has at the old index.
+    trimmed = {"kind": "sketchPoint", "sketch": "s2", "entity": "l1", "pointIndex": -2}
+    _expect_error([_sq(), _ref_sketch([{"id": "l1", "type": "line", "x1": -5, "y1": 3, "x2": 5, "y2": 7}]),
+                   _ext(upToRef=trimmed)], "isn't on its curve any more", "a point a trim removed")
     sel = _fp_edge(_box(15), lambda e: e.geom_type.name == "LINE"
                    and abs(e.center().Z - 15) < 1e-6 and abs(e.center().Y + 5) < 1e-6)
     _expect_error([_sq(), _ext(upToRef={"kind": "edge", "edge": sel})],

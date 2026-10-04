@@ -223,6 +223,41 @@ def test_sketch_curve_index_on_a_source_that_became_one_edge():
     print(PASS, "a source down to one edge: index 0 follows it, the rest go stale")
 
 
+def test_sketch_curve_trimmed_away_goes_stale():
+    """A Trim keeps the trimmed curve's id on the piece it keeps, and writes
+    TRIMMED_AWAY (-2, src/types.ts) into the index of every projection of it,
+    so the projection goes stale as it did when Trim made every id new. The
+    source still resolves to one edge, the shortened line or the arc a circle
+    became, and without the index the projection would follow it silently:
+    an arc's point 0 is its start where a circle's was its centre."""
+    def sk_doc(source_entity, cached, index=None):
+        src = {"kind": "sketchCurve", "sketch": "f1", "entity": "k"}
+        if index is not None:
+            src["index"] = index
+        return {"parameters": {}, "features": [
+            {"id": "f1", "type": "sketch", "plane": "XY", "entities": [source_entity]},
+            {"id": "f3", "type": "sketch", "plane": TOP,
+             "entities": [{"id": "e1", "type": "projected", "source": src, "curve": cached}]},
+        ]}
+
+    # the line was (0,0)-(40,0); the arc was the whole circle, projected as one
+    kept = (
+        ({"id": "k", "type": "line", "x1": 0, "y1": 0, "x2": 10, "y2": 0},
+         {"kind": "line", "x1": -20.0, "y1": -15.0, "x2": 20.0, "y2": -15.0}),
+        ({"id": "k", "type": "arc", "x1": 9.539392, "y1": 3, "x2": -9.539392, "y2": 3, "mx": 0, "my": -10},
+         {"kind": "circle", "x": -20.0, "y": -15.0, "r": 10.0}),
+    )
+    for ent, cached in kept:
+        p = []
+        rebuild(sk_doc(ent, cached), projections=p)
+        assert [u["stale"] for u in p] == [False], f"control: {ent['type']} should follow: {p}"
+        p2 = []
+        rebuild(sk_doc(ent, cached, -2), projections=p2)
+        assert [(u["entity"], u["stale"]) for u in p2] == [("e1", True)], \
+            f"{ent['type']} with a trimmed-away index followed: {p2}"
+    print(PASS, "a projection of a trimmed curve goes stale, not onto the kept piece")
+
+
 def test_chain_projection_of_projected_curve():
     """Chain projection: a committed sketch's PROJECTED line is itself a valid
     sketchCurve source — _entity_edges builds its cached curve like any native
@@ -546,6 +581,7 @@ def main():
     test_sketch_curve_multi_edge_without_index_goes_stale()
     test_sketch_curve_index_survives_deletion()
     test_sketch_curve_index_on_a_source_that_became_one_edge()
+    test_sketch_curve_trimmed_away_goes_stale()
     test_chain_projection_of_projected_curve()
     test_plate_edge_follows_a_shrink_past_a_joined_cylinder()
     test_refresh_never_turns_a_line_round()

@@ -3,7 +3,8 @@
 // client so any mutation re-runs the tree; results + errors are pushed to
 // listeners (viewport, timeline, tree).
 
-import type { CadDocument, DimField, Feature, ParamTarget, PlaneDef, PlaneSpec, ProjectedSource, ProjectionUpdate, RebuildReply, RebuildResult, Selector, SketchConstraint, ViewCubeSide, ViewOverride } from "../types";
+import type { CadDocument, DimField, Feature, ParamTarget, PlaneDef, PlaneSpec, ProjectedSource, ProjectionUpdate, RebuildReply, RebuildResult, Selector, SketchConstraint, SketchEntity, ViewCubeSide, ViewOverride } from "../types";
+import { TRIMMED_AWAY } from "../types";
 import type { GeometryBackend, ProjectionResult, QueryResult } from "../geometry/client";
 import { featureErrorText } from "../geometry/featureErrorText";
 import { migrateDocument, savedVersion } from "./migrate";
@@ -57,6 +58,24 @@ export function applyRegionCarry(d: CadDocument, sketchId: string, carry: Region
     d.features[i] = next;
   }
 }
+
+/** Stop every projection, in another sketch, of a curve a Trim cut in sketch
+ *  `sketchId` (SketchMode.trimmedCurves) from following it: its source names
+ *  no edge now (TRIMMED_AWAY), so the next build leaves it on its last shape,
+ *  flagged stale, as when Trim gave every piece a new id. The curve kept its
+ *  id, and a projection following the kept piece would move without a word. */
+export function applyTrimmedProjections(d: CadDocument, sketchId: string, trimmed: readonly string[]) {
+  const cut = (e: SketchEntity) =>
+    e.type === "projected" && e.source.kind === "sketchCurve" && e.source.sketch === sketchId &&
+    trimmed.includes(e.source.entity) && e.source.index !== TRIMMED_AWAY;
+  d.features = d.features.map((f) => {
+    if (f.type !== "sketch" || f.id === sketchId || !f.entities.some(cut)) return f;
+    const entities = f.entities.map((e) =>
+      cut(e) && e.type === "projected" ? { ...e, source: { ...e.source, index: TRIMMED_AWAY } } : e);
+    return { ...f, entities };
+  });
+}
+
 
 /** An expression typed on a sketch dimension while the sketch was OPEN — the
  *  dim isn't in the document until the sketch commits, so the binding travels
@@ -1408,17 +1427,20 @@ export class DocumentStore {
   }
 
   /** `regionCarry`, from a sketch edit: the area references of the extrudes
+  /** `regionCarry`, from a sketch edit: the area references of the extrudes
    *  on that sketch it had to re-point (applyRegionCarry). `pointCarry`: what
    *  it renamed (a shape exploded or trimmed, a polygon's sides renumbered),
    *  for the extrudes anywhere that start from or run up to one of its points
-   *  or lines (applyPointCarry). */
-  replaceFeature(id: string, feature: Feature, bindings?: SketchBinding[], regionCarry?: RegionCarry, pointCarry?: PointCarry) {
+   *  or lines (applyPointCarry). `trimmed`: the curves it trimmed, for the
+   *  projections of them (applyTrimmedProjections). */
+  replaceFeature(id: string, feature: Feature, bindings?: SketchBinding[], regionCarry?: RegionCarry, pointCarry?: PointCarry, trimmed?: readonly string[]) {
     this.mutate((d) => {
       const i = d.features.findIndex((f) => f.id === id);
       if (i >= 0) d.features[i] = feature;
       this.applyBindings(d, bindings);
       if (regionCarry) applyRegionCarry(d, id, regionCarry);
       if (pointCarry) applyPointCarry(d, id, pointCarry);
+      if (trimmed?.length) applyTrimmedProjections(d, id, trimmed);
     }, true);
   }
 

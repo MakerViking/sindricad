@@ -41,6 +41,12 @@ const GLYPH = 15;
 const IMG_W = HOT + OFFSET_X + CHIP + 1;
 const IMG_H = HOT + OFFSET_Y + CHIP + 1;
 
+/** The chip's left edge and bottom edge, in CSS px right of and below the
+ *  hotspot. Anything else a tool puts beside the pointer (a sketch tool's
+ *  value box, SketchMode.dimAtCursor) goes below this, or the two overlap. */
+export const CHIP_LEFT = OFFSET_X;
+export const CHIP_BOTTOM = OFFSET_Y + CHIP;
+
 /**
  * action -> icon, taken from the ribbon's own tables so there is exactly one
  * mapping in the app. A second copy would drift the day someone redraws a tool.

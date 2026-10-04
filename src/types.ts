@@ -100,6 +100,9 @@ export type ProjectedSource =
   // `index`: this sibling's edge index within the source entity's deterministic
   // edge list (multi-edge sources only) — the sidecar's authoritative refresh
   // correspondence, stable across sibling deletions and source moves.
+  // TRIMMED_AWAY there marks a projection of a curve Trim cut: it names no
+  // edge, so it stays stale (last shape kept) instead of following the piece
+  // that kept the curve's id.
   | { kind: "sketchCurve"; sketch: string; entity: string; group?: string; index?: number }
   | { kind: "silhouette"; body: string; group?: string };
 
@@ -436,6 +439,16 @@ export type PlaneDef = {
   xdir: [number, number, number];
 };
 export type PlaneSpec = Plane3 | PlaneDef;
+
+/** The index Trim writes into a reference to a point or an edge it removed
+ *  from a curve that keeps its id (a sketchPoint's `pointIndex`, a projection
+ *  source's `index`). Nothing has it, so the build refuses the reference and
+ *  says why, as when Trim gave every piece a new id, instead of binding
+ *  whatever the kept piece now has at the old index. Below every index a
+ *  point or an edge is given, a polygon's centre (-1, POLYGON_CENTRE)
+ *  included, and refused by this build and every older one that reads the
+ *  field. */
+export const TRIMMED_AWAY = -2;
 
 /** A point or a straight line an extrude starts from or runs up to (GH #41).
  *  Only the plane PARALLEL TO THE SKETCH through it is used, so a line has to

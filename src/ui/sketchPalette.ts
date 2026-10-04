@@ -1,8 +1,11 @@
 // The Sketch Palette (mainstream MCAD's right-docked panel shown while sketching).
-// Toggles control drawing/display options; "Look At" re-squares the camera.
+// Toggles control drawing/display options; "Look At" re-squares the camera; the
+// constraint tools sit in an icon grid below them.
 
 import { t, setText, setTitle } from "../i18n";
 import { esc } from "./escape";
+import { icon } from "./icons";
+import { SKETCH, leavesOf, type ToolItem } from "./ribbon";
 
 export type PaletteToggle = "lockView" | "construction" | "reference" | "grid" | "snap" | "profile" | "dimensions" | "constraints";
 
@@ -30,6 +33,16 @@ const TOGGLES: ToggleDef[] = [
   { key: "constraints", label: t("palette.toggle.constraints"), default: true },
 ];
 
+/** The constraint tools, exactly as the ribbon's Constrain button lists them,
+ *  so the palette and the ribbon cannot offer different sets. The ribbon folds
+ *  its constraints into one dropdown, which is the first group to fall into
+ *  "More" on a narrow window; the grid keeps all of them one click away
+ *  (Doug L1). */
+const CONSTRAINT_TOOLS: ToolItem[] = (() => {
+  const split = SKETCH.find((g) => g.id === "CONSTRAINTS")?.items.find((it) => "children" in it);
+  return split ? leavesOf(split) : [];
+})();
+
 export class SketchPalette {
   /** The shipped default for one toggle. Exposed so the defaults can be asserted
    *  against SketchMode's own copy — `lockView` is declared in both places and
@@ -44,8 +57,13 @@ export class SketchPalette {
 
   private el: HTMLElement;
   private state: Record<PaletteToggle, boolean>;
+  /** the constraint grid's buttons, in CONSTRAINT_TOOLS order */
+  private tools: HTMLButtonElement[] = [];
   onToggle: ((key: PaletteToggle, value: boolean) => void) | null = null;
   onLookAt: (() => void) | null = null;
+  /** A constraint tool picked in the grid: the ribbon's action name, for the
+   *  same dispatcher the ribbon uses. */
+  onAction: ((action: string) => void) | null = null;
 
   constructor(container: HTMLElement) {
     this.el = container;
@@ -61,6 +79,11 @@ export class SketchPalette {
 
   get(key: PaletteToggle): boolean {
     return this.state[key];
+  }
+
+  /** Light the grid button of the armed sketch tool, as the ribbon does. */
+  setActiveTool(tool: string) {
+    for (const b of this.tools) b.classList.toggle("active", b.dataset.action === tool);
   }
 
   /** push every toggle's current value to listeners (call on sketch enter) */
@@ -94,5 +117,25 @@ export class SketchPalette {
       row.append(span, sw);
       this.el.appendChild(row);
     }
+
+    const section = document.createElement("div");
+    section.className = "palette-section";
+    setText(section, "palette.constraints");
+    const grid = document.createElement("div");
+    grid.className = "palette-grid";
+    this.tools = [];
+    for (const tool of CONSTRAINT_TOOLS) {
+      const btn = document.createElement("button");
+      btn.className = "palette-tool";
+      btn.dataset.action = tool.action;
+      const name = tool.name ?? tool.label;
+      btn.title = name;
+      btn.setAttribute("aria-label", name);
+      btn.innerHTML = icon(tool.iconName);
+      btn.addEventListener("click", () => this.onAction?.(tool.action));
+      grid.appendChild(btn);
+      this.tools.push(btn);
+    }
+    this.el.append(section, grid);
   }
 }

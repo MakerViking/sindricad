@@ -5,7 +5,7 @@
 // into doc entities is covered by the step-4 refresh e2e).
 import { describe, it, expect } from "vitest";
 import * as THREE from "three";
-import { curveObjects, SketchOverlay, ENDPOINT_COLOR, SELECT_COLOR, ORIGIN_COLOR } from "./overlay";
+import { curveObjects, SketchOverlay, CURVE_COLOR, ENDPOINT_COLOR, SELECT_COLOR, ORIGIN_COLOR } from "./overlay";
 import { SketchMode } from "./sketchMode";
 import { originAxisEntities } from "./origin";
 import { SketchPlane } from "./plane";
@@ -189,58 +189,64 @@ describe("curveObjects — a selected origin axis reads as a selection", () => {
 });
 
 // Report 3f16187e: "A construction line appears as a brown dashed line, when I
-// click on it there is no visual indication that it has been selected." Two
-// causes, both needed for the symptom: constructionLine() ignored the pass
-// colour, and the selection orange (ff9d3b) is a few shades from the
-// construction orange (ffa64d) anyway, so passing the colour through alone
-// would still have looked like nothing happened. A selected construction curve
-// therefore draws SOLID; a construction point, which has no dash to lose, gets
-// the endpoint square around its "+".
-describe("curveObjects — a selected construction entity reads as a selection (3f16187e)", () => {
+// click on it there is no visual indication that it has been selected." It was
+// dashed in its own orange, a few shades from the selection orange, so the fix
+// drew a selected one SOLID in the selection colour, and then it looked exactly
+// like a selected ordinary line (report cd7b5ac6: "if I select it then it shows
+// as solid orange, which is the same as selecting a normal line"). Now it has
+// no colour of its own: it is dashed in whatever colour the pass draws, so at
+// rest it looks like the lines around it, only dashed, and selected it is
+// dashed in the selection colour. A construction point, which has no dash,
+// gets the endpoint square around its "+" when selected.
+describe("curveObjects — construction is dashed in the colour of the pass (3f16187e, cd7b5ac6)", () => {
   const plane = new SketchPlane("XY");
-  const CONSTRUCTION_COLOR = 0xffa64d; // overlay.ts
   const dashedOf = (o: THREE.Object3D): boolean => {
     const line = (o as THREE.Group).isGroup ? (o as THREE.Group).children[0]! : o;
     return !!((line as THREE.Line).material as unknown as { dashed?: boolean }).dashed;
   };
   const cLine: ResolvedEntity = { type: "line", id: "c1", x1: 0, y1: 0, x2: 10, y2: 0, construction: true };
+  const nLine: ResolvedEntity = { type: "line", id: "n1", x1: 0, y1: 5, x2: 10, y2: 5 };
   const cCircle: ResolvedEntity = { type: "circle", id: "c2", x: 20, y: 0, radius: 5, construction: true };
   const cPoint: ResolvedEntity = { type: "point", id: "c3", x: 1, y: 1, construction: true };
 
-  it("a construction line is dashed construction orange at rest, SOLID in the pass colour selected", () => {
-    const rest = curveObjects([cLine], plane, 0xffffff)[0]!;
-    expect(matColor(rest)).toBe(CONSTRUCTION_COLOR);
-    expect(dashedOf(rest)).toBe(true);
-    const sel = curveObjects([cLine], plane, SELECT_COLOR, true)[0]!;
-    expect(matColor(sel)).toBe(SELECT_COLOR);
-    expect(dashedOf(sel), "a selected construction line still draws dashed, exactly as at rest").toBe(false);
+  it("a construction line is dashed in the ordinary line colour at rest, and in the selection colour selected", () => {
+    const [rest, plain] = curveObjects([cLine, nLine], plane, CURVE_COLOR);
+    expect(matColor(rest!), "construction kept a colour of its own").toBe(CURVE_COLOR);
+    expect(dashedOf(rest!)).toBe(true);
+    expect(dashedOf(plain!)).toBe(false);
+    const [sel, selPlain] = curveObjects([cLine, nLine], plane, SELECT_COLOR, true);
+    expect(matColor(sel!)).toBe(SELECT_COLOR);
+    expect(dashedOf(sel!), "a selected construction line looks like a selected ordinary one").toBe(true);
+    expect(dashedOf(selPlain!)).toBe(false);
   });
 
-  it("a construction circle's curve and its centre mark both take the pass", () => {
+  it("a construction circle's curve and its centre mark both take the pass, the curve dashed", () => {
     const sel = curveObjects([cCircle], plane, SELECT_COLOR, true)[0] as THREE.Group;
-    expect(dashedOf(sel)).toBe(false);
+    expect(dashedOf(sel)).toBe(true);
     expect(matColor(sel)).toBe(SELECT_COLOR);
     const centre = sel.children[1] as THREE.LineSegments;
     expect((centre.material as THREE.LineBasicMaterial).color.getHex()).toBe(SELECT_COLOR);
+    const rest = curveObjects([cCircle], plane, CURVE_COLOR)[0] as THREE.Group;
+    expect(((rest.children[1] as THREE.LineSegments).material as THREE.LineBasicMaterial).color.getHex()).toBe(CURVE_COLOR);
   });
 
-  it("a construction point gains a frame when selected, since a + has no dash to lose", () => {
-    const rest = curveObjects([cPoint], plane, 0xffffff)[0]!;
+  it("a construction point is drawn like any point at rest, and gains a frame when selected", () => {
+    const rest = curveObjects([cPoint], plane, CURVE_COLOR)[0]!;
     expect((rest as THREE.Group).isGroup ?? false).toBe(false);
-    expect(matColor(rest)).toBe(CONSTRUCTION_COLOR);
+    expect(matColor(rest)).toBe(CURVE_COLOR);
     const sel = curveObjects([cPoint], plane, SELECT_COLOR, true)[0] as THREE.Group;
-    expect(sel.isGroup, "a selected construction point draws exactly as it does at rest").toBe(true);
+    expect(sel.isGroup, "a selected construction point looks like a selected ordinary one").toBe(true);
     expect(sel.children).toHaveLength(2);
     for (const c of sel.children) {
       expect(((c as THREE.Line).material as THREE.LineBasicMaterial).color.getHex()).toBe(SELECT_COLOR);
     }
   });
 
-  it("the other emphasis passes show on construction too (modify hover red, first-pick blue)", () => {
+  it("the other emphasis passes keep the dashes too (modify hover red, first-pick blue)", () => {
     for (const pass of [0xff5555, 0x33aaff]) {
       const o = curveObjects([cLine], plane, pass, true)[0]!;
       expect(matColor(o)).toBe(pass);
-      expect(dashedOf(o)).toBe(false);
+      expect(dashedOf(o)).toBe(true);
     }
   });
 
@@ -259,8 +265,9 @@ describe("curveObjects — a selected construction entity reads as a selection (
     // the entity's LAST object is its curve; the resting pass puts endpoint dots first
     const curveOf = () => s.activeCurves([]).filter((o) => o.userData.entityId === "c1").at(-1)!;
     expect(dashedOf(curveOf())).toBe(true);
+    expect(matColor(curveOf())).toBe(CURVE_COLOR);
     s.selected.add("c1");
     expect(matColor(curveOf())).toBe(SELECT_COLOR);
-    expect(dashedOf(curveOf())).toBe(false);
+    expect(dashedOf(curveOf())).toBe(true);
   });
 });

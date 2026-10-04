@@ -11,6 +11,9 @@ export type RibbonContext = "model" | "sketch";
 interface ToolItem {
   action: string;
   label: string;
+  /** The full name, where `label` is cut short to fit a ribbon button. What
+   *  the tooltips say, here and in the Sketch Palette's constraint grid. */
+  name?: string;
   iconName: IconName;
   key?: string;
   kind?: "finish" | "toggle";
@@ -204,7 +207,7 @@ export const SKETCH: Group[] = [
     id: "PATTERN", label: t("ribbon.group.pattern"),
     items: [
       { action: "patternRect", label: t("tool.patternRect"), iconName: "patternRect" },
-      { action: "patternCircular", label: t("ribbon.abbrev.patternCircular"), iconName: "patternCircular" },
+      { action: "patternCircular", label: t("ribbon.abbrev.patternCircular"), name: t("tool.patternCircular"), iconName: "patternCircular" },
       { action: "boltCircle", label: t("tool.boltCircle"), iconName: "boltCircle" },
       { action: "hexHoles", label: t("tool.hexHoles"), iconName: "hexHoles" },
       { action: "honeycomb", label: t("tool.honeycomb"), iconName: "honeycomb" },
@@ -224,7 +227,7 @@ export const SKETCH: Group[] = [
           { action: "horizontal", label: t("tool.horizontal"), iconName: "horizontal" },
           { action: "vertical", label: t("tool.vertical"), iconName: "vertical" },
           { action: "parallel", label: t("tool.parallel"), iconName: "parallel" },
-          { action: "perpendicular", label: t("ribbon.abbrev.perpendicular"), iconName: "perpendicular" },
+          { action: "perpendicular", label: t("ribbon.abbrev.perpendicular"), name: t("sketch.constraint.perpendicular"), iconName: "perpendicular" },
           { action: "equal", label: t("tool.equal"), iconName: "equal" },
           { action: "tangent", label: t("tool.tangent"), iconName: "tangent" },
           { action: "coincident", label: t("tool.coincident"), iconName: "coincident" },
@@ -405,7 +408,7 @@ export class Ribbon {
     btn.className = "ribbon-btn";
     if (it.kind === "finish") btn.classList.add("finish");
     btn.dataset.action = it.action;
-    const base = it.key ? t("ribbon.toolWithKey", { label: it.label, key: it.key }) : it.label;
+    const base = it.key ? t("ribbon.toolWithKey", { label: it.name ?? it.label, key: it.key }) : it.name ?? it.label;
     btn.title = it.hint ? `${base}\n${it.hint}` : base;
     btn.innerHTML = `${icon(it.iconName)}<span>${esc(it.label)}</span>`;
     btn.addEventListener("click", () => this.onAction?.(it.action));
@@ -432,7 +435,7 @@ export class Ribbon {
     const others = () => children.filter((c) => c !== primary).map((c) => c.label);
     const apply = () => {
       btn.dataset.action = primary.action;
-      const base = primary.key ? t("ribbon.toolWithKey", { label: primary.label, key: primary.key }) : primary.label;
+      const base = primary.key ? t("ribbon.toolWithKey", { label: primary.name ?? primary.label, key: primary.key }) : primary.name ?? primary.label;
       const rest = others();
       const alsoHere = rest.length ? t("ribbon.alsoHere", { tools: new Intl.ListFormat(localeTag(), { type: "unit", style: "short" }).format(rest) }) : "";
       btn.title = alsoHere ? `${base}\n${alsoHere}` : base;

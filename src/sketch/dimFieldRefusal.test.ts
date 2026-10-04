@@ -270,6 +270,7 @@ describe("a hole pattern refuses a count or diameter it cannot read", () => {
       selected: () => new Set<string>(),
       patterns: () => patterns,
       dim: () => dim as never,
+      dimAtCursor: () => {},
       refreshActive: () => {},
       onState: () => {},
     } as never);

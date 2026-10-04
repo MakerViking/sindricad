@@ -23,7 +23,7 @@ import {
   targetKey, unsupportedMessage,
   type DimOptions, type DimPlan, type DimTarget,
 } from "./dimensionTool";
-import { pickEntity, trimSpan, trimWithConstraints, detachEndpoint, detachableEnd, filletCorner, chamferCorner, cornerJoins, explodeCompound, polygonRingHolds, rotationTie, translationTie, offsetEntity, offsetChain, offsetChainJunction, signedOffsetAt, breakWithConstraints, extendLine, breakLink, attachmentPoints, bodyDragBlocked, bodyDragFrame, fixPinnedIds, pickDragPoint, FIXED_POINT_MSG, PROJECTED_FIXED_MSG, type ExplodeResult, type OffsetResult, type TrimResult } from "./modify";
+import { pickEntity, trimSpan, trimWithConstraints, detachEndpoint, detachableEnd, isBreakCut, filletCorner, chamferCorner, cornerJoins, explodeCompound, polygonRingHolds, rotationTie, translationTie, offsetEntity, offsetChain, offsetChainJunction, signedOffsetAt, breakWithConstraints, extendLine, breakLink, attachmentPoints, bodyDragBlocked, bodyDragFrame, fixPinnedIds, pickDragPoint, FIXED_POINT_MSG, PROJECTED_FIXED_MSG, type ExplodeResult, type OffsetResult, type TrimResult } from "./modify";
 import { newEntityId, newConstraintId, isDimConstraint, notePatternId } from "./id";
 import { SketchHistory, cloneSnapshot, type SketchSnapshot } from "./history";
 import { isPlainNumber, parseField, dimValueOk, fmtLength, fieldText, canonicalDecimal, fieldExpr } from "../ui/units";
@@ -47,6 +47,7 @@ import { worldPointInRegion } from "./regionSelect";
 import { setSpaceMouseOrbitLocked } from "../input/spacemouse";
 import { stepDoublePress, type PressRecord } from "../input/doublePress";
 import { keyHint } from "../input/shortcuts";
+import { CHIP_BOTTOM, CHIP_LEFT } from "../ui/toolCursor";
 import { setPrompt } from "../ui/prompt";
 import { t } from "../i18n";
 import { toast } from "../ui/toast";
@@ -316,7 +317,9 @@ export class SketchMode {
   private lastDof = -1;
   /** Marquee (box) selection in progress — GH #17. Started on a press in empty
    *  space with the select tool, so it can never steal a gesture that had a
-   *  target: every branch that finds something under the cursor returns first. */
+   *  target: every branch that finds something under the cursor returns first.
+   *  `shift` here, on moveDrag and in `dragShift`: the press ADDS to the
+   *  selection (Shift, Ctrl or Cmd held) instead of replacing it. */
   private boxSel: { from: THREE.Vector2; to: THREE.Vector2; shift: boolean } | null = null;
   private dragFrom: THREE.Vector2 | null = null; // grabbed point's current position
   // click-vs-drag bookkeeping for a grabbed POINT: which entity owns it, where
@@ -435,6 +438,10 @@ export class SketchMode {
    *  while an extrude names something in this sketch (carryPoints), so a
    *  session nothing refers into snapshots as before. */
   private pointCarry: PointCarry = {};
+  /** The curves a Trim here cut that kept their id (trimClick). finish() stops
+   *  a projection of one, in another sketch, from following it; it rides in
+   *  the in-sketch undo snapshot like pointCarry. */
+  private trimmedCurves: string[] = [];
   /** The datumPlane feature this sketch is placed ON, when it was created from
    *  one. Round-tripped through finish() so re-editing a sketch never silently
    *  downgrades it from a live datum link to a baked placement. */
@@ -562,17 +569,7 @@ export class SketchMode {
       },
     };
     this.constraintTools = new ConstraintTools(constraintHost);
-    const patternHost: PatternHost = {
-      tool: () => this.tool,
-      setActiveTool: (t) => { this.tool = t; },
-      setTool: (t) => this.setTool(t),
-      selected: () => this.selected,
-      patterns: () => this.patterns,
-      dim: () => this.dim,
-      refreshActive: () => this.refreshActive(),
-      onState: () => this.onState?.(),
-    };
-    this.patternFlow = new PatternFlow(patternHost);
+    this.patternFlow = new PatternFlow(this.patternHost());
     // Filter chip clicks land on the panel, not the canvas, so projectHover
     // doesn't run — clear the other mode's hover feedback explicitly.
     this.projectPanel.onChange = () => {
@@ -605,6 +602,7 @@ export class SketchMode {
     this.store = store;
     this.regionCarry = {};
     this.pointCarry = {};
+    this.trimmedCurves = [];
     this.history.reset(); // fresh history per session (armed once entities load)
     if (!this.fonts.length) void fetchFonts().then((f) => { this.fonts = f; });
 
@@ -746,7 +744,8 @@ export class SketchMode {
       if (this.editingId) {
         const carry = Object.keys(this.regionCarry ?? {}).length ? this.regionCarry : undefined;
         const points = Object.keys(this.pointCarry ?? {}).length ? this.pointCarry : undefined;
-        store.replaceFeature(this.editingId, sketch, this.drainBindings(sketch.id), carry, points);
+        const trimmed = this.trimmedCurves?.length ? this.trimmedCurves : undefined;
+        store.replaceFeature(this.editingId, sketch, this.drainBindings(sketch.id), carry, points, trimmed);
       } else {
         store.addFeature(sketch, undefined, this.drainBindings(sketch.id));
       }
@@ -763,6 +762,7 @@ export class SketchMode {
     this.pendingBindings.clear();
     this.regionCarry = {};
     this.pointCarry = {};
+    this.trimmedCurves = [];
     el.removeEventListener("pointerdown", this.boundDown);
     el.removeEventListener("pointermove", this.boundMove);
     el.removeEventListener("pointerup", this.boundUp);
@@ -999,9 +999,9 @@ export class SketchMode {
     });
     if (!changed) return true;
     this.afterModify();
-    // Said, because it is not seen: the selection stays, and a selected entity
-    // draws solid in the selection colour whichever kind it is, so the dashes
-    // only come or go once it is deselected.
+    // Said as well as seen: the dashes come or go at once, selected or not
+    // (overlay curveObjects), and the toast says what that means for the
+    // profile.
     toast(make
       ? t("sketch.constructionToggle.construction", { count: changed })
       : t("sketch.constructionToggle.normal", { count: changed }));
@@ -1911,7 +1911,7 @@ export class SketchMode {
     const idx = pickEntity(own, raw, this.pickTol());
     const ent = idx >= 0 ? own[idx] : undefined;
     if (!ent) return false;
-    if (e.shiftKey) {
+    if (e.shiftKey || e.ctrlKey || e.metaKey) { // adds, as on the canvas (onPointerDown)
       if (!this.selected.delete(ent.id)) this.selected.add(ent.id);
     } else {
       this.selected = new Set([ent.id]);
@@ -2023,7 +2023,11 @@ export class SketchMode {
       else this.chamferClick(raw);
       return;
     }
-    const hit = this.snapAt(e.clientX, e.clientY, e.ctrlKey);
+    // Ctrl means "do not snap" only while drawing. In Select it ADDS to the
+    // selection, like Shift (and Cmd on a Mac), which is what a user reaches
+    // for first (GH #17). A select press picks by distance (pickPoint,
+    // pickEntity), so it never needed the snap turned off.
+    const hit = this.snapAt(e.clientX, e.clientY, e.ctrlKey && this.tool !== "select");
     if (!hit) return;
     e.preventDefault();
     const p = hit.p;
@@ -2031,6 +2035,7 @@ export class SketchMode {
     this.lastSnapRef = hit.ref ?? null;
 
     if (this.tool === "select") {
+      const additive = e.shiftKey || e.ctrlKey || e.metaKey;
       // a Disconnect armed from the right-click menu lasts exactly one press
       const armed = this.detachArmed;
       this.detachArmed = null;
@@ -2041,10 +2046,12 @@ export class SketchMode {
         this.dragEntIdx = gp.idx;
         this.dragStartClient = { x: e.clientX, y: e.clientY };
         this.dragMoved = false;
-        this.dragShift = e.shiftKey;
-        // Shift pulls this end AWAY from whatever shares the point (see
-        // detachFrame); a stationary Shift-click still toggles the selection
-        const detach = e.shiftKey || armed === coincKey(gp.p.x, gp.p.y);
+        this.dragShift = additive;
+        // At a Break's cut, Shift pulls this end AWAY from the other half (see
+        // detachFrame); anywhere else it drags as a plain drag does, and the
+        // right-click Disconnect is the way to pull an end off. A stationary
+        // Shift-click still toggles the selection.
+        const detach = (e.shiftKey && isBreakCut(this.entities, gp.p)) || armed === coincKey(gp.p.x, gp.p.y);
         this.dragDetach = detach ? (this.planePoint(e) ?? p).clone() : null;
         this.dragRefusedToast = false;
         this.dragSnapshot = JSON.parse(JSON.stringify(this.entities)); // for Esc-cancel revert
@@ -2092,7 +2099,7 @@ export class SketchMode {
           return;
         }
         if (ce && !isOriginGeometry(ce.id)) {
-          if (!(e.shiftKey || e.ctrlKey || e.metaKey)) this.selected.clear();
+          if (!additive) this.selected.clear();
           for (const id of this.entityChain(ce.id)) this.selected.add(id);
           this.refreshActive();
           return;
@@ -2114,7 +2121,7 @@ export class SketchMode {
           startClient: { x: e.clientX, y: e.clientY },
           last: raw.clone(),
           started: false,
-          shift: e.shiftKey,
+          shift: additive,
           group: this.dragGroup(teIdx),
         };
         this.dragRefusedToast = false; // one refusal toast per GESTURE, not per session
@@ -2131,7 +2138,7 @@ export class SketchMode {
           startClient: { x: e.clientX, y: e.clientY },
           last: raw.clone(),
           started: false,
-          shift: e.shiftKey,
+          shift: additive,
           group: this.dragGroup(idx),
         };
         this.dragRefusedToast = false; // one refusal toast per GESTURE, not per session
@@ -2142,7 +2149,7 @@ export class SketchMode {
       // sub-areas carved by a crossing curve
       const wr = this.overlay.activeRegionAt(raw);
       if (wr) {
-        this.overlay.toggleRegionSelection(wr, e.shiftKey || e.ctrlKey || e.metaKey);
+        this.overlay.toggleRegionSelection(wr, additive);
         return;
       }
       // Empty space: begin a marquee. The selection is NOT cleared here any
@@ -2150,7 +2157,7 @@ export class SketchMode {
       // and a plain click (no movement) clears it there too, so the old
       // behaviour is preserved without pre-emptively wiping a selection the
       // user may be about to extend with Shift.
-      this.boxSel = { from: raw.clone(), to: raw.clone(), shift: e.shiftKey };
+      this.boxSel = { from: raw.clone(), to: raw.clone(), shift: additive };
       try { this.viewport.domElement.setPointerCapture(e.pointerId); } catch { /* capture optional */ }
       return;
     }
@@ -2369,7 +2376,7 @@ export class SketchMode {
     }
     if (dims) {
       this.dim.updateFromCursor(dims);
-      if (e) this.dim.position(e.clientX, e.clientY);
+      if (e) this.dimAtCursor(e.clientX, e.clientY);
     }
     this.overlay.setPreview(pv.map((ent) => this.entityCurve(ent)));
   }
@@ -3396,6 +3403,29 @@ export class SketchMode {
     this.viewport.requestRender();
   }
 
+  /** The slice of this sketch the pattern tools work through (PatternFlow). */
+  private patternHost(): PatternHost {
+    return {
+      tool: () => this.tool,
+      setActiveTool: (t) => { this.tool = t; },
+      setTool: (t) => this.setTool(t),
+      selected: () => this.selected,
+      patterns: () => this.patterns,
+      dim: () => this.dim,
+      dimAtCursor: (x, y) => this.dimAtCursor(x, y),
+      refreshActive: () => this.refreshActive(),
+      onState: () => this.onState?.(),
+    };
+  }
+
+  /** Put a drawing tool's value box (W/H, length, offset, a pattern's
+   *  counts) beside the cursor and BELOW the armed tool's chip (toolCursor).
+   *  DimInput.position put the box right where the chip is drawn, so each
+   *  covered the other. The box still starts at the chip's left edge. */
+  private dimAtCursor(x: number, y: number) {
+    this.dim.placeAt(x + CHIP_LEFT, y + CHIP_BOTTOM + 4);
+  }
+
   /** Park the value box near the dimension's own anchor (which doesn't move
    *  while you place), clamped inside the viewport — extrudeTool's rule: a
    *  cursor-glued box is unclickable. It sits on the side of the anchor AWAY
@@ -3666,7 +3696,7 @@ export class SketchMode {
     if (this.base) {
       const geom = this.computeGeometry(this.base, hit.p);
       this.dim.updateFromCursor(geom.dims);
-      this.dim.position(e.clientX, e.clientY);
+      this.dimAtCursor(e.clientX, e.clientY);
       this.overlay.setPreview([geom.preview]); // only the rubber-band redraws
       this.previewPendingGlyph(geom.entity, hit.kind);
     } else {
@@ -4459,15 +4489,39 @@ export class SketchMode {
    *  applies to what is left (trimWithConstraints). What can no longer apply is
    *  removed, and said: a length on a shortened line, a Fix on an end that is
    *  gone. Trim used to drop those, and constraints that still held, without a
-   *  word (report 356b2693). */
+   *  word (report 356b2693).
+   *
+   *  The piece that keeps the curve's id is still that curve
+   *  (trimWithConstraints), so what named it follows it: a pattern copies
+   *  every piece, an extrude on one of its points goes where the point went,
+   *  and an extrude on an area the id would now name wrongly is re-pointed.
+   *  An extrude on a point the trim removed is refused at the build, and a
+   *  projection of the curve in another sketch keeps its last shape, flagged
+   *  stale, as both were when Trim made every id new. A projection that
+   *  followed the kept piece would move without a word: a circle trimmed to an
+   *  arc renumbers its centre from 0 to 2, so a constraint on the projected
+   *  centre would hold the arc's start instead. */
   private trimClick(p: THREE.Vector2) {
     const idx = pickEntity(this.entities, p, this.pickTol());
     if (idx < 0 || this.guardProjected(this.entities[idx])) return;
-    const trimmed = this.entities[idx]!;
+    const cut = this.entities[idx]!;
+    const regions = this.regionsBeforeRename();
+    const copiers = this.patterns.filter((pat) => "sources" in pat && pat.sources.includes(cut.id)).map((pat) => pat.id);
+    const had = new Set(this.entities.map((e) => e.id));
     const res = trimWithConstraints(this.entities, idx, p, this.constraints);
     this.entities = res.entities;
     this.constraints = res.constraints;
-    this.carryPieces(trimmed, res);
+    const became = this.entities.filter((e) => e.id === cut.id || !had.has(e.id)).map((e) => e.id);
+    for (const pat of this.patterns) {
+      if ("sources" in pat && pat.sources.includes(cut.id)) pat.sources = pat.sources.flatMap((id) => (id === cut.id ? became : [id]));
+    }
+    this.carryPieces(cut, res);
+    const trimmed = this.trimmedCurves ?? []; // a SketchMode built without its constructor (the test kits)
+    if (this.entities.some((e) => e.id === cut.id) && !trimmed.includes(cut.id)) this.trimmedCurves = [...trimmed, cut.id];
+    // A copy a pattern made of the curve is renumbered once the curve is in
+    // pieces (expandPattern numbers copies by position), so an area named by
+    // one is treated like an area named by the curve itself.
+    this.carryRegionRefs(regions, (id) => id === cut.id || copiers.some((pid) => id.startsWith(`${pid}#`)));
     const before = this.constraints.length;
     this.afterModify(); // prunes too: anything it still finds dangling counts
     const dropped = res.dropped + before - this.constraints.length;
@@ -4827,8 +4881,19 @@ export class SketchMode {
    *  build (measured: a rectangle stacked on an exploded one extruded as the
    *  one below it). Named by the area's exact ids, both agree. An area whose
    *  curves kept their names keeps its reference untouched, unless the app
-   *  would now resolve it elsewhere. */
-  private carryRegionRefs(before: Region[] | null) {
+   *  would now resolve it elsewhere.
+   *
+   *  A Trim does more than rename. The piece that keeps the cut curve's id
+   *  can bound a different area than the whole curve did, and the area a
+   *  reference named can be gone (trimClick passes `cut`, the names it kept).
+   *  Left naming the kept id, such a reference moved: in a rectangle cut into
+   *  quadrants by two lines, trimming half of one line merges two quadrants,
+   *  and the extrude on one of them went to the quadrant across the line
+   *  (measured in the sidecar). So a reference that names a kept name and
+   *  whose area has no twin goes where it went when Trim made every id new:
+   *  to the area its stored point is in, else to that point alone, which the
+   *  build resolves, and flags when stale, as it always has. */
+  private carryRegionRefs(before: Region[] | null, cut?: (id: string) => boolean) {
     if (!before) return;
     const after = this.sketchRegions();
     for (const ref of this.regionRefs()) {
@@ -4836,15 +4901,27 @@ export class SketchMode {
       const holds = p ? (r: Region) => worldPointInRegion(new THREE.Vector3(p[0], p[1], p[2]), this.plane, r) : null;
       const was = resolveRegionRef(before, ref.entityIds, ref.holeEntityIds, holds);
       const twin = was && twinRegion(was, after);
-      if (!twin) continue;
-      if (sameRegionIds(was, twin) && resolveRegionRef(after, ref.entityIds, ref.holeEntityIds, holds) === twin) continue;
-      const at = this.plane.to3D(twin.interior.x, twin.interior.y);
-      (this.regionCarry[ref.feature] ??= {})[ref.index] = {
-        entityIds: [...twin.entityIds],
-        holeEntityIds: twin.holeEntityIds.map((g) => [...g]),
-        point: [at.x, at.y, at.z],
-      };
+      if (twin) {
+        if (sameRegionIds(was, twin) && resolveRegionRef(after, ref.entityIds, ref.holeEntityIds, holds) === twin) continue;
+        this.carryRegionRef(ref, twin);
+        continue;
+      }
+      if (!cut || !p || ![ref.entityIds, ...(ref.holeEntityIds ?? [])].some((ids) => ids.some(cut))) continue;
+      const home = holds ? after.filter(holds) : [];
+      if (home.length === 1) this.carryRegionRef(ref, home[0]!);
+      else (this.regionCarry[ref.feature] ??= {})[ref.index] = { entityIds: [], holeEntityIds: [], point: [p[0], p[1], p[2]] };
     }
+  }
+
+  /** Re-point one area reference (carryRegionRefs) at `to`: its exact names
+   *  and its own interior point. */
+  private carryRegionRef(ref: { feature: string; index: number }, to: Region) {
+    const at = this.plane.to3D(to.interior.x, to.interior.y);
+    (this.regionCarry[ref.feature] ??= {})[ref.index] = {
+      entityIds: [...to.entityIds],
+      holeEntityIds: to.holeEntityIds.map((g) => [...g]),
+      point: [at.x, at.y, at.z],
+    };
   }
 
   /** Explode every selected rectangle, polygon and slot into lines (the
@@ -5134,7 +5211,7 @@ export class SketchMode {
       pick.mag = Math.abs(signed);
       this.dim.updateFromCursor({ offset: pick.mag });
     }
-    this.dim.position(ev.clientX, ev.clientY);
+    this.dimAtCursor(ev.clientX, ev.clientY);
     const res = this.offsetResultFor(pick.idx, pick.side * pick.mag);
     const added = res ? res.entities.slice(this.entities.length) : [];
     // keep the source highlighted so it stays obvious what is being offset
@@ -5549,7 +5626,7 @@ export class SketchMode {
   // --- in-sketch undo -------------------------------------------------------
 
   private snapshot(): SketchSnapshot {
-    const carry = this.regionCarry, points = this.pointCarry;
+    const carry = this.regionCarry, points = this.pointCarry, trimmed = this.trimmedCurves;
     return cloneSnapshot({
       entities: this.entities,
       constraints: this.constraints,
@@ -5558,6 +5635,7 @@ export class SketchMode {
       // snapshots (and compares) exactly as before
       ...(carry && Object.keys(carry).length ? { regionCarry: carry } : {}),
       ...(points && Object.keys(points).length ? { pointCarry: points } : {}),
+      ...(trimmed?.length ? { trimmed } : {}),
     });
   }
 
@@ -5568,6 +5646,7 @@ export class SketchMode {
     this.patterns = c.patterns;
     this.regionCarry = c.regionCarry ?? {};
     this.pointCarry = c.pointCarry ?? {};
+    this.trimmedCurves = c.trimmed ?? [];
   }
 
   /** Re-arm the history baseline. Called when the state SETTLES after a solve,

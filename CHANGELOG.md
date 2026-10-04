@@ -20,6 +20,36 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ### Changed
 
+- **Trim keeps the curve it trimmed.** The piece you keep is still that curve,
+  so what was built on it keeps working. A pattern of it copies the trimmed
+  pieces, where it used to be removed. An extrude that starts from or runs up
+  to one of its ends still finds that end, on whichever piece has it now. An
+  extrude on an area beside the trimmed curve stays on that area, or on the
+  bigger area the trim merged it into, as it did before. What you trimmed
+  away is still gone, as before: an extrude that ran up to an end you trimmed
+  off asks you to pick again, and a projection of the curve in another sketch
+  keeps its last shape and says it lost its source.
+
+- **Ctrl-click adds to the selection in a sketch.** In Select, Ctrl-click
+  (Cmd-click on a Mac) adds a curve to the selection or takes it back out, as
+  Shift-click does, and a box dragged with Ctrl held adds what it covers.
+  While you draw, Ctrl still turns snapping off. The hint at the top of the
+  view says which key does what. Asked for in
+  [#17](https://github.com/MakerViking/sindricad/issues/17).
+
+- **A drawing tool's size box no longer covers the tool icon at the pointer.**
+  Rectangle's width and height box, and the boxes the other drawing tools, the
+  hole and pattern tools and Offset open beside the pointer, sat right where
+  the armed tool's icon rides, so one hid the other. The box now opens just
+  below the icon.
+
+- **Construction geometry is dashed in the colour of the rest of the sketch.**
+  It was dashed orange, and selected it turned solid in the selection orange,
+  so a selected construction line looked exactly like a selected ordinary one.
+  It is now dashed in the same colour as the lines around it, and dashed in
+  the selection colour when selected. A selected construction point gets a
+  square around it.
+
 - **Import Mesh is now just Import.** It has always taken STEP files as well as
   meshes, and the old name hid that. Its tooltip lists the formats it reads.
 
@@ -41,6 +71,18 @@ This file starts on 2026-08-03. For anything before that, see the
   it that explained the failure.
 
 ### Fixed
+
+- **Shift-drag at a Break only pulls apart what Break actually cut.** It used
+  to pull apart the end of any line, arc or spline, or any sketch point,
+  that shared a spot with another curve's end, so Shift-dragging a polyline
+  corner opened it too, and that no longer reproduced itself once the sketch
+  was reopened. Shift-drag now pulls ends apart only where Break cut a line
+  or an arc, and a straight joint that looks exactly like one: two lines
+  drawn end to end in one straight line, or two arcs of one circle meeting
+  end to start. Anywhere else, like a polyline corner, Shift-drag moves the
+  point as a plain drag does. Right-click Disconnect still works anywhere an
+  end shares a spot with another curve's end and no constraint holds it
+  there.
 
 - **An operation stopped by another one no longer says the kernel crashed.**
   When more than one window or tool is connected to the geometry engine,
@@ -493,6 +535,14 @@ This file starts on 2026-08-03. For anything before that, see the
   all. A sketch that uses it still opens in an older beta, which just does not
   hold the point there. A point on a rectangle, polygon or slot side also
   makes an older beta warn when it opens the file, as above.
+
+- **The constraints are in the Sketch Palette.** Every constraint, and Lock
+  Dimension, has its own button in a grid at the bottom of the Sketch Palette,
+  one click each, lit while it is the armed tool. The ribbon folds them into
+  its Constrain button, which is the first group to go into More on a narrow
+  window, so they were two or three clicks away. The ribbon's Constrain button
+  stays as it was. Perpendicular and Circular Pattern now give their full names
+  in their tooltips.
 
 ## 0.1.232 (2026-10-02)
 

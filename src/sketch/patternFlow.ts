@@ -37,6 +37,9 @@ export interface PatternHost {
   patterns(): SketchPattern[];
   /** the shared on-canvas dimension input */
   dim(): DimInput;
+  /** put that input beside the cursor at (x, y), below the armed tool's
+   *  cursor chip, as the drawing tools do (SketchMode.dimAtCursor) */
+  dimAtCursor(x: number, y: number): void;
   refreshActive(): void;
   onState(): void;
 }
@@ -178,7 +181,7 @@ export class PatternFlow {
       pat.count = Math.max(1, dimN("count", pat.count as number));
       pat.angle = dim.getValue("angle") ?? (pat.angle as number);
     }
-    dim.position(e.clientX, e.clientY);
+    this.host.dimAtCursor(e.clientX, e.clientY);
     this.host.refreshActive();
   }
 
