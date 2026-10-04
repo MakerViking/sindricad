@@ -245,6 +245,11 @@ export function candidatesFromEntities(
       add(e.x1, e.y1, "endpoint", 100);
       add(e.x2, e.y2, "endpoint", 100);
       add(e.mx, e.my, "midpoint", 80); // the through-point is not a solver point
+      // The centre is drawn as a "+" and is solver point 2, but was never
+      // offered, so a Rotate about an arc's centre could not land on it. Same
+      // rule as a projected arc's centre below (asRound).
+      const round = asRound(e);
+      if (round) add(round.x, round.y, "center", 90);
     } else if (e.type === "spline") {
       // Only the ENDS get a ref: endpointPoint maps idx 0 to the first fit
       // point and anything else to the LAST, so an interior fit point has no

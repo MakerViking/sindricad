@@ -51,7 +51,9 @@ describe("candidatesFromEntities", () => {
   });
   it("handles arc and spline fit points", () => {
     const arc = candidatesFromEntities([{ type: "arc", id: "a", x1: 0, y1: 0, x2: 4, y2: 0, mx: 2, my: 2 }]);
-    expect(arc).toHaveLength(3);
+    expect(arc).toHaveLength(4);
+    // its centre, drawn as a "+", is solver point 2 like a projected arc's
+    expect(arc.filter((x) => x.kind === "center").map((x) => [x.p.x, x.p.y, x.ref])).toEqual([[2, 0, { id: "a", idx: 2 }]]);
     const sp = candidatesFromEntities([{ type: "spline", id: "s", points: [{ x: 0, y: 0 }, { x: 1, y: 1 }, { x: 2, y: 0 }] }]);
     expect(sp).toHaveLength(3);
   });
