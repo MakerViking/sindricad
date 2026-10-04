@@ -33,6 +33,7 @@ import { dimRefPoints } from "../sketch/entityDims";
 import type { ResolvedEntity } from "../sketch/snap";
 import { pointInRegion } from "../sketch/region";
 import { DimInput } from "../sketch/dimInput";
+import { round } from "../ui/units";
 import { setPrompt } from "../ui/prompt";
 import { axisDragDistance, pixelDistanceToSegment } from "./manipulator";
 import { t } from "../i18n";
@@ -614,8 +615,9 @@ export class ExtrudeTool {
       const axis = axisDragDistance(this.viewport, e.clientX, e.clientY, anchor, first.plane.n);
       // Symmetric, the arrow's tip is one END of the extrude, half the distance
       // from the midplane, so the distance moves twice as far as the tip does
-      // and the tip stays under the cursor.
-      this.distance = this.grab.distance + (axis - this.grab.axis) * (this.symmetric ? 2 : 1);
+      // and the tip stays under the cursor. To the micrometre: past that a
+      // drag's depth is pointer noise.
+      this.distance = round(this.grab.distance + (axis - this.grab.axis) * (this.symmetric ? 2 : 1), 3);
       // A drag owns the field (armDragIfMoved unlocked it), so this lands. The
       // box shows the magnitude and `distance` carries the sign — the split
       // commit() reads. The panel shows the signed number, as typed.
@@ -2229,10 +2231,11 @@ export class ExtrudeTool {
       // on a depth change. Fence and field move together; do not derive this
       // from a selection that is not fenced.
       sketch: sketchId,
-      // Rounded to 1 um to drop drag and typing noise, but an edit that left the
-      // depth alone keeps the saved number: a 1/32" (0.79375 mm) extrude
-      // re-opened and accepted came back 0.794.
-      distance: this.distance === this.editDistance ? this.distance : Math.round(this.distance * 1000) / 1000,
+      // A typed depth is kept as typed, only its float fuzz (0.1+0.2) dropped:
+      // rounded to 1 um, 1/16" (1.5875 mm) was saved as 1.588 and 1/32"
+      // (0.79375 mm) as 0.794. A drag is rounded where it moves the depth. An
+      // edit that left the depth alone keeps the saved number as it is.
+      distance: this.distance === this.editDistance ? this.distance : round(this.distance, 6),
       // The panel's: guessed from the direction until the user picks one, the
       // saved one on an edit, New Body while there is nothing to combine with.
       operation: this.hasSolid ? this.op : "new",

@@ -328,6 +328,11 @@ describe("ExtrudeTool edit path, the arrow the reporter can see (field 6e2bcadd)
 
     // grabbed at clientY 150 (axis +15) and moved to 100 (axis +20): +5 mm
     expect(h.t.distance, "the arrow could not be dragged").toBeCloseTo(38.594);
+    // a drag's depth is rounded to the micrometre where it is made (a typed
+    // one is kept as typed, so the commit no longer rounds to 1 um)
+    h.el.dispatch("pointermove", move(onShaft.x, 100.3721, 1)); // 38.55679 unrounded
+    expect(h.t.distance, "drag noise past the micrometre").toBe(Math.round(h.t.distance * 1000) / 1000);
+    expect(h.t.distance).not.toBe(38.594);
   });
 
   it("a drag produces a continuum of depths, not one frozen value", () => {

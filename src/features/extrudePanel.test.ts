@@ -417,6 +417,31 @@ describe("creating an extrude from the panel", () => {
     h.ok();
     expect((h.added[0] as { startOffset: number }).startOffset).toBe(25.4 / 16);
   });
+
+  it("a depth of 1/16 in inches is saved as exactly a sixteenth of an inch, from the box or the panel", () => {
+    // Integration check 4b: both stored 1.588 (rounded to 1 um), so the
+    // extrude was 952.8 mm3 where a sixteenth of an inch gives 952.5.
+    setUnit("in");
+    const fromBox = harness();
+    fromBox.create();
+    fromBox.typeDepth("1/16").dispatch("keydown", { key: "Enter", preventDefault() {}, stopPropagation() {} });
+    expect((fromBox.added[0] as { distance: number }).distance).toBe(25.4 / 16);
+
+    for (const text of ["1/16", "1/16 in", "1/32"]) {
+      const fromPanel = harness();
+      fromPanel.create();
+      fromPanel.type("Distance", text);
+      fromPanel.ok();
+      expect((fromPanel.added[0] as { distance: number }).distance, text).toBe(text === "1/32" ? 25.4 / 32 : 25.4 / 16);
+    }
+  });
+
+  it("a typed depth loses only its float fuzz", () => {
+    const h = harness();
+    h.create();
+    h.typeDepth("0.1+0.2").dispatch("keydown", { key: "Enter", preventDefault() {}, stopPropagation() {} });
+    expect((h.added[0] as { distance: number }).distance).toBe(0.3);
+  });
 });
 
 describe("an edit reopens the panel on the saved feature", () => {

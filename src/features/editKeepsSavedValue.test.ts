@@ -5,8 +5,8 @@
 // was seeded with while nothing is typed. But the extrude and fillet/chamfer
 // tools then rounded what they committed to 1 um in MILLIMETRES, which is not a
 // round number in inches: a 1/32" (0.79375 mm) extrude re-opened and accepted
-// came back 0.794 mm. That rounding exists to drop drag and typing noise, so it
-// still applies to a value that changed.
+// came back 0.794 mm. The extrude now rounds a drag to 1 um where it happens
+// and keeps a typed depth as typed; the fillet still rounds a changed value.
 //
 // Both tools are driven through their real edit entry (startEdit), their real
 // value box, and Enter pressed in it, with the element stub the other tool tests
@@ -122,13 +122,14 @@ describe("re-opening an extrude and pressing Enter", () => {
     expect((written[0] as { distance: number }).distance).toBe(THIRTY_SECOND);
   });
 
-  it("still cleans a typed depth to the micrometre", async () => {
+  it("takes a typed depth as typed", async () => {
     const { written, box } = open(THIRTY_SECOND);
     typeInto(box, "0.0313");
     box.dispatch("keydown", key("Enter"));
     await Promise.resolve();
-    // typed digits are the user's number even where they match the readout
-    expect((written[0] as { distance: number }).distance).toBe(0.795);
+    // typed digits are the user's number even where they match the readout:
+    // 0.0313" exactly, not 0.795 mm (0.031299"), which rounding to 1 um gave
+    expect((written[0] as { distance: number }).distance).toBe(0.79502);
   });
 });
 
