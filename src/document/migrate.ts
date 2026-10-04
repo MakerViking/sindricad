@@ -23,9 +23,10 @@
 // the format. `plane` is still written alongside `planeId` as a resolved cache,
 // so an older build opening a v4 file still places the sketch correctly.
 
-import type { CadDocument, ParamDef, ParamTarget } from "../types";
+import type { CadDocument, Feature, ParamDef, ParamTarget, SketchEntity } from "../types";
 import { FEATURE_NUM_FIELDS, RIGID_ENTITY_NUM_FIELDS, kindUnit } from "./numFields";
 import { isDimConstraint, newConstraintId, noteConstraintId } from "../sketch/id";
+import { RECT_CENTRE, constraintEntityIds } from "../sketch/entityDims";
 import { nextDName } from "../params/engine";
 import { t } from "../i18n";
 
@@ -43,17 +44,83 @@ import { t } from "../i18n";
 // the first migration that is not purely a data rewrite — older builds get an
 // explicit "update SindriCAD" message rather than a JSON syntax error.
 
-/** .sindri file-format version (bump when the on-disk shape changes incompatibly). */
-export const FORMAT_VERSION = 5;
+// v5 → v6: the corners, centres and sides of rectangles, polygons and slots
+// became constraint operands (2026-10, types.ts). An older build opens such a
+// sketch but holds nothing there, and its pruneConstraints DROPS every
+// constraint naming a polygon's or a slot's corner, centre or side the next
+// time that sketch is edited, without a word. The version stamp is the one
+// signal every older build already acts on: on open it says the file was
+// made by a newer version and that saving it there may lose data
+// (file.warning.newerVersion). It does not stop the edit, and the prune still
+// happens at the next edit there.
+//
+// The stamp costs something in that build too. 0.1.232's migrateDocument
+// returns at that gate, before it reserves the loaded dimension ids, and
+// nothing else there reserves them: the next dimension added in a sketch can
+// take an id another one in it already has, and a parameter bound to that id
+// then finds the first of the two. It saves the twins as v5. So this build
+// reserves the ids before its own gate, and gives the later of two twins in a
+// sketch a fresh id on open (migrateDocument below).
+//
+// Unlike every bump before it, v6 is stamped only on a document that USES
+// what it adds (savedVersion): one that does not is still saved as v5, so an
+// older build keeps opening it without the warning. A point put on a plain
+// line, circle or arc (pointOn, also new) does not stamp the document: an
+// older build keeps that constraint in the file and only stops holding it.
+// That includes the ones Explode, and Fillet or Chamfer on a polygon, write to
+// keep a shape's form, so exploding the shape a document was stamped for can
+// save it as v5 again.
 
-export function migrateDocument(parsed: CadDocument): string[] {
+/** .sindri file-format version: the newest this build reads (bump when the
+ *  on-disk shape changes incompatibly). A document is SAVED as the oldest
+ *  version that holds what it uses: savedVersion. */
+export const FORMAT_VERSION = 6;
+
+/** The version a document is saved as: v6 when a sketch names a shape's
+ *  corner, centre or side (see v5 → v6 above), else v5. */
+export function savedVersion(features: readonly Feature[]): number {
+  return features.some(usesShapeOperands) ? 6 : 5;
+}
+
+/** Point fields a constraint names together with its entity (types.ts). */
+const POINT_FIELDS = [["e", "p"], ["e1", "p1"], ["e2", "p2"]] as const;
+
+/** True if a sketch's constraints name a shape's corner, centre or side: any
+ *  point or side of a polygon or a slot, a rectangle's centre, or a shape's
+ *  side for a point to lie on (a rectangle's: a polygon's or a slot's is
+ *  caught as naming that shape). A reference dimension counts too: an older
+ *  build drops it all the same. */
+function usesShapeOperands(f: Feature): boolean {
+  if (f.type !== "sketch" || !f.constraints?.length) return false;
+  const kinds = new Map<string, SketchEntity["type"]>();
+  for (const e of f.entities) if (e.id) kinds.set(e.id, e.type);
+  return f.constraints.some((c) => {
+    if (c.type === "pointOn" && c.curve.includes("~")) return true;
+    if (constraintEntityIds(c).some((id) => kinds.get(id) === "polygon" || kinds.get(id) === "slot")) return true;
+    const rec = c as unknown as Record<string, unknown>;
+    return POINT_FIELDS.some(([e, p]) => {
+      const id = rec[e];
+      return typeof id === "string" && kinds.get(id) === "rectangle" && rec[p] === RECT_CENTRE;
+    });
+  });
+}
+
+/** `readsUpTo` is the newest version the loader reads: this build's
+ *  FORMAT_VERSION, or an older build's when a test stands in for its gate
+ *  (only the gate: what runs before and after it is this build's). */
+export function migrateDocument(parsed: CadDocument, readsUpTo = FORMAT_VERSION): string[] {
   const version = parsed.version ?? 1;
-  if (version > FORMAT_VERSION) {
+  const features = parsed.features ?? [];
+  // Reserve every loaded dimension id first, whatever the version: a build
+  // that skips this for a newer file hands a new dimension an id one already
+  // has (v5 → v6 above).
+  const dims = features.flatMap((f) => (f.type === "sketch" ? (f.constraints ?? []).filter(isDimConstraint) : []));
+  for (const c of dims) noteConstraintId(c.id);
+  if (version > readsUpTo) {
     // Best effort: load what we understand, but don't rewrite shapes we don't.
     return [t("file.warning.newerVersion")];
   }
 
-  const features = parsed.features ?? [];
   const params = parsed.parameters ?? {};
   const defs: Record<string, ParamDef> = parsed.paramDefs ?? {};
 
@@ -69,10 +136,19 @@ export function migrateDocument(parsed: CadDocument): string[] {
     }
   }
 
-  // --- stamp dimension-constraint ids (reserve all loaded ones first) ---
-  const dims = features.flatMap((f) => (f.type === "sketch" ? (f.constraints ?? []).filter(isDimConstraint) : []));
-  for (const c of dims) noteConstraintId(c.id);
-  for (const c of dims) c.id ??= newConstraintId();
+  // --- stamp dimension-constraint ids (all loaded ones reserved above) ---
+  // A dimension whose id an earlier one in its sketch already has (an older
+  // build's twin, v5 → v6 above) gets a fresh one too: a parameter finds a
+  // dimension by its id within its sketch, so only the first of two twins
+  // could ever be driven. The first keeps the id its bindings name.
+  for (const f of features) {
+    if (f.type !== "sketch") continue;
+    const seen = new Set<string>();
+    for (const c of (f.constraints ?? []).filter(isDimConstraint)) {
+      if (c.id == null || seen.has(c.id)) c.id = newConstraintId();
+      seen.add(c.id);
+    }
+  }
 
   // --- seed paramDefs rows for plain user parameters ---
   for (const [name, value] of Object.entries(params)) {

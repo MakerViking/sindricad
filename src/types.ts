@@ -269,7 +269,9 @@ export type SketchConstraint =
   // (Centres and polygon/slot points and sides: 2026-10. An older build
   // compiles nothing for a constraint naming one, so it holds nothing there,
   // and its pruneConstraints drops one naming a polygon's or slot's point or
-  // side at the next edit in that sketch. A rectangle centre it keeps.)
+  // side at the next edit in that sketch. A rectangle centre it keeps. A
+  // document naming any of these is saved as format v6 so that an older build
+  // warns on open: a new operand spelling belongs in migrate.savedVersion.)
   | { type: "p2pDistance"; id?: string; e1: string; p1: number; e2: string; p2: number; value: number; driven?: boolean; place?: PlaceOffset }
   // Smart dimensioning (GH #17): the HORIZONTAL and VERTICAL distances between
   // two points, as opposed to p2pDistance's direct (aligned) one. Same operands,
@@ -332,7 +334,8 @@ export type SketchConstraint =
   // Added 2026-10. An older build reads it as a type it does not know: its
   // solver compiles nothing for it, pruneConstraints keeps it (the `satisfies
   // never` default) and no glyph draws, so the point just stops being held
-  // there. Nothing throws.
+  // there. Nothing throws. One on a rectangle's, polygon's or slot's side
+  // makes the document format v6 (migrate.savedVersion).
   | { type: "pointOn"; e: string; p: number; curve: string }
   // symmetric: two points (same semantics as coincident) mirror across a line
   // operand (the symmetry axis; may be a rect edge)

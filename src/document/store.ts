@@ -6,7 +6,7 @@
 import type { CadDocument, DimField, ExtrudeStart, Feature, ParamTarget, PlaneDef, PlaneSpec, ProjectedSource, ProjectionUpdate, RebuildReply, RebuildResult, Selector, SketchConstraint, ViewCubeSide, ViewOverride } from "../types";
 import type { GeometryBackend, ProjectionResult, QueryResult } from "../geometry/client";
 import { featureErrorText } from "../geometry/featureErrorText";
-import { FORMAT_VERSION, migrateDocument } from "./migrate";
+import { migrateDocument, savedVersion } from "./migrate";
 import { applyDrivingDimsDirect, planDimEdit, upsertDrivingDim } from "../sketch/directDims";
 import { entityDims } from "../sketch/entityDims";
 import { isDimConstraint } from "../sketch/id";
@@ -1867,7 +1867,9 @@ export class DocumentStore {
     // Persist the geometry doc PLUS the non-geometry project state that lives in
     // the store (suppress set, rollback marker, sketch visibility) so reopening
     // restores the full session. Empty state is omitted to keep files clean.
-    const out: CadDocument = { ...this.doc, version: FORMAT_VERSION };
+    // v6 only when it uses what v6 adds, so an older build opens the rest
+    // without a warning (migrate.ts, v5 → v6)
+    const out: CadDocument = { ...this.doc, version: savedVersion(this.doc.features) };
     if (this.suppressed.size) out.suppressed = [...this.suppressed];
     if (this.rollback !== null) out.rollback = this.rollback;
     for (const { overlay } of this.overlays) overlay.writeJSON(out as unknown as Record<string, unknown>);

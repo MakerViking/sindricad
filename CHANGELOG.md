@@ -431,8 +431,13 @@ This file starts on 2026-08-03. For anything before that, see the
   its own. Two sketch points get Coincident there, and a lone one Fix. A sketch
   that uses this still opens in an older beta, but those constraints hold
   nothing there, and that beta drops the ones on polygons and slots the next
-  time you edit the sketch. Requested in
-  [#17](https://github.com/MakerViking/sindricad/issues/17).
+  time you edit the sketch. So I now mark a file that uses them as made by a
+  newer version: an older beta says so when it opens it and warns that saving
+  it there may lose data, though it does not stop you editing. Every other file
+  is saved as before and opens in an older beta without that warning. In that
+  beta, a dimension you add to such a sketch can be given the same inner id as
+  one it already has; opening the file here again gives each its own.
+  Requested in [#17](https://github.com/MakerViking/sindricad/issues/17).
 
 - **Put a point on a line, circle or arc.** Coincident now takes a point and a
   curve, in either order: click an end, a corner, a centre or a sketch point,
@@ -450,7 +455,8 @@ This file starts on 2026-08-03. For anything before that, see the
   thing. Two lines clicked in their middles still become Collinear. Until now
   Coincident asked for a second endpoint, and there was no way to do this at
   all. A sketch that uses it still opens in an older beta, which just does not
-  hold the point there.
+  hold the point there. A point on a rectangle, polygon or slot side also
+  makes an older beta warn when it opens the file, as above.
 
 ## 0.1.232 (2026-10-02)
 

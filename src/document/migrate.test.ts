@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
-import { FORMAT_VERSION, migrateDocument } from "./migrate";
-import type { CadDocument } from "../types";
+import { FORMAT_VERSION, migrateDocument, savedVersion } from "./migrate";
+import type { CadDocument, Feature, SketchConstraint, SketchEntity } from "../types";
+import { t } from "../i18n";
 
 const v1 = (doc: Partial<CadDocument>): CadDocument =>
   ({ parameters: {}, features: [], ...doc }) as CadDocument; // no version field = v1
@@ -102,8 +103,9 @@ describe("migrateDocument", () => {
     // v5 moved geometry OUT of the document (inline base64 `brep` -> the `geom`
     // content hash carried in the container), but a v3 document still passes
     // through migrateDocument untouched: `brep` is still READ, so nothing here
-    // rewrites it.
-    expect(FORMAT_VERSION).toBe(5);
+    // rewrites it. v6 (shape operands) is a stamp too, and only on a document
+    // that uses them.
+    expect(FORMAT_VERSION).toBe(6);
     const doc = v1({
       version: 3,
       features: [{ id: "f1", type: "sketch", plane: "XY", entities: [
@@ -147,8 +149,9 @@ describe("migrateDocument", () => {
     // may be lost" warning on EVERY document the new build saves, including the
     // overwhelming majority that carry no anchor at all. `plane` stays written
     // as the resolved cache, so an old build still places the sketch correctly;
-    // it simply stops following the face.
-    expect(FORMAT_VERSION).toBe(5);
+    // it simply stops following the face. (v6 does not undo this: it is
+    // stamped only on a document that names a shape's corner, centre or side,
+    // savedVersion below.)
     const doc = v1({
       version: 5,
       features: [
@@ -161,10 +164,69 @@ describe("migrateDocument", () => {
           face: { kind: "face", by: "nearest", point: [9.5, 0, 5], body: "body1" } },
       ],
     });
+    expect(savedVersion(doc.features)).toBe(5);
     const before = JSON.stringify(doc);
     expect(migrateDocument(doc)).toEqual([]); // in-format: no warnings
     expect(JSON.stringify(doc)).toBe(before); // and not one byte rewritten
     migrateDocument(doc); // idempotent
     expect(JSON.stringify(doc)).toBe(before);
+  });
+});
+
+// Round 3 decision R1. What the tools make is pinned in io/olderBuildFormat
+// (clicks, Finish, Save); this is every other spelling the document allows,
+// against the sketch it sits in.
+describe("savedVersion: v6 only for a sketch that names a shape's corner, centre or side", () => {
+  const ents: SketchEntity[] = [
+    { type: "polygon", id: "H", x: 0, y: 0, radius: 10, sides: 6, angle: 0 },
+    { type: "slot", id: "S", x1: 10, y1: 0, x2: 40, y2: 0, width: 6 },
+    { type: "rectangle", id: "R", x: 10, y: 5, width: 40, height: 20 },
+    { type: "line", id: "l", x1: 30, y1: 20, x2: 40, y2: 30 },
+    { type: "circle", id: "c", x: 0, y: 30, radius: 4 },
+  ];
+  const sketch = (...constraints: SketchConstraint[]): Feature[] =>
+    [{ id: "f1", type: "sketch", plane: "XY", entities: ents, constraints }];
+
+  it.each<[string, SketchConstraint]>([
+    ["a polygon's corner dimensioned", { type: "p2pDistance", e1: "H", p1: 2, e2: "l", p2: 0, value: 12 }],
+    ["a REFERENCE dimension to a polygon's centre", { type: "p2pDistance", e1: "H", p1: -1, e2: "l", p2: 0, value: 12, driven: true }],
+    ["a slot side's end (the only spelling it has)", { type: "p2lDistance", e: "S~0", p: 0, line: "l", value: 5 }],
+    ["a slot's axis", { type: "vertical", line: "S~2" }],
+    ["a polygon's side in an offset", { type: "offset", pairs: [{ src: "H~1", cpy: "l" }], value: 2 }],
+    ["a point on a polygon's side", { type: "pointOn", e: "l", p: 0, curve: "H~3" }],
+    ["a point on a rectangle's side", { type: "pointOn", e: "l", p: 0, curve: "R~1" }],
+    ["a rectangle's centre, second operand", { type: "coincident", e1: "l", p1: 1, e2: "R", p2: 4 }],
+    ["a rectangle's centre fixed", { type: "fix", e: "R", p: 4 }],
+  ])("%s", (_name, c) => {
+    expect(savedVersion(sketch(c))).toBe(6);
+  });
+
+  it.each<[string, SketchConstraint[]]>([
+    ["no constraints, polygon and slot drawn", []],
+    ["a rectangle's corners and sides", [
+      { type: "coincident", e1: "R", p1: 3, e2: "l", p2: 0 },
+      { type: "parallel", l1: "R~0", l2: "l" },
+      { type: "p2pDistance", e1: "R", p1: 0, e2: "R", p2: 2, value: 20 },
+    ]],
+    // an older build keeps a pointOn it does not know in the file (its
+    // pruneConstraints' default arm): it stops holding it, it does not lose it
+    ["a point on a plain line or circle", [
+      { type: "pointOn", e: "l", p: 0, curve: "c" },
+      { type: "pointOn", e: "c", p: 0, curve: "l" },
+    ]],
+  ])("%s stays v5", (_name, cs) => {
+    expect(savedVersion(sketch(...cs))).toBe(5);
+  });
+
+  it("a polygon's number a parameter sets is no constraint: v5", () => {
+    // the rigid-shape numbers bind through paramDefs, not through a constraint
+    const poly: SketchEntity = { type: "polygon", id: "H", x: 0, y: 0, radius: "r", sides: 6, angle: 0 };
+    expect(savedVersion([{ id: "f1", type: "sketch", plane: "XY", entities: [poly] }])).toBe(5);
+  });
+
+  it("this build reads v6 without a word; the build before it warns", () => {
+    const doc = (): CadDocument => ({ version: 6, parameters: {}, features: sketch({ type: "fix", e: "H", p: -1 }) });
+    expect(migrateDocument(doc())).toEqual([]);
+    expect(migrateDocument(doc(), 5)).toEqual([t("file.warning.newerVersion")]);
   });
 });

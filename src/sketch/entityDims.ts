@@ -358,12 +358,18 @@ export function namedEntityIds(constraints: readonly SketchConstraint[]): Set<st
   const out = new Set<string>();
   for (const c of constraints) {
     if (isDriven(c)) continue;
-    const ops = c.type === "offset"
-      ? c.pairs.flatMap((pr) => [pr.src, pr.cpy])
-      : Object.entries(c).flatMap(([k, v]) => (k === "type" || k === "id" ? [] : [v])); // a dim's id is no operand
-    for (const v of ops) if (typeof v === "string") out.add(v.includes("~") ? v.slice(0, v.indexOf("~")) : v);
+    for (const id of constraintEntityIds(c)) out.add(id);
   }
   return out;
+}
+
+/** The ids of the entities ONE constraint names, a side (`P~k`) cut back to
+ *  its shape, whether or not it is a reference dimension. */
+export function constraintEntityIds(c: SketchConstraint): string[] {
+  const ops = c.type === "offset"
+    ? c.pairs.flatMap((pr) => [pr.src, pr.cpy])
+    : Object.entries(c).flatMap(([k, v]) => (k === "type" || k === "id" ? [] : [v])); // a dim's id is no operand
+  return ops.flatMap((v) => (typeof v === "string" ? [v.includes("~") ? v.slice(0, v.indexOf("~")) : v] : []));
 }
 
 /** Side `k` of a polygon or slot, or null when the shape has no such side: a
