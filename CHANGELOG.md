@@ -282,6 +282,30 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ### Added
 
+- **Select one point or one side in a sketch, and constrain it from the
+  right-click menu.** In the Select tool a click now takes the point under it
+  (the end of a line or arc, a corner of a rectangle or polygon, a centre), or
+  else one side of a rectangle, polygon or slot, instead of the whole thing,
+  and the point or side lights up as you point at it. On a small circle or a
+  short line the point gives way: its rim or its middle takes the whole circle
+  or line. Double-click, on a point too, for the whole shape, or for the whole
+  chain of lines as before. Shift-click or Ctrl-click adds to the selection,
+  and so does a right-click with Shift or Ctrl held, so the last pick can be
+  the one you right-click. Right-click for what fits what you picked:
+  Coincident for two points, Coincident and Midpoint for a point and a line,
+  Coincident for a point and a circle, Symmetric for two points and a line,
+  Parallel, Perpendicular, Equal and Collinear for two lines or sides, Equal
+  for two neighbouring sides of one rectangle (which makes it square), Fix for
+  one point, Horizontal and Vertical for one line or polygon side, and Equal
+  for three or more lines or circles, which takes them all to the size of the
+  last one you picked. Dimension is on the menu too whenever the selection can
+  take one: it opens the Dimension tool with your picks, ready for a value.
+  Delete, Move, Rotate, Mirror and the rest act on the whole line or shape a
+  selected point or side belongs to. A click near the middle of a rectangle,
+  polygon or slot now takes its centre, so pick the area inside a small shape
+  away from its middle. Requested in
+  [#17](https://github.com/MakerViking/sindricad/issues/17).
+
 - **Insert > Part from File.** Copies the visible bodies of another SindriCAD
   document into the one you have open, so a screw, standoff or insert you
   modelled once can be checked for fit in every project that uses it. Several

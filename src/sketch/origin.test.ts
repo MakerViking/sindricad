@@ -124,7 +124,7 @@ describe("the origin never reaches the document", () => {
   it("survives a delete-selection", () => {
     const at = sketchModeSrc.indexOf("private deleteSelected(");
     const body = sketchModeSrc.slice(at > -1 ? at : 0);
-    expect(body).toMatch(/!this\.selected\.has\(en\.id\)\s*\|\|\s*isOriginGeometry\(en\.id\)/);
+    expect(body).toMatch(/!owners\.has\(en\.id\)\s*\|\|\s*isOriginGeometry\(en\.id\)/);
   });
 });
 

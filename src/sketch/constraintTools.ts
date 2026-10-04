@@ -11,7 +11,7 @@ import type { ResolvedEntity } from "./snap";
 import type { SketchConstraint } from "../types";
 import { pickEntity, PROJECTED_FIXED_MSG } from "./modify";
 import { coincKey } from "./sketchSolve";
-import { POLYGON_CENTRE, RECT_CENTRE, curveKind, dimRefPoints, lineOperand, lineOperandAt, refPoint, slotAxisAt } from "./entityDims";
+import { POLYGON_CENTRE, RECT_CENTRE, curveKind, dimRefPoints, lineOperand, lineOperandAt, refPoint, refPointNear, slotAxisAt } from "./entityDims";
 import { isOriginGeometry } from "./origin";
 import type { SketchTool } from "./sketchMode";
 
@@ -273,6 +273,10 @@ export class ConstraintTools {
   /** nearest addressable POINT to p — a line/arc/spline end, a point entity, a
    *  RECTANGLE CORNER, or a circle/arc CENTRE.
    *
+   *  The search itself is entityDims.refPointNear, which the Select tool's
+   *  click goes through too (GH #17's point-level selection), so a point it
+   *  selects is the point a constraint tool would have picked there.
+   *
    *  It enumerates `dimRefPoints`, which is the document's one answer to "which
    *  points does this entity expose, and under which index". Borrowing it rather
    *  than keeping a second list here is the whole point: this used to have an
@@ -301,18 +305,10 @@ export class ConstraintTools {
     held: { id: string; idx: number } | null = null,
   ): { id: string; idx: number } | null {
     const tol = this.host.pickTol();
-    let best: { id: string; idx: number } | null = null;
-    let bestD = tol * tol;
-    let heldHere: { id: string; idx: number } | null = null;
-    for (const e of this.host.entities()) {
-      for (const r of dimRefPoints(e)) {
-        const dx = r.pos.x - p.x, dy = r.pos.y - p.y, d = dx * dx + dy * dy;
-        if (d > tol * tol) continue;
-        if (held && e.id === held.id && r.p === held.idx) { heldHere = held; continue; }
-        if (d <= bestD) { bestD = d; best = { id: e.id, idx: r.p }; }
-      }
-    }
-    return best ?? heldHere;
+    const best = refPointNear(this.host.entities(), p, tol, held);
+    if (best || !held) return best;
+    const at = this.endpointXY(held);
+    return at && (at.x - p.x) ** 2 + (at.y - p.y) ** 2 <= tol * tol ? held : null;
   }
 
   /** Plane coords of the addressable point under `p`, or null. For the hover

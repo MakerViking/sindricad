@@ -1827,7 +1827,7 @@
       "rectangle": "Rectangle: click two corners · type W, Tab, H · Enter · Esc",
       "rotate": "Rotate: select entities, click a center, then type an angle + Enter · Esc",
       "scale": "Scale: select entities, click a base point, then type a factor + Enter · Esc",
-      "select": "Select: click geometry to pick it · Shift- or Ctrl-click (Cmd on a Mac) adds or removes, or drag a box · drag to move · Delete to remove · while drawing, hold Ctrl to place without snapping · or pick a tool: Line (L) · Rectangle (R) · Circle (C) · Arc (A)",
+      "select": "Select: click a curve, an end, a corner, a centre or one side of a shape to pick it · double-click for the whole shape or chain · Shift- or Ctrl-click (Cmd on a Mac) adds or removes · drag a box to select several · right-click to constrain what is picked · drag to move · Delete to remove · while drawing, hold Ctrl to place without snapping · or pick a tool: Line (L) · Rectangle (R) · Circle (C) · Arc (A)",
       "slot": "Slot: click the two arc centers, then a point for the width · Esc",
       "spline": "Spline: click to place fit points · click the last point or press Enter to finish · Esc to cancel",
       "symmetric": "Symmetric: click two endpoints, then the symmetry axis line · Esc",

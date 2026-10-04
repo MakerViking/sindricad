@@ -47,8 +47,10 @@ describe("Lock Dimension on a selection (d3338e3a)", () => {
 
   it("locks a selected rectangle's W and H at what they measure, as one undo step", async () => {
     const live = liveSketch([rect()]);
-    live.click(30, 0); // the bottom edge selects the rectangle
-    expect([...live.s.selected]).toEqual(["e0"]);
+    // The bottom edge selects that SIDE (GH #17); Lock, like everything that
+    // acts on geometry, acts on the rectangle it belongs to.
+    live.click(30, 0);
+    expect([...live.s.selected]).toEqual(["e0~0"]);
     const depth = live.s.history.depth;
     live.s.lockDimensionCommand();
     await live.settle();
@@ -76,7 +78,7 @@ describe("Lock Dimension on a selection (d3338e3a)", () => {
     await live.settle();
     expect(added(live.s.constraints, 0)).toHaveLength(3);
     expect(added(live.s.constraints, 0)).toContainEqual({ type: "diameter", circle: "e1", value: 20 });
-    expect([...live.s.selected].sort()).toEqual(["e0", "e1"]);
+    expect([...live.s.selected].sort()).toEqual(["e0~0", "e1"]);
   });
 
   it("a second Lock finds nothing left to lock, and says so instead of doing nothing", async () => {

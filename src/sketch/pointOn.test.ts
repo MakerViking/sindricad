@@ -18,7 +18,7 @@ vi.mock("../ui/menu", () => ({ contextMenu: vi.fn(), dismissContextMenu: vi.fn()
 
 import { compileAndSolve } from "./sketchSolve";
 import { constraintGlyphs } from "./glyphs";
-import { applicableConstraints } from "./constraintMenu";
+import { applicableConstraints, menuOperands } from "./constraintMenu";
 import { lineOperand } from "./entityDims";
 import { liveSketch, PX } from "./liveSketch.testkit";
 import { ORIGIN_ID, ORIGIN_X_ID, originGeometry } from "./origin";
@@ -168,20 +168,22 @@ describe("its glyph", () => {
 });
 
 describe("the selection's right-click menu", () => {
+  const offered = (sel: ResolvedEntity[]) =>
+    applicableConstraints(menuOperands(sel.map((e) => e.id), new Map(sel.map((e) => [e.id, e]))) ?? []);
   const line = L("l", 0, 0, 10, 0);
   const circle: ResolvedEntity = { type: "circle", id: "c", x: 0, y: 0, radius: 5 };
   const point = PT("p", 3, 3);
 
   it("offers Coincident for a sketch point and a line, circle or arc, in either order, and Midpoint on a line", () => {
-    expect(applicableConstraints([point, line])).toEqual(["coincident", "midpoint"]);
-    expect(applicableConstraints([line, point])).toEqual(["coincident", "midpoint"]);
-    expect(applicableConstraints([point, circle])).toEqual(["coincident"]);
+    expect(offered([point, line])).toEqual(["coincident", "midpoint"]);
+    expect(offered([line, point])).toEqual(["coincident", "midpoint"]);
+    expect(offered([point, circle])).toEqual(["coincident"]);
   });
 
   it("Fix for a point alone, Coincident for two, and nothing for a point and a rectangle nobody named a side of", () => {
-    expect(applicableConstraints([point])).toEqual(["fix"]);
-    expect(applicableConstraints([point, PT("q", 1, 1)])).toEqual(["coincident"]);
-    expect(applicableConstraints([point, { type: "rectangle", id: "r", x: 0, y: 0, width: 4, height: 4 }])).toEqual([]);
+    expect(offered([point])).toEqual(["fix"]);
+    expect(offered([point, PT("q", 1, 1)])).toEqual(["coincident"]);
+    expect(offered([point, { type: "rectangle", id: "r", x: 0, y: 0, width: 4, height: 4 }])).toEqual([]);
   });
 
   it("Coincident from the menu puts the point on the line, through a real solve", async () => {

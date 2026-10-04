@@ -394,6 +394,30 @@ export function pickEntity(
   return own >= 0 ? own : nearestIn(true);
 }
 
+/** Whether a Select-tool click at `p` takes the point at `pos` (an end, a
+ *  corner or a centre, which refPointNear picked within pick tolerance) rather
+ *  than `curve`, the curve under the cursor (pickEntity's pick, undefined over
+ *  none). Every point within tolerance taking the click covered the whole of a
+ *  small circle or a short line: its rim took the centre and its middle an
+ *  end, so it could no longer be selected on its own (GH #17).
+ *
+ *  A point OFF the curve (a centre) takes the click only when the cursor is
+ *  nearer to it than to the curve. A point ON it (one of its ends or corners,
+ *  or another curve's end touching it) takes it within a third of the way to
+ *  the curve's next point, so the middle third of a short line is the line. */
+export function pointBeatsCurve(curve: ResolvedEntity | undefined, pos: THREE.Vector2, p: THREE.Vector2, tol: number): boolean {
+  if (!curve) return true;
+  const on = tol * 0.1; // this close counts as on the curve, which is measured on its tessellation
+  const dPt = pos.distanceTo(p);
+  if (distToEntity(curve, pos) > on) return dPt < distToEntity(curve, p);
+  let span = Infinity;
+  for (const r of dimRefPoints(curve)) {
+    const d = r.pos.distanceTo(pos);
+    if (d > on && distToEntity(curve, r.pos) <= on) span = Math.min(span, d);
+  }
+  return dPt < span / 3;
+}
+
 function distToEntity(e: ResolvedEntity, p: THREE.Vector2): number {
   if (e.type === "circle") return Math.abs(v(e.x, e.y).distanceTo(p) - e.radius);
   // line/rect/arc/spline: nearest of the shared tessellated segments

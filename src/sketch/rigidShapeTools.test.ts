@@ -358,6 +358,9 @@ describe("a polygon's radius, sides and rotation stay editable after it is made"
     const { s, dim, input } = makeMode([clone(POLY)], "select");
     doubleClick(s, SIDE.x, SIDE.y);
     expect(dim.isActive).toBe(true);
+    // the first click took the side under it (GH #17); the double-click takes
+    // the whole polygon, as it does a whole rectangle or slot
+    expect([...s.selected]).toEqual([POLY.id]);
     expect(input("radius").value).toBe(fieldText(10, "length"));
     expect(input("sides").value).toBe(fieldText(6, "count"));
     expect(input("angle").value).toBe(fieldText(17, "angle"));
@@ -373,6 +376,31 @@ describe("a polygon's radius, sides and rotation stay editable after it is made"
     expect(s.entities[0]).toEqual({ ...POLY, angle: 0 });
     expect(seen.solves, "the edit must bank an undo step").toBe(1);
     expect(dim.isActive).toBe(false);
+    expect(lastPreview()).toEqual([]);
+  });
+
+  it("keeps the typed preview while the pointer passes over the polygon's side and away", () => {
+    // The Select hover lights the side under the pointer on the same layer
+    // (GH #17's point-level selection): it must not draw over the box's preview.
+    const { s, type, lastPreview } = makeMode([clone(POLY)], "select");
+    Object.assign((s as unknown as { overlay: object }).overlay, { setHoverRegion() {} });
+    doubleClick(s, SIDE.x, SIDE.y);
+    type("angle", "0");
+    s.onPointerMove(at(SIDE.x, SIDE.y));
+    s.onPointerMove(at(SIDE.x + 30, SIDE.y + 30));
+    expect(lastPreview()).toHaveLength(1);
+    expect((lastPreview()[0] as { angle: number }).angle).toBe(0);
+  });
+
+  it("opened from the right-click menu, drops the side the hover had lit", () => {
+    const { s, lastPreview } = makeMode([clone(POLY)], "select");
+    Object.assign((s as unknown as { overlay: object }).overlay, { setHoverRegion() {} });
+    s.onPointerMove(at(SIDE.x, SIDE.y));
+    expect(lastPreview(), "the side under the pointer is lit").toHaveLength(1);
+    s.onContextMenu(at(SIDE.x, SIDE.y, 2));
+    const edit = menus[0]?.find((i) => i.label === t("sketch.menu.editPolygon"));
+    expect(edit).toBeDefined();
+    edit!.onClick!();
     expect(lastPreview()).toEqual([]);
   });
 

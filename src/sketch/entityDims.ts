@@ -748,6 +748,29 @@ export function dimRefPoints(e: ResolvedEntity): { p: number; pos: V }[] {
   return [];
 }
 
+/** The addressable point (dimRefPoints) nearest `p` within `tol`, as its
+ *  entity and index, or null; a tie goes to the later entity, so your own
+ *  geometry beats the origin listed before it. `except` is passed over. THE
+ *  point a click takes: every constraint tool's (ConstraintTools.pickEndpoint)
+ *  and the Select tool's, so the two cannot disagree about it. */
+export function refPointNear(
+  ents: readonly ResolvedEntity[],
+  p: { x: number; y: number },
+  tol: number,
+  except: { id: string; idx: number } | null = null,
+): { id: string; idx: number } | null {
+  let best: { id: string; idx: number } | null = null;
+  let bestD = tol * tol;
+  for (const e of ents) {
+    for (const r of dimRefPoints(e)) {
+      if (except && e.id === except.id && r.p === except.idx) continue;
+      const dx = r.pos.x - p.x, dy = r.pos.y - p.y, d = dx * dx + dy * dy;
+      if (d <= bestD) { bestD = d; best = { id: e.id, idx: r.p }; }
+    }
+  }
+  return best;
+}
+
 /** resolve a dimension pick (entity + p index) to its current 2D position */
 export function refPoint(e: ResolvedEntity, p: number): V | null {
   return dimRefPoints(e).find((r) => r.p === p)?.pos ?? null;

@@ -10,6 +10,7 @@ import * as THREE from "three";
 import type { SketchPattern } from "../types";
 import type { DimInput } from "./dimInput";
 import { newPatternId } from "./id";
+import { selOwners } from "./selection";
 import { setPrompt } from "../ui/prompt";
 import type { SketchTool } from "./sketchMode";
 import { dimValueOk } from "../ui/units";
@@ -128,7 +129,7 @@ export class PatternFlow {
 
   private defaultPattern(tool: SketchTool, c: THREE.Vector2): SketchPattern {
     const id = newPatternId();
-    const sources = [...this.host.selected()];
+    const sources = [...selOwners(this.host.selected())]; // a selected point or side patterns its entity
     if (tool === "boltCircle") return { id, type: "boltCircle", cx: c.x, cy: c.y, bcd: 40, count: 6, diameter: 6 };
     if (tool === "gridHoles") return { id, type: "gridHoles", cx: c.x, cy: c.y, diameter: 6, countX: 3, countY: 3, spacingX: 12, spacingY: 12 };
     if (tool === "hexHoles") return { id, type: "hexHoles", cx: c.x, cy: c.y, diameter: 6, spacing: 12, rings: 2 };

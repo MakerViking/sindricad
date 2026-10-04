@@ -22,14 +22,18 @@
 // to avoid.
 //
 // Point-level constraints need a specific point. A sketch point is one, and so
-// is a shape's corner or centre named by the right-click; a line's END is not
-// offered, since the selection holds whole lines (those keep the tools).
+// is a shape's corner or centre named by the right-click. Since GH #17's
+// point-level selection a click in the Select tool takes a single point (a
+// line's end, a corner, a centre) or a single side of a shape too
+// (selection.ts), and each of those is the operand it names: the selection is
+// read KEY by key, not entity by entity.
 
 import type { ResolvedEntity } from "./snap";
 import type { SketchTool } from "./sketchMode";
 import { SKETCH, leavesOf } from "../ui/ribbon";
-import { dimRefPoints, lineOperandAt } from "./entityDims";
+import { dimRefPoints, lineOperand, lineOperandAt } from "./entityDims";
 import { isOriginGeometry } from "./origin";
+import { selPart } from "./selection";
 
 /** Menu label for a constraint, taken from the RIBBON's own table rather than a
  *  second list beside it. Two lists of the same names drift, and the ribbon is
@@ -85,44 +89,63 @@ export function operandUnder(e: ResolvedEntity, at: { x: number; y: number }, to
   return side ? { kind: "line", id: side, p: 0, ent: e } : null;
 }
 
-/** The selection as operands: `named` gives the operand for the member the
- *  right-click landed on, every other member gives its sole one. Null when any
- *  member has none, which empties the menu. */
-export function menuOperands(sel: ResolvedEntity[], named?: MenuOperand | null): MenuOperand[] | null {
+/** The selection as operands, one per selection KEY (selection.ts): a side's
+ *  key is that side, a point's key that point, and a whole entity gives its
+ *  sole operand, or, for the shape the right-click landed on, the operand it
+ *  `named` there. Null when any member has none, which empties the menu. */
+export function menuOperands(
+  keys: Iterable<string>,
+  byId: Map<string, ResolvedEntity>,
+  named?: MenuOperand | null,
+): MenuOperand[] | null {
   const out: MenuOperand[] = [];
-  for (const e of sel) {
-    if (named && named.ent.id === e.id) { out.push(named); continue; }
-    const kind = soleOperand(e);
-    if (!kind) return null;
-    out.push({ kind, id: e.id, p: 0, ent: e });
+  for (const key of keys) {
+    const part = selPart(key);
+    const ent = byId.get(part.owner);
+    if (!ent) return null;
+    if (part.kind === "side") {
+      if (!lineOperand(byId, key)) return null;
+      out.push({ kind: "line", id: key, p: 0, ent });
+    } else if (part.kind === "point") {
+      if (!dimRefPoints(ent).some((r) => r.p === part.p)) return null;
+      out.push({ kind: "point", id: ent.id, p: part.p, ent });
+    } else if (named && named.ent.id === ent.id) {
+      out.push(named);
+    } else {
+      const kind = soleOperand(ent);
+      if (!kind) return null;
+      out.push({ kind, id: ent.id, p: 0, ent });
+    }
   }
   return out;
 }
 
-/** Constraints applicable to this selection, in the order they are worth
- *  offering — commonest first, which is what the reporter asked for ("ordered by
- *  likelihood of use"). Empty when the selection cannot carry any. `named` is
- *  the operand the right-click named on the shape it landed on (operandUnder). */
-export function applicableConstraints(sel: ResolvedEntity[], named?: MenuOperand | null): SketchTool[] {
-  const ops = menuOperands(sel, named);
-  if (!ops) return []; // any ambiguous member disqualifies the set
-  const [a, b] = ops;
-  if (!a) return [];
+/** side k of an operand id `R~k` */
+const sideIndex = (id: string) => Number(id.slice(id.indexOf("~") + 1));
 
-  if (ops.length === 1) {
-    // A lone line can be squared to an axis, unless it is a rectangle's side,
-    // which its rectangle already holds square. A lone point can be fixed
-    // where it is, unless it is the origin, which is fixed already. Nothing
-    // useful applies to a lone circle: its radius needs a VALUE, which is a
-    // dimension, not a constraint.
-    if (a.kind === "line") return a.ent.type === "rectangle" ? [] : ["horizontal", "vertical"];
-    if (a.kind === "point") return isOriginGeometry(a.ent.id) ? [] : ["fix"];
-    return [];
+/** The two points and the line of a Symmetric, in selection order, or null:
+ *  exactly two points and one line, the line belonging to neither point's
+ *  entity (a line's own ends about itself, a corner about its own side). Two
+ *  corners of ONE rectangle are the useful pick: "centre it on this line". */
+export function symmetricOperands(ops: MenuOperand[]): { a: MenuOperand; b: MenuOperand; line: MenuOperand } | null {
+  const pts = ops.filter((o) => o.kind === "point");
+  const line = ops.find((o) => o.kind === "line");
+  const [a, b] = pts;
+  if (ops.length !== 3 || !a || !b || !line) return null;
+  if (line.ent.id === a.ent.id || line.ent.id === b.ent.id) return null;
+  return { a, b, line };
+}
+
+/** What two operands can take. Two of ONE entity are the self-reference the
+ *  tools refuse (a corner on its own side, two corners joined, which folds the
+ *  shape), with one exception: two adjacent sides of a rectangle, which Equal
+ *  makes a square (its opposite sides are equal already). */
+function pairConstraints(a: MenuOperand, b: MenuOperand): SketchTool[] {
+  if (a.ent.id === b.ent.id) {
+    const adjacent = a.ent.type === "rectangle" && a.kind === "line" && b.kind === "line" &&
+      Math.abs(sideIndex(a.id) - sideIndex(b.id)) % 2 === 1;
+    return adjacent ? ["equal"] : [];
   }
-  if (ops.length !== 2 || !b) return [];
-  // Two operands of ONE shape (its corner and its own side, two of its
-  // corners) is the self-reference the tools refuse: it folds the shape.
-  if (a.ent.id === b.ent.id) return [];
   // two points join; a point and a curve: the point goes ON it, or, on a
   // line, to its middle
   if (a.kind === "point" && b.kind === "point") return ["coincident"];
@@ -137,4 +160,34 @@ export function applicableConstraints(sel: ResolvedEntity[], named?: MenuOperand
   }
   if (a.kind === "round" && b.kind === "round") return ["concentric", "equal", "tangent"];
   return ["tangent"]; // one line, one round
+}
+
+/** Constraints applicable to these operands (menuOperands), in the order they
+ *  are worth offering: commonest first, which is what the reporter asked for
+ *  ("ordered by likelihood of use"). Empty when the selection cannot carry
+ *  any. */
+export function applicableConstraints(ops: MenuOperand[]): SketchTool[] {
+  const [a, b] = ops;
+  if (!a) return [];
+
+  if (ops.length === 1) {
+    // A lone line can be squared to an axis, unless it is a rectangle's side,
+    // which its rectangle already holds square. A lone point can be fixed
+    // where it is, unless it is the origin's, which is fixed already, or a
+    // projected one, which is fixed reference. Nothing useful applies to a
+    // lone circle: its radius needs a VALUE, which is a dimension, not a
+    // constraint.
+    if (a.kind === "line") return a.ent.type === "rectangle" ? [] : ["horizontal", "vertical"];
+    if (a.kind === "point") return isOriginGeometry(a.ent.id) || a.ent.type === "projected" ? [] : ["fix"];
+    return [];
+  }
+  if (ops.length === 2 && b) return pairConstraints(a, b);
+  if (symmetricOperands(ops)) return ["symmetric"];
+  // Several lines, or several circles and arcs, of different entities: Equal
+  // holds them all to one size (GH #17: "several circles, then Equal: the
+  // menu is limited to pairs").
+  const owners = new Set(ops.map((o) => o.ent.id));
+  if (owners.size !== ops.length) return [];
+  if (ops.every((o) => o.kind === "line") || ops.every((o) => o.kind === "round")) return ["equal"];
+  return [];
 }

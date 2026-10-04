@@ -17,13 +17,13 @@ import { isEditableTarget } from "../ui/focus";
 import { SketchDimensions, dimBadgeFields, type ExtraDim } from "./sketchDimensions";
 import { SketchGlyphs } from "./sketchGlyphs";
 import { constraintGlyphs, diagnosisOf, type ConstraintGlyph } from "./glyphs";
-import { entityDims, constraintDims, dimRefPoints, curveKind, hoverOperandCurve, lineOperand, lineOperandAt, linearDim, operandPoint, rebindPolygonSides, setDimPixelScale, RECT_CENTRE, shapeSideAt, slotAxisAt, staggeredDefaults, type DimField, type ConstraintDim } from "./entityDims";
+import { entityDims, constraintDims, dimRefPoints, curveKind, hoverOperandCurve, lineOperand, lineOperandAt, linearDim, operandPoint, rebindPolygonSides, refPoint, refPointNear, setDimPixelScale, RECT_CENTRE, shapeSideAt, slotAxisAt, staggeredDefaults, type DimField, type ConstraintDim } from "./entityDims";
 import {
   clampPlace, isDimError, isRoundTarget, pickDimTarget, rebindTarget, resolveDim, targetIdentity,
   targetKey, unsupportedMessage,
   type DimOptions, type DimPlan, type DimTarget,
 } from "./dimensionTool";
-import { pickEntity, tangencyPoints, trimSpan, trimWithConstraints, detachEndpoint, detachableEnd, isBreakCut, filletCorner, chamferCorner, cornerJoins, explodeCompound, polygonRingHolds, rotationTie, translationTie, offsetEntity, offsetChain, offsetChainJunction, signedOffsetAt, breakWithConstraints, extendLine, breakLink, attachmentPoints, bodyDragBlocked, bodyDragFrame, fixPinnedIds, pickDragPoint, FIXED_POINT_MSG, PROJECTED_FIXED_MSG, type ExplodeResult, type OffsetResult, type TrimResult } from "./modify";
+import { pickEntity, pointBeatsCurve, tangencyPoints, trimSpan, trimWithConstraints, detachEndpoint, detachableEnd, isBreakCut, filletCorner, chamferCorner, cornerJoins, explodeCompound, polygonRingHolds, rotationTie, translationTie, offsetEntity, offsetChain, offsetChainJunction, signedOffsetAt, breakWithConstraints, extendLine, breakLink, attachmentPoints, bodyDragBlocked, bodyDragFrame, fixPinnedIds, pickDragPoint, FIXED_POINT_MSG, PROJECTED_FIXED_MSG, type ExplodeResult, type OffsetResult, type TrimResult } from "./modify";
 import { newEntityId, newConstraintId, isDimConstraint, notePatternId } from "./id";
 import { SketchHistory, cloneSnapshot, type SketchSnapshot } from "./history";
 import { isPlainNumber, parseField, dimValueOk, fmtLength, fieldText, canonicalDecimal, fieldExpr } from "../ui/units";
@@ -58,7 +58,8 @@ import { contextMenu, dismissContextMenu, type CtxItem } from "../ui/menu";
 import { niceStep } from "../ui/units";
 import { isOriginGeometry, originGeometry } from "./origin";
 import { boxFromDrag, entitiesInBox } from "./boxSelect";
-import { applicableConstraints, constraintLabel, menuOperands, operandUnder, type MenuOperand } from "./constraintMenu";
+import { applicableConstraints, constraintLabel, menuOperands, operandUnder, symmetricOperands, type MenuOperand } from "./constraintMenu";
+import { addKey, additiveClick, clickKey, dropOwner, pointKey, selOwner, selOwners, selPart } from "./selection";
 import { ConstraintTools, CONSTRAINT_TOOLS, type ConstraintHost } from "./constraintTools";
 import { PatternFlow, PATTERN_TOOLS, ENTITY_PATTERNS, type PatternHost } from "./patternFlow";
 import { ProjectPanel } from "./projectPanel";
@@ -318,25 +319,35 @@ export class SketchMode {
    *  reachable from headlessSolve: pick order belongs to the gesture, not to the
    *  document, so no saved sketch changes how it solves because of this. */
   private pendingBias: { moves: string[] } | null = null;
-  private selected = new Set<string>(); // selected entity ids (select tool)
+  /** The select tool's selection, as selection KEYS (selection.ts): whole
+   *  entities, and single points (`e3@4`) and shape sides (`e3~2`) of them
+   *  (GH #17). Insertion order is pick order. Whatever acts on GEOMETRY reads
+   *  the entities the keys belong to (selOwners). */
+  private selected = new Set<string>();
   private constraints: SketchConstraint[] = []; // persistent constraints (solved)
   private patterns: SketchPattern[] = []; // associative pattern definitions
   private lastDof = -1;
   /** Marquee (box) selection in progress — GH #17. Started on a press in empty
    *  space with the select tool, so it can never steal a gesture that had a
    *  target: every branch that finds something under the cursor returns first.
-   *  `shift` here, on moveDrag and in `dragShift`: the press ADDS to the
+   *  `additive` here, on moveDrag and in `dragAdditive`: the press ADDS to the
    *  selection (Shift, Ctrl or Cmd held) instead of replacing it. */
-  private boxSel: { from: THREE.Vector2; to: THREE.Vector2; shift: boolean } | null = null;
+  private boxSel: { from: THREE.Vector2; to: THREE.Vector2; additive: boolean } | null = null;
   private dragFrom: THREE.Vector2 | null = null; // grabbed point's current position
-  // click-vs-drag bookkeeping for a grabbed POINT: which entity owns it, where
-  // the pointer went down (screen px), and whether it ever moved past the same
-  // 4px threshold moveDrag uses. A stationary click on a vertex must still
-  // SELECT the owning entity instead of silently doing nothing.
-  private dragEntIdx = -1;
+  // click-vs-drag bookkeeping for a grabbed POINT: where the pointer went down
+  // (screen px), and whether it ever moved past the same 4px threshold
+  // moveDrag uses. A stationary click on a vertex must still SELECT, instead
+  // of silently doing nothing: since GH #17 it selects the POINT (`dragKey`,
+  // selKeyAt), not the entity owning it.
   private dragStartClient = { x: 0, y: 0 };
   private dragMoved = false;
-  private dragShift = false;
+  private dragAdditive = false;
+  private dragKey: string | null = null;
+  /** for the second press of a double-click: the entity it takes whole if it
+   *  does not move (takeWhole); null for any other press */
+  private dragWhole: string | null = null;
+  /** the point or side the Select hover has lit (selectHover), or null */
+  private selHoverKey: string | null = null;
   /** Set for a press that may PULL APART a shared end (Shift, or a right-click
    *  Disconnect armed on that point): where the press landed, which names the
    *  curve whose end leaves. Spent on the first frame that moves. */
@@ -387,7 +398,11 @@ export class SketchMode {
     startClient: { x: number; y: number };
     last: THREE.Vector2;
     started: boolean;
-    shift: boolean;
+    /** Shift, Ctrl or Cmd: a click adds to the selection (additiveClick) */
+    additive: boolean;
+    /** what a click (no move) selects: the point, side or entity under the
+     *  press (selKeyAt) */
+    key: string;
   } | null = null;
   private solveBusy = false; // a solve is in flight (drag or constraint)
   // the solver WASM failed to come up: stop pumping and say so ONCE, rather
@@ -874,6 +889,7 @@ export class SketchMode {
     // drop any uncommitted text preview left on the active list when switching tools
     if (this.dropTextPreview()) this.refreshActive();
     this.overlay.setPreview([]);
+    this.selHoverKey = null; // the preview it drew is gone with the rest
     this.constraintTools.resetPending();
     if (!keepSelection && this.selected.size) { this.selected.clear(); this.refreshActive(); }
     if (preselected.length) this.seedDimPicks(preselected);
@@ -1015,8 +1031,9 @@ export class SketchMode {
     if (!this.active || !this.constructionTargets().length) return false;
     const make = on ?? !this.selectionMostlyConstruction();
     let changed = 0;
+    const owners = this.selectedOwners();
     this.entities = this.entities.map((e) => {
-      if (!this.selected.has(e.id) || isOriginGeometry(e.id) || !!e.construction === make) return e;
+      if (!owners.has(e.id) || isOriginGeometry(e.id) || !!e.construction === make) return e;
       changed++;
       if (make) return { ...e, construction: true };
       const { construction: _dropped, ...rest } = e;
@@ -1035,7 +1052,14 @@ export class SketchMode {
 
   /** The selected entities whose construction flag can change. */
   private constructionTargets(): ResolvedEntity[] {
-    return this.entities.filter((e) => this.selected.has(e.id) && !isOriginGeometry(e.id));
+    const owners = this.selectedOwners();
+    return this.entities.filter((e) => owners.has(e.id) && !isOriginGeometry(e.id));
+  }
+
+  /** The entities the selection touches, whole or by a point or side: what an
+   *  operation on geometry acts on (selection.ts). */
+  private selectedOwners(): Set<string> {
+    return selOwners(this.selected);
   }
 
   /** Is most of the selection construction already? Decides which way the
@@ -1288,7 +1312,7 @@ export class SketchMode {
   lockDimensionCommand() {
     if (!this.active) return;
     if (this.selected.size) {
-      this.lockMeasuredDims(this.selected);
+      this.lockMeasuredDims(this.selectedOwners());
       return;
     }
     this.setTool("lockDimension");
@@ -1928,11 +1952,34 @@ export class SketchMode {
    *  so the caller can say why instead of appearing to do nothing. */
   growSelectionToChains(): boolean {
     if (!this.active || this.tool !== "select" || this.selected.size === 0) return false;
-    const before = this.selected.size;
-    for (const id of [...this.selected]) {
-      for (const linked of this.entityChain(id)) this.selected.add(linked);
+    const before = [...this.selected].join("|");
+    // a point or side grows into its whole entity, and then its chain
+    for (const id of this.selectedOwners()) {
+      for (const linked of this.entityChain(id)) addKey(this.selected, linked);
     }
-    if (this.selected.size === before) return false;
+    if ([...this.selected].join("|") === before) return false;
+    this.refreshActive();
+    return true;
+  }
+
+  /** What a double-click on entity `id` selects: it and its whole connected
+   *  chain (#15), added to the selection with `additive` (Shift, Ctrl, Cmd),
+   *  else in place of it. A polygon is taken whole and opens its edit box at
+   *  `at` (client px) instead: its chain is only itself (a closed entity has
+   *  no free ends, entityChain), so the chain select had nothing to add for
+   *  one. False, doing nothing, for the origin, which is not selectable
+   *  geometry. */
+  private takeWhole(id: string, additive: boolean, at: { x: number; y: number }): boolean {
+    const ce = this.entities.find((x) => x.id === id);
+    if (!ce || isOriginGeometry(ce.id)) return false;
+    if (!additive) this.selected.clear();
+    if (ce.type === "polygon") {
+      addKey(this.selected, ce.id);
+      this.refreshActive();
+      this.editPolygon(ce.id, at);
+      return true;
+    }
+    for (const linked of this.entityChain(ce.id)) addKey(this.selected, linked);
     this.refreshActive();
     return true;
   }
@@ -1960,17 +2007,72 @@ export class SketchMode {
       this.onPointerDown(e);
       return true;
     }
+    // Only a CURVE under the badge is geometry it sits over. A shape's centre
+    // is inside it, where badges sit (a polygon's radius, at 0.6 of it): a
+    // press there opens the badge's editor, as it always did.
     const own = this.ownEntities();
-    const idx = pickEntity(own, raw, this.pickTol());
-    const ent = idx >= 0 ? own[idx] : undefined;
-    if (!ent) return false;
-    if (e.shiftKey || e.ctrlKey || e.metaKey) { // adds, as on the canvas (onPointerDown)
-      if (!this.selected.delete(ent.id)) this.selected.add(ent.id);
-    } else {
-      this.selected = new Set([ent.id]);
-    }
+    if (pickEntity(own, raw, this.pickTol()) < 0) return false;
+    const key = this.selKeyAt(raw, own);
+    if (!key) return false;
+    clickKey(this.selected, key, additiveClick(e));
     this.refreshActive();
     return true;
+  }
+
+  /** The Select tool's hover: the point or shape side a click at `raw` would
+   *  select (selKeyAt), lit the way the constraint tools light theirs, so a
+   *  click can take one side of a rectangle without that being a surprise.
+   *  A whole entity is not lit, as before. Redrawn only when what is under
+   *  the cursor changes. True while a point or side is lit. */
+  private selectHover(raw: THREE.Vector2): boolean {
+    const key = this.selKeyAt(raw);
+    const part = key !== null && selPart(key).kind !== "entity" ? key : null;
+    if (part !== this.selHoverKey) {
+      this.selHoverKey = part;
+      this.overlay.setPreview(part ? this.partObjects([part], SKETCH_POINT_HOVER) : []);
+    }
+    return part !== null;
+  }
+
+  /** Drop the Select hover (a press, a tool change): a lit side left behind
+   *  would sit where the side WAS through a drag. */
+  private clearSelectHover() {
+    if (!this.selHoverKey) return;
+    this.selHoverKey = null;
+    this.overlay.setPreview([]);
+  }
+
+  /** What a click of the Select tool at `raw` selects, as a selection key
+   *  (selection.ts), or null over nothing: the POINT under it first (a line's
+   *  or arc's end, a corner, a centre), through the same picker every
+   *  constraint tool's click goes through (refPointNear), then the
+   *  SIDE of a rectangle, polygon or slot under it, then the entity. GH #17:
+   *  a click on a rectangle's side used to take the whole rectangle, which
+   *  named no operand, so nothing could be constrained to that side from a
+   *  selection.
+   *
+   *  The point gives way to the curve under the cursor where that curve is
+   *  nearer, or along the middle of a short one (pointBeatsCurve): otherwise
+   *  a small circle's rim took its centre and a short line's middle an end.
+   *  Whenever it does take a point, it is the one a constraint tool would.
+   *
+   *  A sketch POINT is a point already, so it comes back as itself. A slot's
+   *  round end is no side: it takes the whole slot. Its axis is not offered
+   *  here (it runs through the middle of the slot, where a click picks the
+   *  area to extrude); the constraint tools still take it. `ents` narrows the
+   *  candidates. */
+  private selKeyAt(raw: THREE.Vector2, ents: ResolvedEntity[] = this.entities): string | null {
+    const tol = this.pickTol();
+    const idx = pickEntity(ents, raw, tol);
+    const hit = idx >= 0 ? ents[idx] : undefined;
+    const pt = refPointNear(ents, raw, tol);
+    const pe = pt ? ents.find((x) => x.id === pt.id) : undefined;
+    const pos = pt && pe ? refPoint(pe, pt.idx) : null;
+    // an origin axis is reference: it never takes a click from your own point
+    const curve = hit && !isOriginGeometry(hit.id) ? hit : undefined;
+    if (pt && pe && pos && pointBeatsCurve(curve, pos, raw, tol)) return pe.type === "point" ? pe.id : pointKey(pe.id, pt.idx);
+    if (!hit) return null;
+    return (isCompoundShape(hit) ? lineOperandAt(hit, raw) : null) ?? hit.id;
   }
 
   /** Arbitrate a click that landed on a label or glyph while the dimension tool
@@ -2088,25 +2190,38 @@ export class SketchMode {
     this.lastSnapRef = hit.ref ?? null;
 
     if (this.tool === "select") {
-      const additive = e.shiftKey || e.ctrlKey || e.metaKey;
+      this.clearSelectHover();
       // a Disconnect armed from the right-click menu lasts exactly one press
       const armed = this.detachArmed;
       this.detachArmed = null;
       // grab a point to drag it — connected/constrained geometry follows
       const gp = this.pickPoint(p);
       if (gp) {
+        const at = this.planePoint(e) ?? p;
         this.dragFrom = gp.p.clone();
-        this.dragEntIdx = gp.idx;
         this.dragStartClient = { x: e.clientX, y: e.clientY };
         this.dragMoved = false;
-        this.dragShift = additive;
+        this.dragAdditive = additiveClick(e);
+        // what a click here selects: the point the hover lit, which is the
+        // handle's own point but for a nearer one of a shape with no handles,
+        // or the curve itself where it is nearer (selKeyAt)
+        this.dragKey = this.selKeyAt(at) ?? this.entities[gp.idx]?.id ?? null;
+        // A double-click here takes the whole entity or chain, as one on a
+        // curve does (below), once it is known not to be a drag: a handle is
+        // under every press on a small circle, a short line or a corner, so
+        // otherwise those could never be double-clicked whole. A second press
+        // that moves is a drag all the same.
+        const ci = doubleClick ? pickEntity(this.entities, at, this.pickTol()) : -1;
+        this.dragWhole = !doubleClick ? null
+          : ci >= 0 ? this.entities[ci]!.id
+            : this.dragKey ? selOwner(this.dragKey) : null;
         // At a Break's cut, Shift pulls this end AWAY from the other half (see
         // detachFrame); anywhere else it drags as a plain drag does, and the
         // right-click Disconnect is the way to pull an end off. A stationary
         // Shift-click still toggles the selection.
         this.dragDetachRelease = armed === coincKey(gp.p.x, gp.p.y);
         const detach = (e.shiftKey && isBreakCut(this.entities, gp.p)) || this.dragDetachRelease;
-        this.dragDetach = detach ? (this.planePoint(e) ?? p).clone() : null;
+        this.dragDetach = detach ? at.clone() : null;
         this.dragRefusedToast = false;
         this.dragSnapshot = JSON.parse(JSON.stringify(this.entities)); // for Esc-cancel revert
         try { this.viewport.domElement.setPointerCapture(e.pointerId); } catch { /* capture optional */ }
@@ -2135,29 +2250,22 @@ export class SketchMode {
           return;
         }
       }
-      // DOUBLE-click a plain entity → take its whole connected chain (#15). The
-      // FIRST press of the pair has already selected that entity on its own, so
-      // this widens the selection rather than replacing it from nothing. Shift /
-      // Ctrl keeps what was already selected, matching the single-click
-      // modifiers below. Handled before the body-drag arm, because a
-      // double-click must not start a drag.
+      // DOUBLE-click a plain entity → take its whole connected chain (#15); a
+      // POLYGON opens its edit box (takeWhole). The FIRST press of the pair has
+      // already selected that entity on its own, so this widens the selection
+      // rather than replacing it from nothing. Shift / Ctrl keeps what was
+      // already selected, matching the single-click modifiers below. Handled
+      // before the body-drag arm, because a double-click must not start a drag.
       //
-      // A POLYGON opens its edit box instead (radius, sides, rotation): its
-      // chain is only itself (a closed entity has no free ends, entityChain),
-      // so the chain select had nothing to add for one.
+      // The double-click is also how a whole rectangle, polygon or slot is
+      // taken now that a single click takes one SIDE of it (GH #17): a closed
+      // shape's chain is itself. On a point with no curve under it (a centre)
+      // it takes the entity the point belongs to.
       if (doubleClick) {
         const ci = pickEntity(this.entities, raw, this.pickTol());
-        const ce = ci >= 0 ? this.entities[ci] : undefined;
-        if (ce?.type === "polygon") {
-          this.editPolygon(ce.id, { x: e.clientX, y: e.clientY });
-          return;
-        }
-        if (ce && !isOriginGeometry(ce.id)) {
-          if (!additive) this.selected.clear();
-          for (const id of this.entityChain(ce.id)) this.selected.add(id);
-          this.refreshActive();
-          return;
-        }
+        const under = ci >= 0 ? null : this.selKeyAt(raw);
+        const ce = ci >= 0 ? this.entities[ci] : under ? this.entities.find((x) => x.id === selOwner(under)) : undefined;
+        if (ce && this.takeWhole(ce.id, additiveClick(e), { x: e.clientX, y: e.clientY })) return;
       }
       // TEXT is draggable too (GH #17: "Unable to manually drag or adjust text
       // position with the mouse in the sketch plane after creation"). It never
@@ -2175,7 +2283,8 @@ export class SketchMode {
           startClient: { x: e.clientX, y: e.clientY },
           last: raw.clone(),
           started: false,
-          shift: additive,
+          additive: additiveClick(e),
+          key: te!.id,
           group: this.dragGroup(teIdx),
         };
         this.dragRefusedToast = false; // one refusal toast per GESTURE, not per session
@@ -2184,16 +2293,26 @@ export class SketchMode {
       }
       // a real (hand-drawn) entity's body under the cursor → arm a body drag;
       // a plain click (no movement) falls through to selection in endDrag()
+      //
+      // A click (no movement) selects what selKeyAt names under the press: a
+      // corner, end or centre before a shape's side, a side before the whole
+      // shape (GH #17). A shape's CENTRE is inside it, where no curve is, so a
+      // press there arms the same drag for the shape it belongs to: the click
+      // takes the centre, as a click on a circle's centre always took it, and
+      // a drag from it moves the shape.
       const idx = pickEntity(this.entities, raw, this.pickTol());
-      const hit = idx >= 0 ? this.entities[idx] : undefined;
+      const key = this.selKeyAt(raw);
+      const owner = idx >= 0 ? idx : key ? this.entities.findIndex((x) => x.id === selOwner(key)) : -1;
+      const hit = owner >= 0 ? this.entities[owner] : undefined;
       if (hit) {
         this.moveDrag = {
-          idx,
+          idx: owner,
           startClient: { x: e.clientX, y: e.clientY },
           last: raw.clone(),
           started: false,
-          shift: additive,
-          group: this.dragGroup(idx),
+          additive: additiveClick(e),
+          key: key ?? hit.id,
+          group: this.dragGroup(owner),
         };
         this.dragRefusedToast = false; // one refusal toast per GESTURE, not per session
         try { this.viewport.domElement.setPointerCapture(e.pointerId); } catch { /* capture optional */ }
@@ -2203,15 +2322,15 @@ export class SketchMode {
       // sub-areas carved by a crossing curve
       const wr = this.overlay.activeRegionAt(raw);
       if (wr) {
-        this.overlay.toggleRegionSelection(wr, additive);
+        this.overlay.toggleRegionSelection(wr, additiveClick(e));
         return;
       }
       // Empty space: begin a marquee. The selection is NOT cleared here any
       // more — a box drag that ends up selecting nothing clears it in endDrag,
       // and a plain click (no movement) clears it there too, so the old
       // behaviour is preserved without pre-emptively wiping a selection the
-      // user may be about to extend with Shift.
-      this.boxSel = { from: raw.clone(), to: raw.clone(), shift: additive };
+      // user may be about to extend with Shift or Ctrl.
+      this.boxSel = { from: raw.clone(), to: raw.clone(), additive: additiveClick(e) };
       try { this.viewport.domElement.setPointerCapture(e.pointerId); } catch { /* capture optional */ }
       return;
     }
@@ -2761,7 +2880,7 @@ export class SketchMode {
     // entity patterns replicate the selection — drop projected reference
     // geometry from the sources BEFORE PatternFlow snapshots them
     if (ENTITY_PATTERNS.has(this.tool)) {
-      for (const id of this.warnSelectedProjected()) this.selected.delete(id);
+      for (const id of this.warnSelectedProjected()) dropOwner(this.selected, id);
     }
     this.patternFlow.click(p);
   }
@@ -2852,6 +2971,7 @@ export class SketchMode {
       this.dim.seed(name, seeded[name]);
     }
     this.polygonEdit = { id, seeded };
+    this.clearSelectHover(); // the box's preview takes the layer a lit side is drawn on
     this.dim.position(at.x, at.y);
   }
 
@@ -3034,7 +3154,8 @@ export class SketchMode {
     const idx = pickEntity(this.entities, p, this.pickTol());
     const axis = idx >= 0 ? this.entities[idx] : undefined;
     if (!axis || axis.type !== "line") return;
-    const selectedSources = this.entities.filter((e) => this.selected.has(e.id) && e.id !== axis.id);
+    const owners = this.selectedOwners();
+    const selectedSources = this.entities.filter((e) => owners.has(e.id) && e.id !== axis.id);
     // projected geometry is a fixed reference — mirror the rest of the selection
     // (it stays selected; the commit below clears the whole selection anyway)
     const projected = this.warnSelectedProjected();
@@ -3097,31 +3218,36 @@ export class SketchMode {
   // (dimensioning is a batch activity), so no setTool() call happens here.
 
   /** clear the whole in-progress dimension (picks, plan, frozen placement, box) */
-  /** Entities selected in the select tool become this dimension's operands when
-   *  the user switches to the dimension tool (Fusion: click the line, press D).
-   *  Whole-entity picks only — a rectangle selected as a unit names no single
-   *  edge, so resolveDim refuses it and the tool just starts empty. */
-  private seedDimPicks(ids: string[]) {
-    if (ids.length > 2) return; // a dimension has at most two operands
-    const picks: DimTarget[] = [];
-    for (const id of ids) {
-      const e = this.entities.find((x) => x.id === id);
-      if (!e) return;
-      // A whole rectangle, polygon or slot names no side or corner, which is
-      // what the tool dimensions on one: start clean, the prompt saying what
-      // to click, rather than refuse "there" before any click was made.
-      if (e.type === "rectangle" || e.type === "polygon" || e.type === "slot") return;
-      picks.push({ kind: "entity", e });
-    }
+  /** What is selected in the select tool becomes this dimension's operands
+   *  when the user switches to the dimension tool (Fusion: click the line,
+   *  press D): a whole line or circle, and since GH #17 a single point (a
+   *  line's end, a corner, a centre) or one side of a shape. A whole
+   *  rectangle, polygon or slot names no side or corner, so the tool just
+   *  starts empty. A lone point stays picked, waiting for the second. */
+  private seedDimPicks(keys: string[]) {
+    const picks = this.selectionDimPicks(keys);
+    if (!picks) return;
     // A lone LINE reads the cursor for its extents (resolveSingle), but the key
     // that armed this tool carries no cursor and the select tool's hover never
     // writes lastCursor, so it is wherever an earlier tool left it. Planned off
     // that, "click a line, press D, type 25, Enter" could come out a DX/DY.
     // Sit the cursor on the line until the mouse moves: the length, as before.
-    const only = picks.length === 1 ? picks[0]!.e : null;
-    if (only?.type === "line") this.lastCursor.set((only.x1 + only.x2) / 2, (only.y1 + only.y2) / 2);
+    // Two points the same way, between them, where their dimension is the
+    // aligned distance (p2pDimKind): from the right-click menu, the cursor is
+    // wherever the menu was.
+    const [p0, p1] = picks;
+    if (picks.length === 1 && p0?.kind === "entity" && p0.e.type === "line") {
+      this.lastCursor.set((p0.e.x1 + p0.e.x2) / 2, (p0.e.y1 + p0.e.y2) / 2);
+    } else if (p0?.kind === "point" && p1?.kind === "point") {
+      this.lastCursor.copy(p0.pos).add(p1.pos).multiplyScalar(0.5);
+    }
     const r = resolveDim(picks, this.dimOptions());
     if (isDimError(r)) {
+      if (r.keepPicks && picks.length === 1 && picks[0]!.kind === "point") {
+        this.dimPicks = picks;
+        setPrompt(r.message);
+        return;
+      }
       if (r.message) toast(r.message);
       return; // unusable selection: start clean rather than half-armed
     }
@@ -3129,6 +3255,49 @@ export class SketchMode {
     this.dimPlan = r;
     setPrompt(r.hint);
     this.syncDimBox();
+  }
+
+  /** The selection `keys` as the Dimension tool's picks, or null when they
+   *  make none: more than two, or a whole rectangle, polygon or slot, which
+   *  names no side or corner. A point key is a point pick and a side key an
+   *  edge pick, the two the tool's own clicks make there (pickDimTarget). */
+  private selectionDimPicks(keys: string[]): DimTarget[] | null {
+    if (!keys.length || keys.length > 2) return null; // a dimension has at most two operands
+    const byId = new Map(this.entities.map((e) => [e.id, e]));
+    const picks: DimTarget[] = [];
+    for (const key of keys) {
+      const part = selPart(key);
+      const e = byId.get(part.owner);
+      if (!e) return null;
+      if (part.kind === "point") {
+        const pos = dimRefPoints(e).find((r) => r.p === part.p)?.pos;
+        if (!pos) return null;
+        picks.push({ kind: "point", e, p: part.p, pos: pos.clone() });
+      } else if (part.kind === "side") {
+        const seg = lineOperand(byId, key);
+        if (!seg) return null;
+        const k = Number(key.slice(key.indexOf("~") + 1));
+        picks.push({ kind: "edge", e, k, a: new THREE.Vector2(seg.x1, seg.y1), b: new THREE.Vector2(seg.x2, seg.y2) });
+      } else {
+        // A whole rectangle, polygon or slot names no side or corner, which
+        // is what the tool dimensions on one: start clean, the prompt saying
+        // what to click, rather than refuse "there" before any click was made.
+        if (isCompoundShape(e)) return null;
+        picks.push({ kind: "entity", e });
+      }
+    }
+    return picks;
+  }
+
+  /** The dimension the Dimension tool would make of selection `keys` straight
+   *  away, or null when it would make none yet: what the right-click menu's
+   *  Dimension item offers. Which KIND (aligned, horizontal, vertical) follows
+   *  the cursor once the tool has it; whether there is one at all does not. */
+  private selectionDimPlan(keys: string[]): DimPlan | null {
+    const picks = this.selectionDimPicks(keys);
+    if (!picks) return null;
+    const r = resolveDim(picks);
+    return isDimError(r) ? null : r;
   }
 
   /** Put the typed value into the entity the user picked FIRST, before solving.
@@ -3695,9 +3864,14 @@ export class SketchMode {
       }
       const hit = this.snapAt(e.clientX, e.clientY);
       this.showSnap(hit);
-      if (this.tool === "select") {
-        const raw = this.planePoint(e); // hover-highlight a profile area
-        this.overlay.setHoverRegion(raw ? this.overlay.activeRegionAt(raw) : null);
+      if (this.active && this.tool === "select") {
+        const raw = this.planePoint(e);
+        // the point or side a click would take, lit; over one, the area
+        // around it is not what a click takes, so it is not lit. Not while
+        // the polygon edit box is open: the layer it would draw on holds the
+        // box's live preview of the typed radius, sides and rotation.
+        const part = raw && !this.polygonEdit ? this.selectHover(raw) : false;
+        this.overlay.setHoverRegion(raw && !part ? this.overlay.activeRegionAt(raw) : null); // a profile area
       }
       return;
     }
@@ -4133,10 +4307,13 @@ export class SketchMode {
     // on every committed sketch in the document would be noise.
     const epR = this.endpointDotRadius();
     if (this.selected.size) {
+      // a whole entity in the selection colour; a selected point or side of
+      // one in it ON the entity, which keeps its own colour (GH #17)
       const normal = this.entities.filter((e) => !this.selected.has(e.id));
       const chosen = this.entities.filter((e) => this.selected.has(e.id));
       if (normal.length) objs.push(...curveObjects(normal, this.plane, this.activeColor(), false, epR));
       if (chosen.length) objs.push(...curveObjects(chosen, this.plane, SELECT_COLOR, true));
+      objs.push(...this.partObjects([...this.selected], SELECT_COLOR));
     } else {
       objs.push(...curveObjects(this.entities, this.plane, this.activeColor(), false, epR));
     }
@@ -4148,6 +4325,30 @@ export class SketchMode {
     }
     if (derived.length) objs.push(...curveObjects(derived, this.plane, this.activeColor()));
     return objs;
+  }
+
+  /** The points and sides among selection `keys`, drawn in `color` over the
+   *  entities they belong to: a side as its own line, a point as the square a
+   *  resting endpoint dot is, bigger. Whole-entity keys draw nothing here. */
+  private partObjects(keys: string[], color: number): THREE.Object3D[] {
+    const byId = new Map(this.entities.map((e) => [e.id, e]));
+    const out: THREE.Object3D[] = [];
+    for (const key of keys) {
+      const part = selPart(key);
+      if (part.kind === "side") {
+        const seg = lineOperand(byId, key);
+        if (!seg) continue;
+        for (const o of curveObjects([{ type: "line", id: key, ...seg } as ResolvedEntity], this.plane, color, true)) {
+          o.renderOrder = 13; // over the outline it is part of
+          out.push(o);
+        }
+      } else if (part.kind === "point") {
+        const owner = byId.get(part.owner);
+        const q = owner ? dimRefPoints(owner).find((r) => r.p === part.p)?.pos : undefined;
+        if (q) out.push(pointHighlight(this.plane, q.x, q.y, color, this.endpointDotRadius() * 1.7));
+      }
+    }
+    return out;
   }
 
   private entityCurve(e: ResolvedEntity): THREE.Object3D {
@@ -4306,7 +4507,8 @@ export class SketchMode {
     if (!this.selected.size) return;
     // the origin is not deletable: it is not the user's geometry, and losing it
     // mid-sketch would silently unanchor everything constrained to it
-    this.entities = this.entities.filter((en) => !this.selected.has(en.id) || isOriginGeometry(en.id));
+    const owners = this.selectedOwners();
+    this.entities = this.entities.filter((en) => !owners.has(en.id) || isOriginGeometry(en.id));
     this.selected.clear();
     dismissContextMenu(); // the Delete key can fire while the right-click menu is open
     this.afterModify();
@@ -4336,16 +4538,36 @@ export class SketchMode {
     const a = ops[0], b = ops[1];
     if (!a) return;
     const mover = (named && ops.find((o) => o !== named)) || a;
-    const push = (c: SketchConstraint, moves = mover.ent.id) => {
-      this.constraints.push(c);
-      this.trial = { cons: [c], msg: SketchMode.CONSTRAINT_CONFLICT_MSG }; // withdrawn again if this solve conflicts
-      this.pendingBias = { moves: [moves] };
+    const pushAll = (cs: SketchConstraint[], moves: string[]) => {
+      this.constraints.push(...cs);
+      this.trial = { cons: cs, msg: SketchMode.CONSTRAINT_CONFLICT_MSG }; // withdrawn again if this solve conflicts
+      this.pendingBias = { moves };
       this.requestSolve();
       this.onState?.();
     };
+    const push = (c: SketchConstraint, moves = mover.ent.id) => pushAll([c], [moves]);
     if (t === "horizontal") return push({ type: "horizontal", line: a.id });
     if (t === "vertical") return push({ type: "vertical", line: a.id });
     if (t === "fix") return push({ type: "fix", e: a.id, p: a.p });
+    if (t === "symmetric") {
+      // the first point is what moves, onto the second's mirror, as with the
+      // tool's three clicks
+      const sym = symmetricOperands(ops);
+      if (!sym) return;
+      return push({ type: "symmetric", e1: sym.a.id, p1: sym.a.p, e2: sym.b.id, p2: sym.b.p, line: sym.line.id }, sym.a.ent.id);
+    }
+    if (t === "equal" && ops.length > 2) {
+      // Several, held to the size of the LAST picked: a pair's first pick is
+      // what moves (bug #86), and a chain moves every one but the last.
+      const last = ops[ops.length - 1]!;
+      const rest = ops.slice(0, -1);
+      return pushAll(
+        rest.map((o): SketchConstraint => (o.kind === "line"
+          ? { type: "equal", l1: o.id, l2: last.id }
+          : { type: "equalRadius", a: o.id, b: last.id })),
+        rest.map((o) => o.ent.id),
+      );
+    }
     if (!b) return;
     if (t === "parallel") return push({ type: "parallel", l1: a.id, l2: b.id });
     if (t === "perpendicular") return push({ type: "perpendicular", l1: a.id, l2: b.id });
@@ -4378,15 +4600,27 @@ export class SketchMode {
     if (this.tool === "offset") { this.openOffsetMenu(e); return; }
     if (this.tool !== "select") return;
     const raw = this.planePoint(e);
-    const idx = raw ? pickEntity(this.entities, raw, this.pickTol()) : -1;
-    const hit = idx >= 0 ? this.entities[idx] : undefined;
-    if (hit) {
-      const id = hit.id;
-      if (!this.selected.has(id)) { this.selected = new Set([id]); this.refreshActive(); }
+    // A right-click on geometry the selection does not touch selects what a
+    // left click there would (selKeyAt: a point, a side, an entity). On
+    // geometry it does touch, the selection stays as it is. With Shift, Ctrl
+    // or Cmd held it ADDS what is under it, as that click would: picking
+    // points with Ctrl held and right-clicking the last one (GH #17) must not
+    // throw the others away. A shape already held whole stays whole.
+    const key = raw ? this.selKeyAt(raw) : null;
+    const hit = key ? this.entities.find((x) => x.id === selOwner(key)) : undefined;
+    if (key && hit && additiveClick(e)) {
+      if (!this.selected.has(key) && !this.selected.has(hit.id)) {
+        addKey(this.selected, key);
+        this.refreshActive();
+      }
+    } else if (key && hit && !this.selectedOwners().has(hit.id)) {
+      this.selected = new Set([key]);
+      this.refreshActive();
     }
     if (!this.selected.size) return; // nothing to act on → let nav handle it
     e.preventDefault();
-    const n = this.selected.size;
+    const owners = this.selectedOwners();
+    const n = owners.size;
     const linked = this.selectedProjectedIds().size;
     // Constraints that actually APPLY to this selection, first — GH #17's
     // "a small menu showing only the valid/possible constraints for that
@@ -4394,19 +4628,23 @@ export class SketchMode {
     // constraint tools live behind a caret in a ribbon group that collapses into
     // an overflow menu on a laptop-width window, which is how two testers
     // independently failed to find them.
-    const selEnts = this.entities.filter((e) => this.selected.has(e.id));
-    // On a rectangle, polygon or slot the right-click names the corner, centre
-    // or side under the cursor, the way a click of a constraint tool would
-    // (constraintMenu.operandUnder): that is what makes the menu able to offer
-    // anything for a shape at all.
-    // A shape's CENTRE is inside it, away from the outline a right-click hits:
-    // it is named when a selected shape has one under the cursor.
+    const selEnts = this.entities.filter((e) => owners.has(e.id));
+    // On a rectangle, polygon or slot selected WHOLE (a box, a double-click)
+    // the right-click names the corner, centre or side under the cursor, the
+    // way a click of a constraint tool would (constraintMenu.operandUnder):
+    // that is what makes the menu able to offer anything for a whole shape.
+    // A point or side selected on its own is its own operand (menuOperands).
     const tol = this.pickTol();
+    const wholeShapes = selEnts.filter((s) => isCompoundShape(s) && this.selected.has(s.id));
     const named = !raw ? null
-      : hit ? operandUnder(hit, raw, tol)
-        : selEnts.filter(isCompoundShape).map((s) => operandUnder(s, raw, tol)).find((o) => o?.kind === "point") ?? null;
-    const cons = applicableConstraints(selEnts, named);
-    const ops = menuOperands(selEnts, named) ?? [];
+      : hit && wholeShapes.includes(hit) ? operandUnder(hit, raw, tol)
+        : wholeShapes.map((s) => operandUnder(s, raw, tol)).find((o) => o?.kind === "point") ?? null;
+    const ops = menuOperands(this.selected, new Map(this.entities.map((x) => [x.id, x])), named) ?? [];
+    const cons = applicableConstraints(ops);
+    // "Distance" from a selection is a dimension: it needs a value, so the
+    // item hands the selection to the Dimension tool (seedDimPicks), which
+    // asks for one. Offered when that tool can dimension the selection.
+    const dimensionable = this.selectionDimPlan([...this.selected]) !== null;
     // Lock and the construction toggle are offered here for the same reason the
     // constraints are: this menu is where a selection's actions get found
     // (reports d3338e3a and 2fc27cf1).
@@ -4432,10 +4670,11 @@ export class SketchMode {
         label: constraintLabel(tool),
         onClick: () => this.applyConstraintToSelection(tool, ops, named),
       })),
+      ...(dimensionable ? [{ label: constraintLabel("dimension"), onClick: () => this.setTool("dimension") }] : []),
       ...(lockable
-        ? [{ label: t("sketch.menu.lockDimensions"), onClick: () => this.lockMeasuredDims(this.selected) }]
+        ? [{ label: t("sketch.menu.lockDimensions"), onClick: () => this.lockMeasuredDims(this.selectedOwners()) }]
         : []),
-      ...(cons.length || lockable ? [{ separator: true, label: "" } as CtxItem] : []),
+      ...(cons.length || dimensionable || lockable ? [{ separator: true, label: "" } as CtxItem] : []),
       ...(convertible
         ? [{
           label: toNormal ? t("sketch.menu.makeNormal") : t("sketch.menu.makeConstruction"),
@@ -4841,7 +5080,11 @@ export class SketchMode {
       // Selected, it stays selected as everything it became, helpers too: a
       // Move that took the polygon's lines and left its circle behind would
       // have the solve pull one back to the other.
-      if (this.selected.has(shape.id)) for (const id of [...result.outline, ...result.helpers]) this.selected.add(id);
+      // (A point or side of it selected counts: the shape it named is gone.)
+      if (selOwners(this.selected).has(shape.id)) {
+        dropOwner(this.selected, shape.id);
+        for (const id of [...result.outline, ...result.helpers]) this.selected.add(id);
+      }
       const name = t(`sketch.entity.${shape.type}`);
       if (why === "fillet" || why === "chamfer") {
         toast(t("sketch.modify.explodedForCorner", { shape: name, tool: why === "chamfer" ? t("tool.chamfer") : t("tool.fillet") }), { timeout: 8000 });
@@ -5009,7 +5252,8 @@ export class SketchMode {
   private explodeSelected() {
     const regions = this.regionsBeforeRename();
     const done: { shape: ResolvedEntity; result: ExplodeResult }[] = [];
-    for (const shape of this.entities.filter((e) => this.selected.has(e.id) && isCompoundShape(e))) {
+    const owners = this.selectedOwners();
+    for (const shape of this.entities.filter((e) => owners.has(e.id) && isCompoundShape(e))) {
       const why = this.explodeRefusal(shape);
       if (why) { toast(why, { timeout: 8000 }); continue; }
       const result = explodeCompound(this.entities, this.constraints, this.entities.indexOf(shape), { centre: this.extrudeNamesCentre(shape.id) });
@@ -5049,8 +5293,9 @@ export class SketchMode {
 
   /** ids of the currently-selected projected (linked reference) entities. */
   private selectedProjectedIds(): Set<string> {
+    const owners = this.selectedOwners();
     return new Set(
-      this.entities.filter((e) => e.type === "projected" && this.selected.has(e.id)).map((e) => e.id),
+      this.entities.filter((e) => e.type === "projected" && owners.has(e.id)).map((e) => e.id),
     );
   }
 
@@ -5086,12 +5331,19 @@ export class SketchMode {
     // landed (the body drag's twin, 69d5231f). The origin point offers no pick
     // of its own today; it is kept the same way all the same.
     const kept = (id: string) => projected.has(id) || isOriginGeometry(id);
+    const owners = this.selectedOwners();
+    // the keys an entity was selected by, kept while it keeps its id: a moved
+    // rectangle whose side was selected still has that side selected
+    const keysOf = (id: string) => [...this.selected].filter((k) => selOwner(k) === id);
     for (const e of this.entities) {
-      if (this.selected.has(e.id) && !kept(e.id)) {
-        for (const m of map(e)) { next.push(m); sel.add(m.id); }
+      if (owners.has(e.id) && !kept(e.id)) {
+        const out = map(e);
+        for (const m of out) next.push(m);
+        if (out.length === 1 && out[0]!.id === e.id) for (const k of keysOf(e.id)) sel.add(k);
+        else for (const m of out) sel.add(m.id);
       } else {
         next.push(e);
-        if (this.selected.has(e.id)) sel.add(e.id);
+        for (const k of keysOf(e.id)) sel.add(k);
       }
     }
     this.entities = next;
@@ -5104,7 +5356,7 @@ export class SketchMode {
    *  explodes a rectangle, rather than explode it and then be refused. */
   private refusePinnedSelection(): boolean {
     const pinned = fixPinnedIds(this.constraints);
-    if (!pinned.size || ![...this.selected].some((id) => pinned.has(id))) return false;
+    if (!pinned.size || ![...this.selectedOwners()].some((id) => pinned.has(id))) return false;
     toast(FIXED_POINT_MSG);
     return true;
   }
@@ -5120,9 +5372,10 @@ export class SketchMode {
    *  the decision is about shapes, and a moved line stretching its neighbour
    *  is the gesture a body drag makes too. */
   private refuseTiedShapes(tie: (c: SketchConstraint, moving: ReadonlySet<string>) => boolean, msg: string): boolean {
+    const owners = this.selectedOwners();
     const moving = new Set(
       this.entities
-        .filter((e) => this.selected.has(e.id) && e.type !== "projected" && !isOriginGeometry(e.id))
+        .filter((e) => owners.has(e.id) && e.type !== "projected" && !isOriginGeometry(e.id))
         .map((e) => e.id),
     );
     if (!this.entities.some((e) => isCompoundShape(e) && moving.has(e.id))) return false;
@@ -5140,7 +5393,8 @@ export class SketchMode {
   private explodeSelectedRectangles() {
     const regions = this.regionsBeforeRename();
     const done: { shape: ResolvedEntity; result: ExplodeResult }[] = [];
-    for (const shape of this.entities.filter((e) => this.selected.has(e.id) && e.type === "rectangle")) {
+    const owners = this.selectedOwners();
+    for (const shape of this.entities.filter((e) => owners.has(e.id) && e.type === "rectangle")) {
       const result = explodeCompound(this.entities, this.constraints, this.entities.indexOf(shape), {
         square: "perpendicular", centre: this.extrudeNamesCentre(shape.id),
       });
@@ -5174,8 +5428,9 @@ export class SketchMode {
       const copies: ResolvedEntity[] = [];
       const sel = new Set<string>();
       const projected = this.warnSelectedProjected(); // linked — can't clone the link
+      const owners = this.selectedOwners();
       for (const e of this.entities) {
-        if (!this.selected.has(e.id) || projected.has(e.id)) continue;
+        if (!owners.has(e.id) || projected.has(e.id)) continue;
         const id = newEntityId();
         copies.push(translated(e, dx, dy, id));
         sel.add(id);
@@ -6089,7 +6344,6 @@ export class SketchMode {
       toast(r.kind === "coincident" ? t("sketch.guard.coincidentHolds") : FIXED_POINT_MSG);
       this.dragFrom = null;
       this.dragSnapshot = null;
-      this.dragEntIdx = -1;
       return false;
     }
     this.entities = r.entities;
@@ -6099,7 +6353,6 @@ export class SketchMode {
       this.conflictIdx.clear(); // indices shift; the next solve repopulates
       this.overIdx.clear();
     }
-    this.dragEntIdx = r.idx;
     from.copy(w); // the pulled end sits under the cursor: the drag pins it from here
     return true;
   }
@@ -6175,10 +6428,11 @@ export class SketchMode {
    *  and dragging it must not quietly move the rest of the selection. */
   private dragGroup(idx: number): number[] {
     const grabbed = this.entities[idx];
-    if (!grabbed || isOriginGeometry(grabbed.id) || this.selected.size < 2 || !this.selected.has(grabbed.id)) return [idx];
+    const owners = this.selectedOwners();
+    if (!grabbed || isOriginGeometry(grabbed.id) || owners.size < 2 || !owners.has(grabbed.id)) return [idx];
     const out: number[] = [];
     this.entities.forEach((e, i) => {
-      if (this.selected.has(e.id) && !isOriginGeometry(e.id)) out.push(i);
+      if (owners.has(e.id) && !isOriginGeometry(e.id)) out.push(i);
     });
     return out.length ? out : [idx];
   }
@@ -6208,7 +6462,7 @@ export class SketchMode {
     const moved = b.from.distanceTo(b.to) > this.pickTol() * 0.5;
     if (!moved) {
       // a plain click in empty space — the old clear-everything behaviour
-      if (!b.shift) { this.selected.clear(); this.overlay.clearRegionSelection(); }
+      if (!b.additive) { this.selected.clear(); this.overlay.clearRegionSelection(); }
       this.refreshActive();
       return;
     }
@@ -6218,8 +6472,8 @@ export class SketchMode {
       this.entities.filter((e) => !isOriginGeometry(e.id)),
       boxFromDrag(b.from, b.to),
     );
-    if (!b.shift) this.selected.clear();
-    for (const id of hits) this.selected.add(id);
+    if (!b.additive) this.selected.clear();
+    for (const id of hits) addKey(this.selected, id); // a box takes whole entities
     this.refreshActive();
     this.onState?.();
   }
@@ -6266,14 +6520,10 @@ export class SketchMode {
       }
       const ent = this.entities[md.idx];
       if (!md.started) {
-        // never moved: this was a click — the original (de)select behavior
+        // never moved: this was a click, which (de)selects what it landed on
         this.dragSnapshot = null;
         if (ent) {
-          if (md.shift) {
-            if (!this.selected.delete(ent.id)) this.selected.add(ent.id);
-          } else {
-            this.selected = new Set([ent.id]);
-          }
+          clickKey(this.selected, md.key, md.additive);
           this.refreshActive();
         }
         return;
@@ -6302,23 +6552,21 @@ export class SketchMode {
       try { this.viewport.domElement.releasePointerCapture(pointerId); } catch { /* not captured */ }
     }
     if (!this.dragMoved) {
-      // never moved: a click on a vertex — (de)select the owning entity, same
-      // behavior as clicking its body (users click near endpoints constantly;
-      // this used to silently do nothing)
+      // never moved: a click on a vertex, which (de)selects that POINT (GH
+      // #17); it used to take the entity owning it, and before that it
+      // silently did nothing. The second click of a double-click takes the
+      // whole entity or chain instead.
       this.dragSnapshot = null;
-      const ent = this.entities[this.dragEntIdx];
-      this.dragEntIdx = -1;
-      if (ent) {
-        if (this.dragShift) {
-          if (!this.selected.delete(ent.id)) this.selected.add(ent.id);
-        } else {
-          this.selected = new Set([ent.id]);
-        }
-      }
+      const key = this.dragKey;
+      const whole = this.dragWhole;
+      this.dragKey = null;
+      this.dragWhole = null;
+      if (whole && this.takeWhole(whole, this.dragAdditive, this.dragStartClient)) return;
+      if (key) clickKey(this.selected, key, this.dragAdditive);
       this.refreshActive();
       return;
     }
-    this.dragEntIdx = -1;
+    this.dragWhole = null;
     this.bankDrag(); // the whole drag is ONE undo step, not one per frame
     this.refreshActive(); // restore snap candidates + dimension labels at final positions
     this.onState?.();
