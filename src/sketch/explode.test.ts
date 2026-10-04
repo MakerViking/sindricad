@@ -512,6 +512,64 @@ describe("Fillet and Chamfer on a shape's sides", () => {
     expect(ring.radius).toBeCloseTo(10, 9);
   });
 
+  it("a hexagon with a rounded or bevelled corner, or two, stays regular when its corner circle is resized", async () => {
+    // Integration check 2b: Fillet one corner, then type the corner circle's
+    // Diameter 40 -> 22 in the panel. The rounded corner's On-the-ring hold
+    // went with the corner, and with five corners on the ring the size of
+    // the inner circle was free: the full sides read 9.81 instead of 11 and
+    // the extruded hexagon came out lopsided, without a word. A second corner
+    // of the same polygon lost its hold too, and said a constraint was lost.
+    //
+    // A filleted one may instead refuse a big resize, with a note: a fillet's
+    // two Tangents share an end with their lines, which planegcs reads as
+    // degenerate, and whether a big jump then solves depends on the order the
+    // solver sees things in. A filleted rectangle with locked sides is refused
+    // the same way (60 -> 30 wide). A chamfer has no Tangents and always
+    // resizes. What must never happen is the lopsided shape.
+    const HEX20 = (): ResolvedEntity => ({ type: "polygon", id: "P", x: 3, y: 7, radius: 20, sides: 6, angle: 17 });
+    const cases = [
+      ["chamfer", "distance", 1, 22, "resizes"], ["fillet", "radius", 1, 36, "or says why not"],
+      ["fillet", "radius", 1, 22, "or says why not"], ["fillet", "radius", 2, 22, "or says why not"],
+    ] as const;
+    for (const [tool, field, corners, dia, outcome] of cases) {
+      const why = `${tool} x${corners} to ${dia}`;
+      toasts.length = 0;
+      const live = liveSketch([HEX20()]);
+      const box = withBox(live);
+      const ex = explodeCompound([HEX20()], [], 0)!; // where its sides are, to click them
+      const side = (k: number) => byId(ex.entities, ex.sides[k]!) as Line;
+      const along = (l: Line) => [l.x1 + (l.x2 - l.x1) * 0.4, l.y1 + (l.y2 - l.y1) * 0.4] as const; // off the badge
+      for (let c = 0; c < corners; c++) {
+        live.s.tool = tool;
+        live.click(...along(side(2 * c))); // sides 2c and 2c+1 meet at corner 2c+1
+        live.click(...along(side(2 * c + 1)));
+        box.enter(field, "4");
+        await live.settle();
+      }
+      const exploded = t("sketch.modify.explodedForCorner", { shape: t("sketch.entity.polygon"), tool: t(`tool.${tool}`) });
+      expect(toasts, `${why}: nothing lost`).toEqual([exploded]);
+      const ring = live.s.entities.find((e) => e.type === "circle" && e.construction && Math.abs(e.radius - 20) < 1e-6)!;
+      expect(ring, why).toBeDefined();
+      // the panel's Diameter row, while the sketch is open (inspector -> store.setSketchDimension)
+      (live.s as unknown as { applyDimensionEdit(id: string, f: string, mm: number): void }).applyDimensionEdit(ring.id, "diameter", dia);
+      await live.settle();
+      const c = live.s.entities.find((e) => e.id === ring.id) as Extract<ResolvedEntity, { type: "circle" }>;
+      if (outcome === "resizes") expect(c.radius, why).toBeCloseTo(dia / 2, 6);
+      else if (Math.abs(c.radius - dia / 2) > 1e-6) {
+        expect(c.radius, `${why}: refused, so unchanged`).toBeCloseTo(20, 6);
+        expect(toasts.length, `${why}: and said so`).toBe(2);
+      }
+      // every side's line touches the circle a regular hexagon that size has
+      // inside it, and every side no tool shortened is a full side long
+      const sides = lines(live.s.entities).filter((l) => !l.id.startsWith("__"));
+      const inner = c.radius * Math.cos(Math.PI / 6);
+      const fromCentre = (l: Line) => Math.abs((c.x - l.x1) * (l.y2 - l.y1) - (c.y - l.y1) * (l.x2 - l.x1)) / len(l);
+      const outline = sides.filter((l) => Math.abs(fromCentre(l) - inner) < 1e-6);
+      expect(outline, `${why}: six sides touch the inner circle`).toHaveLength(6);
+      expect(outline.filter((l) => Math.abs(len(l) - c.radius) < 1e-6), `${why}: full sides`).toHaveLength(6 - 2 * corners);
+    }
+  });
+
   it("a parameter-driven polygon stays a polygon, and says why", () => {
     const live = liveSketch([HEX()]);
     (live.s as unknown as { pendingBindings: Map<string, unknown> }).pendingBindings.set("e:P:radius", { expr: "w/2", kind: "length", name: "hole_r" });

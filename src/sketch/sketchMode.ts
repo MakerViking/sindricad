@@ -23,7 +23,7 @@ import {
   targetKey, unsupportedMessage,
   type DimOptions, type DimPlan, type DimTarget,
 } from "./dimensionTool";
-import { pickEntity, trimSpan, trimWithConstraints, detachEndpoint, detachableEnd, filletCorner, chamferCorner, cornerJoins, explodeCompound, rotationTie, translationTie, offsetEntity, offsetChain, offsetChainJunction, signedOffsetAt, breakWithConstraints, extendLine, breakLink, attachmentPoints, bodyDragBlocked, bodyDragFrame, fixPinnedIds, pickDragPoint, FIXED_POINT_MSG, PROJECTED_FIXED_MSG, type ExplodeResult, type OffsetResult } from "./modify";
+import { pickEntity, trimSpan, trimWithConstraints, detachEndpoint, detachableEnd, filletCorner, chamferCorner, cornerJoins, explodeCompound, polygonRingHolds, rotationTie, translationTie, offsetEntity, offsetChain, offsetChainJunction, signedOffsetAt, breakWithConstraints, extendLine, breakLink, attachmentPoints, bodyDragBlocked, bodyDragFrame, fixPinnedIds, pickDragPoint, FIXED_POINT_MSG, PROJECTED_FIXED_MSG, type ExplodeResult, type OffsetResult } from "./modify";
 import { newEntityId, newConstraintId, isDimConstraint, notePatternId } from "./id";
 import { SketchHistory, cloneSnapshot, type SketchSnapshot } from "./history";
 import { isPlainNumber, parseField, dimValueOk, fmtLength, fieldText, canonicalDecimal, fieldExpr } from "../ui/units";
@@ -4677,12 +4677,13 @@ export class SketchMode {
     tool: "fillet" | "chamfer",
   ) {
     const a = plan.entities[plan.iA]!.id, b = plan.entities[plan.iB]!.id;
-    // An exploded polygon's corner sat on its construction circle; that one
-    // goes with the corner unannounced, as the user never made it.
-    const own = new Set(plan.exploded.flatMap((x) => x.result.holds));
+    // An exploded polygon's corner sat on its construction circle, whether it
+    // was exploded just now or earlier; the user never made that hold, so it
+    // is kept through a construction point at the corner, unannounced.
+    const own = new Set([...plan.exploded.flatMap((x) => x.result.holds), ...polygonRingHolds(plan.constraints, plan.entities)]);
     const joins = cornerJoins(plan.constraints, plan.entities, made, a, b, own);
     this.constraints = joins.constraints;
-    this.entities = made;
+    this.entities = [...made, ...joins.points];
     const had = new Set(plan.entities.map((e) => e.id));
     const fresh = made.filter((e) => !had.has(e.id)).map((e) => e.id);
     for (const pat of this.patterns) {

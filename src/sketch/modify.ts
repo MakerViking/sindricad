@@ -1248,6 +1248,13 @@ function cutBack(l: LineE, keepStart: boolean, to: THREE.Vector2): LineE {
  *  it used to be, a rectangle anchored on the origin by that corner came loose
  *  without a word.
  *
+ *  An exploded polygon's own corner On its ring (in `quiet`) is kept through
+ *  a construction point at the corner, On both lines and On the ring, the way
+ *  the rectangle's centre is held (explodeCompound). Dropped with the corner,
+ *  it left five corners on the ring and the polygon's inner circle free:
+ *  resizing the ring then made it irregular. The point comes back in `points`
+ *  for the caller to add.
+ *
  *  What cannot be kept is counted, for the caller to say so, except for the
  *  constraints in `quiet` (an explode's own, which the user never made):
  *    lost     a point held On a curve by the moved corner end itself: on the
@@ -1266,7 +1273,7 @@ export function cornerJoins(
   a: string,
   b: string,
   quiet: ReadonlySet<SketchConstraint> = new Set(),
-): { constraints: SketchConstraint[]; lost: number; shifted: number } {
+): { constraints: SketchConstraint[]; points: ResolvedEntity[]; lost: number; shifted: number } {
   const was = new Map(before.map((e) => [e.id, e]));
   const now = new Map(after.map((e) => [e.id, e]));
   const moved = (id: string, p: number) => {
@@ -1275,6 +1282,7 @@ export function cornerJoins(
     return !!p0 && !!p1 && coincKey(p0.x, p0.y) !== coincKey(p1.x, p1.y);
   };
   const out: SketchConstraint[] = [];
+  const points: ResolvedEntity[] = [];
   const holds = (e: string, p: number, curve: string) =>
     [...constraints, ...out].some((k) => k.type === "pointOn" && k.e === e && k.p === p && k.curve === curve);
   let lost = 0, shifted = 0;
@@ -1290,6 +1298,18 @@ export function cornerJoins(
       continue;
     }
     if (c.type === "pointOn" && moved(c.e, c.p)) {
+      const e0 = was.get(c.e);
+      const corner = e0 && refPoint(e0, c.p);
+      if (quiet.has(c) && corner && c.curve !== a && c.curve !== b) {
+        const id = newEntityId();
+        points.push({ type: "point", id, x: corner.x, y: corner.y, construction: true });
+        out.push(
+          { type: "pointOn", e: id, p: 0, curve: a },
+          { type: "pointOn", e: id, p: 0, curve: b },
+          { type: "pointOn", e: id, p: 0, curve: c.curve },
+        );
+        continue;
+      }
       if (!quiet.has(c)) lost++;
       continue;
     }
@@ -1299,7 +1319,28 @@ export function cornerJoins(
     }
     out.push(c);
   }
-  return { constraints: out, lost, shifted };
+  return { constraints: out, points, lost, shifted };
+}
+
+/** The corner-On-ring holds of every polygon exploded into lines (modify.ts
+ *  explodeCompound): a line's end On a construction circle that is concentric
+ *  with a second construction circle the same line is tangent to. Once the
+ *  explode is done they are ordinary constraints, so they are known by that
+ *  shape, which is what lets a second Fillet or Chamfer on the polygon keep
+ *  its corner as the first one does (cornerJoins' `quiet`). */
+export function polygonRingHolds(constraints: readonly SketchConstraint[], ents: readonly ResolvedEntity[]): Set<SketchConstraint> {
+  const guide = new Set(ents.filter((e) => e.type === "circle" && e.construction).map((e) => e.id));
+  const inners = new Map<string, string[]>();
+  const touches = new Set<string>();
+  for (const k of constraints) {
+    if (k.type === "concentric" && guide.has(k.c1) && guide.has(k.c2)) {
+      inners.set(k.c1, [...(inners.get(k.c1) ?? []), k.c2]);
+      inners.set(k.c2, [...(inners.get(k.c2) ?? []), k.c1]);
+    }
+    if (k.type === "tangent2") touches.add(`${k.a}|${k.b}`).add(`${k.b}|${k.a}`);
+  }
+  return new Set(constraints.filter((k) =>
+    k.type === "pointOn" && (inners.get(k.curve) ?? []).some((inner) => touches.has(`${k.e}|${inner}`))));
 }
 
 /** What a length dimension measures on `ents` right now, or null for one this
