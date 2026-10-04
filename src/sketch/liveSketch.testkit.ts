@@ -138,6 +138,8 @@ export function liveSketch(ents: ResolvedEntity[], cons: SketchConstraint[] = []
       hoverEntity() {},
       requestRender() {},
       beforeNextDraw: (fn: () => void) => { frames.push(fn); },
+      // the inverse of planePointAt below: where Rotate and Scale put their box
+      projectToScreen: (w: THREE.Vector3) => ({ x: w.x * PX, y: w.y * PX }),
     },
     // the screen <-> plane mapping and the redraws, replaced
     planePointAt: (cx: number, cy: number) => new THREE.Vector2(cx / PX, cy / PX),

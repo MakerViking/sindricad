@@ -422,6 +422,10 @@ export class SketchOverlay {
   selectedRegions(): WorldRegion[] {
     return this.regions.filter((wr) => this.isRegionSelected(wr));
   }
+  /** the active sketch's selected areas (sketch mode), filled like a selection */
+  selectedActiveRegions(): WorldRegion[] {
+    return this.activeRegions.filter((wr) => this.isRegionSelected(wr));
+  }
   // A stored 3D anchor counts for a region only if it lies ON that region's plane
   // AND inside its material — see worldPointInRegion for why the coplanarity gate
   // is essential (parallel-sketch projection bug, loft workflow).

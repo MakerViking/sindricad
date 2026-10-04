@@ -861,6 +861,23 @@ This file starts on 2026-08-03. For anything before that, see the
   refused up front, because that guard protects against a crash rather than
   judging how editable the result would be.
 
+- **Move, Copy, Rotate and Scale in a sketch tell you what to select, and let
+  you select it in the tool.** Pick one of them with nothing selected and it
+  says so straight away, then a click selects what you want to move, Shift or
+  Ctrl-click adds more, and Enter moves on to the point. Before, the tool lit
+  the curve under the pointer red and only told you to select something first
+  once you had clicked it. A selection you make before picking the tool is used
+  as it is, the way Mirror uses one. The point to move, turn or scale about now
+  snaps to endpoints, centers, shape corners and the origin with the same
+  marker as drawing, instead of lighting up lines, and the angle or scale box
+  opens next to that point rather than wherever the last box was. If you click
+  an end, corner or center before pressing Enter, the tool keeps what you
+  selected and reminds you to press Enter, instead of swapping your selection
+  for the shape under that point. A click inside a shape, or an area you
+  selected before picking the tool, gets a note that these tools work on lines
+  and curves, not areas.
+  An arc's center, the + it shows, is now a snap point too, for drawing as well.
+
 ### Fixed
 
 - **Break keeps the constraints of the curve it splits.** A Coincident at either

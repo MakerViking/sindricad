@@ -37,6 +37,7 @@ import { SketchMode } from "./sketchMode";
 import { PatternFlow } from "./patternFlow";
 import { t } from "../i18n";
 import { circumcenter } from "./arc";
+import { SketchPlane } from "./plane";
 import type { ResolvedEntity } from "./snap";
 import type { SketchPattern } from "../types";
 
@@ -96,6 +97,9 @@ function makeMode(dim: ReturnType<typeof fakeDim>, over: Record<string, unknown>
     basePinned: false, lastSnapKind: "free",
     lastCursor: new THREE.Vector2(),
     overlay: { setPreview: () => {} },
+    // Rotate and Scale open their box beside the pivot (placeBoxAtPivot)
+    plane: new SketchPlane("XY"),
+    viewport: { projectToScreen: () => ({ x: 0, y: 0 }) },
     afterModify: () => { calls.afterModify++; },
     refreshActive: () => { calls.refreshActive++; },
     requestSolve: () => { calls.solve++; },

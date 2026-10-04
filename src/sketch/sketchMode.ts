@@ -65,7 +65,7 @@ import { PatternFlow, PATTERN_TOOLS, ENTITY_PATTERNS, type PatternHost } from ".
 import { ProjectPanel } from "./projectPanel";
 import { checkSketch } from "./check";
 import { showCheckPanel, hideCheckPanel } from "./checkPanel";
-import { CONFLICT, SKETCH_POINT_HOVER } from "../viewport/colors3d";
+import { CONFLICT, EDGE_HOVER, SKETCH_POINT_HOVER } from "../viewport/colors3d";
 
 /** The id a not-yet-drawn entity carries while its constraint badges are
  *  previewed: no entity id ever takes this form (newEntityId). */
@@ -214,6 +214,24 @@ const isCompoundShape = (e: ResolvedEntity) =>
 
 // Tools that operate on the current multi-selection, so setTool must keep it.
 const KEEPS_SELECTION = new Set<SketchTool>(["mirror", "move", "copy", "rotate", "scale"]);
+/** The tools that move the selection about a point the user clicks. Armed with
+ *  nothing selected, they take clicks AS the selection first (see
+ *  SketchMode.choosingTargets). */
+const TRANSFORM_TOOLS = new Set<SketchTool>(["move", "copy", "rotate", "scale"]);
+/** Each transform tool's prompt while it is choosing, and what it says when it
+ *  arms with nothing selected. */
+const CHOOSING_PROMPT: Partial<Record<SketchTool, string>> = {
+  move: "sketch.prompt.moveChoose",
+  copy: "sketch.prompt.copyChoose",
+  rotate: "sketch.prompt.rotateChoose",
+  scale: "sketch.prompt.scaleChoose",
+};
+const NOTHING_SELECTED: Partial<Record<SketchTool, string>> = {
+  move: "sketch.transform.selectFirstMove",
+  copy: "sketch.transform.selectFirstCopy",
+  rotate: "sketch.transform.selectFirstRotate",
+  scale: "sketch.transform.selectFirstScale",
+};
 
 // Tolerant edge-fingerprint compare for the Project tool's duplicate-pick check.
 // Fingerprints carry unrounded float noise (sidecar-authored), so byte equality
@@ -449,6 +467,11 @@ export class SketchMode {
   private rightDragged = false;
   // Move/Copy tool: first (base) point picked; the second click sets the offset.
   private moveBase: THREE.Vector2 | null = null;
+  /** Rotate/Scale: the pivot clicked, while its angle or factor box is open. */
+  private transformPivot: THREE.Vector2 | null = null;
+  /** Move/Copy/Rotate/Scale are still taking clicks as the selection: Enter
+   *  ends it. An empty selection means the same, whatever this says. */
+  private pickingTargets = false;
   // distance-constraint dims, computed once per refreshActive() in activeCurves()
   // and reused for the clickable labels (constraintDimExtras)
   private cdims: ConstraintDim[] = [];
@@ -875,6 +898,8 @@ export class SketchMode {
     this.moveDrag = null;
     this.resetDimPicks();
     this.moveBase = null;
+    this.transformPivot = null;
+    this.pickingTargets = false; // an empty selection still picks first (choosingTargets)
     this.offsetPick = null; // an in-progress offset dies with its tool
     this.polygonEdit = null; // and so does an open polygon edit box
     this.clearPendingGlyph(); // the badge of a constraint the old tool would have added
@@ -893,6 +918,7 @@ export class SketchMode {
     this.constraintTools.resetPending();
     if (!keepSelection && this.selected.size) { this.selected.clear(); this.refreshActive(); }
     if (preselected.length) this.seedDimPicks(preselected);
+    if (this.choosingTargets) this.sayWhatToSelect();
     this.patternFlow.flushPending(); // don't lose an in-progress pattern
     // Labels and glyphs take clicks in `select` and, since 2026-08-03, in
     // `dimension`. Two field reports (0.1.76 and 0.1.77) said dimensions could
@@ -2176,6 +2202,17 @@ export class SketchMode {
       e.preventDefault();
       if (this.tool === "fillet") this.filletClick(raw);
       else this.chamferClick(raw);
+      return;
+    }
+    // Move, Copy, Rotate and Scale with nothing chosen yet: the click CHOOSES,
+    // on the raw cursor like the Select tool's, so a snap cannot pull it onto
+    // the neighbouring curve. They used to light the curve red, take the
+    // click, and only then say to select something first (Paul, 269bfb81).
+    if (this.choosingTargets) {
+      const raw = this.planePoint(e);
+      if (!raw) return;
+      e.preventDefault();
+      this.chooseTarget(raw, e.shiftKey || e.ctrlKey || e.metaKey, this.onPivotPoint(e));
       return;
     }
     // Ctrl means "do not snap" only while drawing. In Select it ADDS to the
@@ -3798,6 +3835,10 @@ export class SketchMode {
       this.dimensionHover(e);
       return;
     }
+    if (this.active && TRANSFORM_TOOLS.has(this.tool)) {
+      this.transformHover(e);
+      return;
+    }
     if (this.active && MODIFY_TOOLS.has(this.tool)) {
       this.modifyHover(e);
       return;
@@ -4058,6 +4099,13 @@ export class SketchMode {
         this.onState?.();
         return;
       }
+      // a picked pivot or base point goes first; the selection stays
+      if (this.transformPivot || this.moveBase) {
+        this.transformPivot = null;
+        this.moveBase = null;
+        this.dim.hide();
+        return;
+      }
       if (this.base || this.arcStart || this.filletFirst != null || this.splinePts.length ||
           this.clickPts.length || this.dimPicks.length || this.dimPlan || this.constraintTools.hasPending()) {
         this.base = null;
@@ -4077,12 +4125,18 @@ export class SketchMode {
       } else if (this.selected.size) {
         this.selected.clear();
         this.refreshActive();
+        this.onState?.(); // a transform tool is choosing again: its prompt says so
       } else {
         this.setTool("select");
       }
       return;
     }
     if (e.key === "Enter") {
+      if (this.choosingTargets) {
+        e.preventDefault();
+        this.finishChoosingTargets();
+        return;
+      }
       if (this.patternFlow.hasPending()) {
         e.preventDefault();
         this.commitPattern();
@@ -5417,10 +5471,130 @@ export class SketchMode {
     return rot.length === 1 ? rot : rot.map((r) => ({ ...r, id: newEntityId() }));
   }
 
+  // --- move / copy / rotate / scale: choose, then the point --------------
+  // Each acts on the selection about a point. A selection made beforehand is
+  // used as it is, the way Mirror uses one. Armed with nothing selected, the
+  // tool says so at once and its clicks choose (Shift, Ctrl or Cmd add) until
+  // Enter. It used to light the curve under the cursor red, take the click,
+  // and only then say to select something first (Paul, 269bfb81). The point
+  // is then picked like a drawing click, snapping to endpoints, centres,
+  // corners and the origin, and Rotate's and Scale's box opens beside it.
+
+  /** True while Move, Copy, Rotate or Scale is choosing what it acts on. */
+  private get choosingTargets(): boolean {
+    return TRANSFORM_TOOLS.has(this.tool) && (this.pickingTargets || this.selected.size === 0);
+  }
+
+  /** The prompt while a transform tool is choosing, else null: main.ts then
+   *  shows the tool's own prompt, which is about the point. */
+  get choosingPromptKey(): string | null {
+    return this.choosingTargets ? (CHOOSING_PROMPT[this.tool] ?? null) : null;
+  }
+
+  /** Said when a transform tool arms with nothing selected, before any click,
+   *  and again on an Enter with nothing chosen. An AREA selected by clicking
+   *  inside a shape shows filled like a selection but is not one here (these
+   *  tools move curves), so "nothing is selected" would be false on screen. */
+  private sayWhatToSelect() {
+    if (this.overlay.selectedActiveRegions().length) { toast(t("sketch.transform.areaNotCurves")); return; }
+    const said = NOTHING_SELECTED[this.tool];
+    if (said) toast(t(said));
+  }
+
+  /** Whether a PLAIN click here, with something already chosen, lands on a
+   *  point the pivot would snap to (an end, a corner, a centre, the origin).
+   *  That is the point to work from, clicked before Enter: taken as a choice,
+   *  it re-selected the same curve or swapped the whole selection for the
+   *  shape owning the point, and said nothing. Midpoints are left out: the
+   *  middle of a line is where people click to select it. Shift, Ctrl or Cmd
+   *  always choose. */
+  private onPivotPoint(e: PointerEvent): boolean {
+    if (!this.selected.size || e.shiftKey || e.ctrlKey || e.metaKey) return false;
+    const kind = this.snapAt(e.clientX, e.clientY)?.kind;
+    return kind === "endpoint" || kind === "center";
+  }
+
+  /** What a choosing click at `p` takes: what the Select tool's click would
+   *  (a text by its glyphs, else the nearest curve), less the origin, which a
+   *  transform never moves (transformSelection keeps it). */
+  private transformTargetAt(p: THREE.Vector2): ResolvedEntity | null {
+    const te = this.textEntityAt(p);
+    if (te) return te;
+    const idx = pickEntity(this.entities, p, this.pickTol());
+    const e = idx >= 0 ? this.entities[idx] : undefined;
+    return e && !isOriginGeometry(e.id) ? e : null;
+  }
+
+  /** A click while choosing: select what is under it, alone, or add it (and
+   *  drop it again) with `add`. Projected geometry is refused NOW, rather than
+   *  chosen and then left behind by the move. Once something is chosen, no
+   *  click that leaves it as it was, or throws several chosen things away,
+   *  passes without a word. */
+  private chooseTarget(p: THREE.Vector2, add: boolean, onPivotPoint: boolean) {
+    this.pickingTargets = true; // a fresh choice lasts until Enter, not one click
+    const had = this.selected.size;
+    // the point to move or turn about, clicked before Enter: keep the choice
+    if (onPivotPoint) { toast(t("sketch.transform.pressEnter")); return; }
+    const e = this.transformTargetAt(p);
+    if (!e) {
+      // Inside a closed shape, and plainly not a pivot (nothing chosen yet, or
+      // an add): the click meant the shape, whose area is not what moves.
+      if (this.overlay.activeRegionAt(p) && (add || !had)) toast(t("sketch.transform.areaNotCurves"));
+      // otherwise most likely the point to move or turn about, before Enter
+      else if (had) toast(t("sketch.transform.pressEnter"));
+      return;
+    }
+    if (this.guardProjected(e)) return;
+    if (add) {
+      if (!this.selected.delete(e.id)) this.selected.add(e.id);
+    } else if (had === 1 && this.selected.has(e.id)) {
+      toast(t("sketch.transform.pressEnter")); // already all that is chosen
+      return;
+    } else {
+      this.selected = new Set([e.id]);
+      if (had > 1) toast(t("sketch.transform.choseOnlyThis"));
+    }
+    this.refreshActive();
+  }
+
+  /** Enter while choosing: on to the point, when something is chosen. */
+  private finishChoosingTargets() {
+    if (!this.selected.size) { this.sayWhatToSelect(); return; }
+    this.pickingTargets = false;
+    this.overlay.setPreview([]); // the choosing hover
+    this.onState?.(); // the prompt moves on to the point
+  }
+
+  /** The transform tools' hover. While choosing, what a click would select,
+   *  in the colour a model edge takes under the cursor: the modify tools' red
+   *  says "this click acts on it", and this one only selects. After that, a
+   *  click places a point, so the snap marker shows exactly as it does while
+   *  drawing, and no curve is lit: lit curves read as "only lines can be
+   *  picked" (53f5fcbb). */
+  private transformHover(e: PointerEvent) {
+    if (this.choosingTargets) {
+      this.showSnap(null);
+      const p = this.planePoint(e);
+      // nothing lit where a plain click is taken as the pivot (onPivotPoint)
+      const target = p && !this.onPivotPoint(e) ? this.transformTargetAt(p) : null;
+      const lit = target && target.type !== "projected" ? [target] : [];
+      this.overlay.setPreview(curveObjects(lit, this.plane, EDGE_HOVER, true));
+      return;
+    }
+    this.overlay.setPreview([]);
+    this.showSnap(this.snapAt(e.clientX, e.clientY, e.ctrlKey));
+  }
+
+  /** Put the angle or factor box beside the pivot it applies to. It was never
+   *  placed, so it opened wherever the last box had been (53f5fcbb). */
+  private placeBoxAtPivot(p: THREE.Vector2) {
+    const s = this.viewport.projectToScreen(this.plane.to3D(p.x, p.y));
+    this.dim.position(s.x, s.y);
+  }
+
   /** Move/Copy: click a base point, then a destination — translate the whole
    *  selection. Move mutates in place; Copy leaves the originals and selects the copies. */
   private moveClick(p: THREE.Vector2) {
-    if (!this.selected.size) { toast(t("sketch.transform.selectFirstMove")); return; }
     if (!this.moveBase) { this.moveBase = p.clone(); toast(t("sketch.transform.clickDestination")); return; }
     const dx = p.x - this.moveBase.x, dy = p.y - this.moveBase.y;
     this.moveBase = null;
@@ -5448,31 +5622,35 @@ export class SketchMode {
 
   /** Rotate the selection about a clicked center by a typed angle (degrees). */
   private rotateClick(p: THREE.Vector2) {
-    if (!this.selected.size) { toast(t("sketch.transform.selectFirstRotate")); return; }
     const cx = p.x, cy = p.y;
+    this.transformPivot = p.clone();
     this.dim.show([{ name: "angle", label: "∠", kind: "angle" }], () => {
       if (this.badTypedField({ name: "angle", kind: "angle" })) return;
       const ang = ((this.dim.getValue("angle") ?? 0) * Math.PI) / 180;
       this.dim.hide();
+      this.transformPivot = null;
       if (this.refusePinnedSelection()) return;
       const pivot = { x: cx, y: cy };
       if (this.refuseTiedShapes((c, moving) => rotationTie(c, this.entities, moving, pivot), t("sketch.transform.rotateTied"))) return;
       this.explodeSelectedRectangles();
       this.transformSelection((e) => this.reid(rotated(e, cx, cy, ang, e.id)));
     });
+    this.placeBoxAtPivot(p);
     toast(t("sketch.transform.rotatePrompt"));
   }
 
   /** Scale the selection about a clicked base point by a typed factor. */
   private scaleClick(p: THREE.Vector2) {
-    if (!this.selected.size) { toast(t("sketch.transform.selectFirstScale")); return; }
     const cx = p.x, cy = p.y;
+    this.transformPivot = p.clone();
     this.dim.show([{ name: "factor", label: "×", kind: "count" }], () => {
       if (this.badTypedField({ name: "factor", kind: "count" })) return;
       const f = this.dim.getValue("factor") ?? 1;
       this.dim.hide();
+      this.transformPivot = null;
       if (f > 0) this.transformSelection((e) => [scaled(e, cx, cy, f, e.id)]);
     });
+    this.placeBoxAtPivot(p);
     toast(t("sketch.transform.scalePrompt"));
   }
   /** Offset (Fusion parity), two-phase: click a curve, then move the cursor to
@@ -6071,6 +6249,8 @@ export class SketchMode {
     this.clickPts = [];
     this.offsetPick = null;
     this.polygonEdit = null;
+    this.moveBase = null;
+    this.transformPivot = null;
     this.dim.hide();
     this.overlay.setPreview([]);
     this.refreshActive();

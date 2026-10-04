@@ -1408,7 +1408,8 @@ sketch.onState = () => {
   setText(contextTab, sketch.active ? "ribbon.context.sketch" : "ribbon.context.solid");
   contextTab.classList.toggle("sketch", sketch.active);
   if (sketch.active) {
-    const promptKey = SKETCH_PROMPTS[sketch.tool];
+    // Move/Copy/Rotate/Scale say what to select while they are still choosing
+    const promptKey = sketch.choosingPromptKey ?? SKETCH_PROMPTS[sketch.tool];
     setPrompt(promptKey ? t(promptKey) : null);
   } else {
     setPrompt(null);

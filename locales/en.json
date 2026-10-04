@@ -1806,7 +1806,8 @@
       "coincident": "Coincident: click two points to join them, or a point and a line, circle or arc to put the point on it · Esc",
       "collinear": "Collinear: click two lines to put them on the same axis · Esc",
       "concentric": "Concentric: click two circles/arcs to share a center · Esc",
-      "copy": "Copy: select entities, then click a base point and a destination (originals kept) · Esc",
+      "copy": "Copy: click a base point, then the destination (the originals stay) · both snap to points · Esc",
+      "copyChoose": "Copy: click what to copy · Shift or Ctrl-click adds more · Enter to continue · Esc",
       "dimension": "Dimension: click a line (length) or circle (⌀), type a value + Enter · Esc",
       "disconnect": "Disconnect: drag from the point toward the curve whose end should come away · Esc",
       "equal": "Equal: click two lines (equal length) or two circles/arcs (equal radius) · Esc",
@@ -1818,15 +1819,18 @@
       "lockDimension": "Lock Dimension: click geometry to lock its measured dimensions at their current values · Esc",
       "midpoint": "Midpoint: click a point/endpoint, then a line — the point sits at its midpoint · Esc",
       "mirror": "Mirror: with entities selected, click a line to mirror across · Esc",
-      "move": "Move: select entities first, then click a base point and a destination · Esc",
+      "move": "Move: click a base point, then the destination · both snap to points · Esc",
+      "moveChoose": "Move: click what to move · Shift or Ctrl-click adds more · Enter to continue · Esc",
       "offset": "Offset: click a curve, then type an offset distance + Enter · Esc",
       "parallel": "Parallel: click two lines to make the 2nd parallel to the 1st · Esc",
       "perpendicular": "Perpendicular: click two lines · Esc",
       "point": "Point: click to place a reference point (snaps + constrains) · Esc",
       "polygon": "Polygon: click the center, then a vertex (6-sided, inscribed) · Esc",
       "rectangle": "Rectangle: click two corners · type W, Tab, H · Enter · Esc",
-      "rotate": "Rotate: select entities, click a center, then type an angle + Enter · Esc",
-      "scale": "Scale: select entities, click a base point, then type a factor + Enter · Esc",
+      "rotate": "Rotate: click the center to turn about (it snaps to points), then type an angle + Enter · Esc",
+      "rotateChoose": "Rotate: click what to rotate · Shift or Ctrl-click adds more · Enter to continue · Esc",
+      "scale": "Scale: click the base point to scale from (it snaps to points), then type a factor + Enter · Esc",
+      "scaleChoose": "Scale: click what to scale · Shift or Ctrl-click adds more · Enter to continue · Esc",
       "select": "Select: click a curve, an end, a corner, a centre or one side of a shape to pick it · double-click for the whole shape or chain · Shift- or Ctrl-click (Cmd on a Mac) adds or removes · drag a box to select several · right-click to constrain what is picked · drag to move · Delete to remove · while drawing, hold Ctrl to place without snapping · or pick a tool: Line (L) · Rectangle (R) · Circle (C) · Arc (A)",
       "slot": "Slot: click the two arc centers, then a point for the width · Esc",
       "spline": "Spline: click to place fit points · click the last point or press Enter to finish · Esc to cancel",
@@ -1857,8 +1861,11 @@
       "placeholder": "Text…"
     },
     "transform": {
+      "areaNotCurves": "I move, copy, turn and scale lines and curves, not the area inside a shape. Click the shape's lines and curves (Shift or Ctrl-click adds more), then press Enter.",
+      "choseOnlyThis": "I selected just that one, as a plain click does, and let the others go. Shift or Ctrl-click adds instead. Press Enter once everything is selected.",
       "clickDestination": "Click the destination point",
       "moveTied": "I did not move anything: a constraint ties what you selected to geometry that is not being moved, and the solver would pull it back or stretch it. Select that geometry too, or remove the constraint, then move again.",
+      "pressEnter": "Press Enter once everything is selected, then click the point to work from.",
       "rectangleToLines": {
         "one": "A rectangle always sits square to the sketch axes, so I turned it into four lines kept square to each other and rotated those. Its constraints moved to the lines.",
         "other": "A rectangle always sits square to the sketch axes, so I turned these {count} into lines kept square to each other and rotated those. Their constraints moved to the lines."
@@ -1866,9 +1873,10 @@
       "rotatePrompt": "Rotate: type an angle in degrees",
       "rotateTied": "I did not rotate anything: a constraint ties what you selected to geometry that is not being rotated, and the solver would pull it back part of the way. Select that geometry too, or remove the constraint, then rotate again.",
       "scalePrompt": "Scale: type a factor (e.g. 2 or 0.5)",
-      "selectFirstMove": "Select entities first, then Move/Copy",
-      "selectFirstRotate": "Select entities first, then Rotate",
-      "selectFirstScale": "Select entities first, then Scale"
+      "selectFirstCopy": "Nothing is selected yet. Click what to copy (Shift or Ctrl-click adds more), then press Enter.",
+      "selectFirstMove": "Nothing is selected yet. Click what to move (Shift or Ctrl-click adds more), then press Enter.",
+      "selectFirstRotate": "Nothing is selected yet. Click what to rotate (Shift or Ctrl-click adds more), then press Enter.",
+      "selectFirstScale": "Nothing is selected yet. Click what to scale (Shift or Ctrl-click adds more), then press Enter."
     }
   },
   "status": {
