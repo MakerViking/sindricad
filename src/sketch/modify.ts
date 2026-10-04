@@ -715,7 +715,8 @@ function touchPoint(
  *  length, a midpoint): kept, it would pull the piece straight back out to the
  *  old length. A constraint on a POINT follows that point to whichever piece
  *  still has it, and goes when the point was trimmed away. Both of those are
- *  counted in `dropped`, so the caller can say what went. */
+ *  counted in `dropped`, so the caller can say what went, except a Coincident
+ *  that joined a cut-away end: that corner is what the trim took apart. */
 function remapTrimmed(
   e: ResolvedEntity,
   pieces: TrimPiece[],
@@ -844,8 +845,15 @@ function remapTrimmed(
         const a = touching(c.a, c.b), b = touching(c.b, c.a);
         return a && b ? [{ ...c, a, b }] : null;
       }
-      // points
-      case "coincident": case "p2pDistance": case "p2pDistanceX": case "p2pDistanceY": {
+      // points. A join whose end on this curve was cut away goes with it,
+      // unsaid, as Fillet's corner join does (cornerJoins): cutting the end off
+      // a corner IS taking the corner apart, and every corner of a chain of
+      // lines carries one, so saying it would make a note of nearly every trim.
+      case "coincident": {
+        const a = point(c.e1, c.p1), b = point(c.e2, c.p2);
+        return a && b ? [{ ...c, e1: a.e, p1: a.p, e2: b.e, p2: b.p }] : [];
+      }
+      case "p2pDistance": case "p2pDistanceX": case "p2pDistanceY": {
         const a = point(c.e1, c.p1), b = point(c.e2, c.p2);
         return a && b ? [{ ...c, e1: a.e, p1: a.p, e2: b.e, p2: b.p }] : null;
       }
@@ -1123,10 +1131,12 @@ export function explodeCompound(
     sides = [s0, s1];
     outline = [s0, endB, s1, endA];
     helpers = [acrossB, acrossA];
-    // NOT Tangent: a line tangent to an arc it shares an end with is a
-    // degenerate equation (the touch is a maximum of the distance it
-    // measures), so the solver reports all four as redundant and a drag of
-    // the result conflicts. Each end's centre on its diameter, both diameters
+    // NOT Tangent, chosen when a line tangent to an arc it shares an end with
+    // compiled to a degenerate equation (the touch is a maximum of the
+    // distance it measures), so the solver reported all four as redundant and
+    // a drag of the result conflicted. That compiles to angle_via_point now
+    // (sketchSolve's tangent2), but this hold is what slots already exploded
+    // carry, and it is as good. Each end's centre on its diameter, both diameters
     // square to side 0 and equal radii give the same shape, tangent by
     // construction, with the slot's five freedoms: two centres and a width.
     keep = [
@@ -2084,9 +2094,10 @@ export function breakWithConstraints(
 }
 
 /** What a detach did: pulled one end off a shared point, or refused because a
- *  constraint holds that very end there. */
+ *  constraint holds that very end there. `constraints` is set when the pull
+ *  released Coincidents to do it (detachEndpoint's `release`). */
 export type Detach =
-  | { kind: "detached"; entities: ResolvedEntity[]; idx: number }
+  | { kind: "detached"; entities: ResolvedEntity[]; idx: number; constraints?: SketchConstraint[] }
   | { kind: "coincident" }
   | { kind: "fixed" };
 
@@ -2216,8 +2227,12 @@ export function detachableEnd(
  *  `onPoint` of the shared point is ON it, and the drag toward `to` picks.
  *
  *  Null when there is nothing to pull apart, so the caller carries on with an
- *  ordinary drag. Refused when an explicit `coincident` (which HAS a glyph to
- *  delete) or a `fix` names that very end. */
+ *  ordinary drag. Refused when a `fix` names that very end, and when an
+ *  explicit `coincident` (which HAS a glyph to delete) does, unless `release`:
+ *  a right-click Disconnect, which asks for exactly that join to come apart.
+ *  Every corner of a chain of lines carries one, so refusing there made
+ *  Disconnect two steps at the commonest joint in a sketch. The points the end
+ *  was joined to stay joined to each other. */
 export function detachEndpoint(
   ents: ResolvedEntity[],
   at: { x: number; y: number },
@@ -2225,20 +2240,39 @@ export function detachEndpoint(
   to: { x: number; y: number },
   cons: readonly SketchConstraint[],
   onPoint = 0,
+  release = false,
 ): Detach | null {
   const pick = detachableEnd(ents, at, press, { to, onPoint });
   if (!pick) return null;
   const ent = ents[pick.idx]!;
   // a sketch point names itself at any index, so any constraint on it is on this end
   const isEnd = (id: string, p: number) => id === ent.id && (ent.type === "point" || p === pick.end);
-  if (cons.some((c) => c.type === "coincident" && (isEnd(c.e1, c.p1) || isEnd(c.e2, c.p2)))) return { kind: "coincident" };
+  const joins = cons.filter((c): c is Extract<SketchConstraint, { type: "coincident" }> =>
+    c.type === "coincident" && (isEnd(c.e1, c.p1) || isEnd(c.e2, c.p2)));
+  if (joins.length && !release) return { kind: "coincident" };
   if (cons.some((c) => c.type === "fix" && isEnd(c.e, c.p))) return { kind: "fixed" };
   const moved: ResolvedEntity =
     ent.type === "point" ? { ...ent, x: to.x, y: to.y }
     : ent.type === "spline" ? { ...ent, points: ent.points.map((q, k) => (k === (pick.end === 0 ? 0 : ent.points.length - 1) ? { x: to.x, y: to.y } : q)) }
     : ent.type === "line" || ent.type === "arc" ? (pick.end === 0 ? { ...ent, x1: to.x, y1: to.y } : { ...ent, x2: to.x, y2: to.y })
     : ent;
-  return { kind: "detached", entities: ents.map((e, i) => (i === pick.idx ? moved : e)), idx: pick.idx };
+  const entities = ents.map((e, i) => (i === pick.idx ? moved : e));
+  if (!joins.length) return { kind: "detached", entities, idx: pick.idx };
+  // What the end was joined to stays joined, each to the first of them: two
+  // curves joined only through the end that left would otherwise come apart too.
+  type Pt = { e: string; p: number };
+  const others: Pt[] = joins.map((c) => (isEnd(c.e1, c.p1) ? { e: c.e2, p: c.p2 } : { e: c.e1, p: c.p1 }));
+  const hub = others[0]!;
+  /** a coincident already between `a` and `b`, either way round */
+  const linked = (a: Pt, b: Pt) => cons.some((c) => c.type === "coincident" && (
+    (c.e1 === a.e && c.p1 === a.p && c.e2 === b.e && c.p2 === b.p) ||
+    (c.e1 === b.e && c.p1 === b.p && c.e2 === a.e && c.p2 === a.p)));
+  const relinks = others.slice(1)
+    .filter((o) => !linked(hub, o))
+    .map((o): SketchConstraint => ({ type: "coincident", e1: hub.e, p1: hub.p, e2: o.e, p2: o.p }));
+  const released = new Set<SketchConstraint>(joins);
+  const constraints = [...cons.filter((c) => !released.has(c)), ...relinks];
+  return { kind: "detached", entities, idx: pick.idx, constraints };
 }
 
 // --- geometric constraints (applied once; a full solver maintains them) ---

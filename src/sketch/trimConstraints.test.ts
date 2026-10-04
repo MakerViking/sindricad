@@ -259,6 +259,30 @@ describe("trim says what it had to remove", () => {
     trimAt(ents, [{ type: "horizontal", line: "L" }], v(35, 0.1));
     expect(toasts).toEqual([]);
   });
+
+  // The line tool joins every corner of a chain with a Coincident, so trimming
+  // the overhang past a crossing up to a corner (the commonest trim there is)
+  // always cuts a join away. The corner is what the user took apart; a note
+  // about it on nearly every trim would only teach people to ignore the note.
+  it("takes a corner's join away with the corner it cut off, without a note", () => {
+    const ents: ResolvedEntity[] = [
+      { type: "line", id: "A", x1: 10, y1: -32, x2: 40, y2: -30 },
+      { type: "line", id: "B", x1: 40, y1: -30, x2: 43, y2: -5 },
+      { type: "line", id: "x", x1: 35, y1: -40, x2: 35, y2: -20 },
+    ];
+    const join: SketchConstraint = { type: "coincident", e1: "A", p1: 1, e2: "B", p2: 0 };
+    const after = trimAt(ents, [join], v(38, -30.1)); // A, between the crossing and the corner
+    const A = after.entities.find((e) => e.type === "line" && !["B", "x"].includes(e.id)) as Line;
+    expect(A.x2, "the trim cut somewhere else").toBeCloseTo(35, 9);
+    expect(after.constraints).toEqual([]);
+    expect(toasts).toEqual([]);
+    expect(byId(after.entities, "B")).toEqual(ents[1]);
+
+    // ...and only the join goes unsaid: a Fix on the same cut-off end is still counted
+    toasts.length = 0;
+    trimAt(ents, [join, { type: "fix", e: "A", p: 1 }], v(38, -30.1));
+    expect(toasts).toEqual([DROPPED_ONE]);
+  });
 });
 
 describe("trim keeps a point that was put ON the trimmed curve", () => {

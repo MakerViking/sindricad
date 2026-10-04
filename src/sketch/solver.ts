@@ -46,6 +46,10 @@ export type SConstraint =
   | { id: string; type: "tangentCC"; c1: string; c2: string }
   | { id: string; type: "tangentCA"; circle: string; arc: string }
   | { id: string; type: "tangentAA"; a1: string; a2: string }
+  // Tangency AT a point both curves end on (planegcs angle_via_point): the
+  // angle between their normals at `p` held at `angle`, 0 or pi. See
+  // sketchSolve's tangent2 for why the plain tangent_* forms cannot do this.
+  | { id: string; type: "tangentAt"; c1: string; c2: string; p: PointId; angle: number }
   | { id: string; type: "angleLL"; l1: string; l2: string; value: number } // radians
   | { id: string; type: "circleRadius"; circle: string; value: number }
   | { id: string; type: "arcRadius"; arc: string; value: number }
@@ -358,6 +362,8 @@ function toGcsConstraint(c: SConstraint): any {
       return { id: c.id, type: "tangent_ca", c_id: c.circle, a_id: c.arc };
     case "tangentAA":
       return { id: c.id, type: "tangent_aa", a1_id: c.a1, a2_id: c.a2 };
+    case "tangentAt":
+      return { id: c.id, type: "angle_via_point", crv1_id: c.c1, crv2_id: c.c2, p_id: c.p, angle: c.angle };
     case "angleLL":
       return { id: c.id, type: "l2l_angle_ll", l1_id: c.l1, l2_id: c.l2, angle: c.value };
     case "circleRadius":

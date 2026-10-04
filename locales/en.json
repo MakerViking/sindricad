@@ -1152,6 +1152,7 @@
     "sketchPalette": "Sketch Palette",
     "title": "SKETCH PALETTE",
     "toggle": {
+      "autoConstrain": "Auto Constrain",
       "constraints": "Show Constraints",
       "construction": "Construction",
       "dimensions": "Show Dimensions",
@@ -1160,6 +1161,9 @@
       "profile": "Show Profile",
       "reference": "Reference Dim",
       "snap": "Snap"
+    },
+    "toggleTitle": {
+      "autoConstrain": "Constrain what you draw: Horizontal, Vertical, Perpendicular or Tangent when a line or arc is within 3° of one"
     }
   },
   "params": {
@@ -1680,7 +1684,7 @@
       "text": "text"
     },
     "guard": {
-      "coincidentHolds": "A Coincident constraint holds this end there. Right-click its ⊙ badge to delete it, then pull the end away",
+      "coincidentHolds": "A Coincident constraint holds this end there. Right-click its ⊙ badge and pick Disconnect to pull the end away",
       "dragFlattens": "That move would flatten or flip constrained geometry, so it was not applied",
       "originFixed": "The sketch origin is fixed reference geometry — snap and constrain to it, but it can't be edited",
       "pointFixed": "That point is fixed — delete its Fix constraint to move it",

@@ -17,7 +17,7 @@ import { isEditableTarget } from "../ui/focus";
 import { SketchDimensions, dimBadgeFields, type ExtraDim } from "./sketchDimensions";
 import { SketchGlyphs } from "./sketchGlyphs";
 import { constraintGlyphs, diagnosisOf, type ConstraintGlyph } from "./glyphs";
-import { entityDims, constraintDims, dimRefPoints, curveKind, hoverOperandCurve, lineOperand, lineOperandAt, linearDim, rebindPolygonSides, setDimPixelScale, RECT_CENTRE, shapeSideAt, slotAxisAt, staggeredDefaults, type DimField, type ConstraintDim } from "./entityDims";
+import { entityDims, constraintDims, dimRefPoints, curveKind, hoverOperandCurve, lineOperand, lineOperandAt, linearDim, operandPoint, rebindPolygonSides, setDimPixelScale, RECT_CENTRE, shapeSideAt, slotAxisAt, staggeredDefaults, type DimField, type ConstraintDim } from "./entityDims";
 import {
   clampPlace, isDimError, isRoundTarget, pickDimTarget, rebindTarget, resolveDim, targetIdentity,
   targetKey, unsupportedMessage,
@@ -41,7 +41,10 @@ import { dimConflictMsg, withdrawTrial, type SketchTrial } from "./dimConflict";
 import { expandPattern, translated, rotated, scaled } from "./pattern";
 import { candidatesFromEntities, snap, snapCoincidences, type SnapKind, type SnapCandidate, type PointRef } from "./snap";
 import type { ResolvedEntity } from "./snap";
-import { inferHorizontalVertical, isGeometrySnap } from "./autoConstrain";
+import {
+  curvesEndingAt, inferArcTangents, inferLineRelations, isGeometrySnap, relationConstraints,
+  type ArcPoints, type LineInference,
+} from "./autoConstrain";
 import { detectRegions, entityPolyline, EPS, pointInLoop, resolveRegionRef, sameRegionIds, twinRegion, type Region } from "./region";
 import { worldPointInRegion } from "./regionSelect";
 import { setSpaceMouseOrbitLocked } from "../input/spacemouse";
@@ -62,6 +65,10 @@ import { ProjectPanel } from "./projectPanel";
 import { checkSketch } from "./check";
 import { showCheckPanel, hideCheckPanel } from "./checkPanel";
 import { CONFLICT, SKETCH_POINT_HOVER } from "../viewport/colors3d";
+
+/** The id a not-yet-drawn entity carries while its constraint badges are
+ *  previewed: no entity id ever takes this form (newEntityId). */
+const PENDING_ID = "pending:draw";
 
 export type SketchTool =
   | "select"
@@ -262,8 +269,8 @@ export class SketchMode {
    *  Carried here so commitFromCursor can emit a real coincident constraint. */
   private baseRef: PointRef | null = null;
   private lastSnapRef: PointRef | null = null;
-  /** the constraint the next click would add, drawn muted (field report 636afdcb) */
-  private pendingGlyph: ConstraintGlyph | null = null;
+  /** the constraints the next click would add, drawn muted (field report 636afdcb) */
+  private pendingGlyphs: ConstraintGlyph[] | null = null;
   private arcStart: THREE.Vector2 | null = null; // 3-point arc: start, end, then bulge
   private arcEnd: THREE.Vector2 | null = null;
   /** what the arc's first and second clicks were SNAPPED ONTO, captured at the
@@ -337,7 +344,14 @@ export class SketchMode {
   /** The shared point a right-click Disconnect armed (its coincKey bucket);
    *  the next press on it pulls an end away without Shift. */
   private detachArmed: string | null = null;
+  /** this press was armed by Disconnect, so the pull also releases the
+   *  Coincidents on the end that leaves (detachEndpoint's `release`) */
+  private dragDetachRelease = false;
   private dragSnapshot: ResolvedEntity[] | null = null; // entities at drag start (Esc reverts)
+  /** the constraints before a Disconnect pull released some: Esc puts them
+   *  back, and the drag's undo step holds them (bankDrag). Null for every
+   *  other drag, which never touches constraints. */
+  private dragConsBefore: SketchConstraint[] | null = null;
 
   // --- in-sketch undo -------------------------------------------------------
   // Ctrl+Z used to reach store.undo(), which pops whole-DOCUMENT snapshots — and
@@ -463,6 +477,11 @@ export class SketchMode {
   private referenceMode = false; // dimensions placed as driven/reference (measured only)
   private dimsVisible = true;
   private glyphsVisible = true; // show constraint glyphs on canvas
+  /** the Sketch Palette's Auto Constrain switched OFF: no H/V, perpendicular
+   *  or tangent inferred while drawing. Stored as OFF so that "unset" means the
+   *  default, on, as the palette's box does. Joins are not inference and stay:
+   *  a snap or a chain corner is a coincident either way. */
+  private autoConstrainOff = false;
   // Glyph cIndex and conflictIdx are POSITIONAL into this.constraints. The handle
   // stays valid because every this.constraints mutation is followed by
   // refreshActive(), which re-show()s glyphs with fresh indices before the next
@@ -525,11 +544,7 @@ export class SketchMode {
     this.glyphs = new SketchGlyphs(viewport);
     this.glyphs.onDelete = (i) => this.deleteConstraint(i);
     this.glyphs.onOverlapPick = (e) => this.labelOverlapSelect(e);
-    this.glyphs.onMenu = (e, i) => {
-      contextMenu(e.clientX, e.clientY, [
-        { label: t("sketch.constraint.deleteConstraint"), danger: true, onClick: () => this.deleteConstraint(i) },
-      ]);
-    };
+    this.glyphs.onMenu = (e, i) => this.glyphMenu(e, i);
     this.boundDown = (e) => this.onPointerDown(e);
     this.boundMove = (e) => this.onPointerMove(e);
     this.boundUp = (e) => this.endDrag(e.pointerId);
@@ -773,6 +788,7 @@ export class SketchMode {
     this.selected.clear();
     this.dragFrom = null;
     this.dragSnapshot = null;
+    this.dragConsBefore = null;
     this.pendingDrag = null;
     this.pendingPinIdxs = null;
     this.pendingRefresh = null; // the store re-sends it against the committed sketch
@@ -846,6 +862,7 @@ export class SketchMode {
     this.moveBase = null;
     this.offsetPick = null; // an in-progress offset dies with its tool
     this.polygonEdit = null; // and so does an open polygon edit box
+    this.clearPendingGlyph(); // the badge of a constraint the old tool would have added
     this.dim.hide();
     this.textPanel.hide();
     // Project tool: chips only while it's active; leaving it drops any 3D hover
@@ -1048,6 +1065,34 @@ export class SketchMode {
     this.glyphsVisible = on;
     this.refreshActive();
   }
+  setAutoConstrain(on: boolean) {
+    this.autoConstrainOff = !on;
+    if (!on) this.clearPendingGlyph();
+  }
+  /** The menu a right-click on a constraint's badge opens. A Coincident's ⊙ is
+   *  drawn ON its joint, so it takes every right-click there and the canvas
+   *  menu's Disconnect was out of reach at every corner of a chain of lines;
+   *  the badge offers it instead. It releases this join as it pulls
+   *  (detachEndpoint's `release`), which is what Disconnect asks for. */
+  private glyphMenu(e: MouseEvent, cIndex: number) {
+    const c = this.constraints[cIndex];
+    const at = c?.type === "coincident" && this.tool === "select"
+      ? operandPoint(new Map(this.entities.map((x) => [x.id, x])), c.e1, c.p1)
+      : null;
+    const joint = at && detachableEnd(this.entities, at, at.clone()) ? at : null;
+    contextMenu(e.clientX, e.clientY, [
+      ...(joint ? [{ label: t("sketch.menu.disconnect"), onClick: () => this.armDisconnect(joint) }] : []),
+      { label: t("sketch.constraint.deleteConstraint"), danger: true, onClick: () => this.deleteConstraint(cIndex) },
+    ]);
+  }
+
+  /** Arm Disconnect on the shared point `p`: the next press there pulls an end
+   *  away without Shift (detachFrame). */
+  private armDisconnect(p: { x: number; y: number }) {
+    this.detachArmed = coincKey(p.x, p.y);
+    setPrompt(t("sketch.prompt.disconnect"));
+  }
+
   /** Delete the constraint at `cIndex` (clicked its glyph) and re-solve. */
   private deleteConstraint(cIndex: number) {
     if (cIndex < 0 || cIndex >= this.constraints.length) return;
@@ -2051,7 +2096,8 @@ export class SketchMode {
         // detachFrame); anywhere else it drags as a plain drag does, and the
         // right-click Disconnect is the way to pull an end off. A stationary
         // Shift-click still toggles the selection.
-        const detach = (e.shiftKey && isBreakCut(this.entities, gp.p)) || armed === coincKey(gp.p.x, gp.p.y);
+        this.dragDetachRelease = armed === coincKey(gp.p.x, gp.p.y);
+        const detach = (e.shiftKey && isBreakCut(this.entities, gp.p)) || this.dragDetachRelease;
         this.dragDetach = detach ? (this.planePoint(e) ?? p).clone() : null;
         this.dragRefusedToast = false;
         this.dragSnapshot = JSON.parse(JSON.stringify(this.entities)); // for Esc-cancel revert
@@ -2224,18 +2270,11 @@ export class SketchMode {
       this.arcEnd = p.clone();
       this.arcEndRef = this.lastSnapRef;
     } else {
-      const a = this.arcStart;
-      const b = this.arcEnd;
-      const ent: ResolvedEntity = {
-        type: "arc",
-        id: newEntityId(),
-        x1: a.x,
-        y1: a.y,
-        x2: b.x,
-        y2: b.y,
-        mx: p.x,
-        my: p.y,
-      };
+      const id = newEntityId();
+      // A tangent to the line or arc either end continues, when the arc leaves
+      // it within the H/V tolerance: the bulge is re-chosen to make it exact.
+      const { arc, tangents } = this.arcInference(this.arcPoints(p), id);
+      const ent: ResolvedEntity = { type: "arc", id, ...arc };
       if (this.constructionMode) ent.construction = true;
       this.entities.push(ent);
       // same join the line tool gets: the arc's ends were placed by snaps, so
@@ -2243,6 +2282,8 @@ export class SketchMode {
       // it (field report ecc3e0d6). The third click is the through-point, which
       // is not a solver point and so is never emitted for.
       this.emitSnapCoincidences(ent, this.arcStartRef, this.arcEndRef);
+      this.constraints.push(...tangents.map((other): SketchConstraint => ({ type: "tangent2", a: id, b: other })));
+      this.clearPendingGlyph();
       this.arcStart = null;
       this.arcEnd = null;
       this.refreshActive();
@@ -3717,40 +3758,65 @@ export class SketchMode {
    *  This runs the SAME inference the commit will run, with the same pinning, so
    *  the badge cannot promise a constraint the commit then declines to add. */
   private previewPendingGlyph(entity: ResolvedEntity, cursorSnap: SnapKind) {
-    if (!this.glyphsVisible || entity.type !== "line" || this.tool !== "line") {
-      return this.clearPendingGlyph();
-    }
-    if (this.dim.isUserDriven("angle")) return this.clearPendingGlyph(); // typed angle wins; nothing inferred
-    const r = inferHorizontalVertical(entity, {
-      startPinned: this.basePinned,
-      endPinned: isGeometrySnap(cursorSnap),
-    });
-    if (!r.kind) return this.clearPendingGlyph();
-    this.pendingGlyph = {
-      cIndex: -1,
-      label: r.kind === "horizontal" ? "H" : "V",
-      pos: new THREE.Vector2((r.ends.x1 + r.ends.x2) / 2, (r.ends.y1 + r.ends.y2) / 2),
-      pending: true,
-    };
+    if (entity.type !== "line" || this.tool !== "line") return this.clearPendingGlyph();
+    const r = this.lineInference(entity, isGeometrySnap(cursorSnap));
+    this.showPending({ ...entity, ...r.ends, id: PENDING_ID }, relationConstraints(PENDING_ID, r.relations));
+  }
+
+  /** Badge `constraints` on `entity`, an entity not drawn yet, where the
+   *  committed constraints will be badged: constraintGlyphs places both, so
+   *  the badge cannot sit somewhere the real one then does not. */
+  private showPending(entity: ResolvedEntity, constraints: SketchConstraint[]) {
+    if (!this.glyphsVisible || !constraints.length) return this.clearPendingGlyph();
+    this.pendingGlyphs = constraintGlyphs([...this.entities, entity], constraints)
+      .map((g) => ({ ...g, cIndex: -1, pending: true as const }));
     this.redrawGlyphs();
   }
 
   private clearPendingGlyph() {
-    if (!this.pendingGlyph) return;
-    this.pendingGlyph = null;
+    if (!this.pendingGlyphs) return;
+    this.pendingGlyphs = null;
     this.redrawGlyphs();
   }
 
-  /** Repaint the glyph layer from the committed constraints plus any pending one. */
+  /** Repaint the glyph layer from the committed constraints plus any pending ones. */
   private redrawGlyphs() {
     if (!this.glyphsVisible) return void this.glyphs.hide();
     const live = constraintGlyphs(this.entities, this.constraints);
-    this.glyphs.show(
-      this.pendingGlyph ? [...live, this.pendingGlyph] : live,
-      this.plane,
-      this.conflictIdx,
-      this.overIdx,
-    );
+    this.glyphs.show([...live, ...(this.pendingGlyphs ?? [])], this.plane, this.conflictIdx, this.overIdx);
+  }
+
+  /** The constraints a line drawn as `e` is given while drawing, and where its
+   *  ends go to make them exact (inferLineRelations): `endPinned` says whether
+   *  its end was placed on geometry, and its start's pinning is the gesture's.
+   *  ONE function for the commit and for the badge before the click, so the
+   *  badge cannot promise a constraint the click then declines. */
+  private lineInference(e: Extract<ResolvedEntity, { type: "line" }>, endPinned: boolean): LineInference {
+    // the palette's switch, and a typed angle, which wins over any inference
+    if (this.autoConstrainOff || this.dim.isUserDriven("angle")) return { relations: [], ends: { ...e }, moved: null };
+    const startPinned = this.basePinned;
+    return inferLineRelations(e, {
+      startPinned,
+      endPinned,
+      atStart: startPinned ? curvesEndingAt(this.entities, { x: e.x1, y: e.y1 }, e.id) : [],
+      atEnd: endPinned ? curvesEndingAt(this.entities, { x: e.x2, y: e.y2 }, e.id) : [],
+    });
+  }
+
+  /** The 3-point arc the arc tool would make with `through` as its third click. */
+  private arcPoints(through: THREE.Vector2): ArcPoints {
+    const a = this.arcStart!, b = this.arcEnd!;
+    return { x1: a.x, y1: a.y, x2: b.x, y2: b.y, mx: through.x, my: through.y };
+  }
+
+  /** The tangents an arc drawn as `arc` (id `id`) is given, and its bulge made
+   *  exact for them (inferArcTangents). Shared by the commit and the badge. */
+  private arcInference(arc: ArcPoints, id: string) {
+    if (this.autoConstrainOff) return { arc, tangents: [] };
+    return inferArcTangents(arc, {
+      atStart: curvesEndingAt(this.entities, { x: arc.x1, y: arc.y1 }, id),
+      atEnd: curvesEndingAt(this.entities, { x: arc.x2, y: arc.y2 }, id),
+    });
   }
 
   private onKey(e: KeyboardEvent) {
@@ -3797,7 +3863,9 @@ export class SketchMode {
       if (this.dragFrom || this.moveDrag) {
         // cancel an in-progress drag: revert geometry to its pre-drag positions
         if (this.dragSnapshot) this.entities = this.dragSnapshot;
+        if (this.dragConsBefore) this.constraints = this.dragConsBefore; // a Disconnect's joins
         this.dragSnapshot = null;
+        this.dragConsBefore = null;
         this.dragFrom = null;
         this.moveDrag = null;
         this.pendingDrag = null;
@@ -3920,12 +3988,16 @@ export class SketchMode {
       const end = new THREE.Vector2(entity.x2, entity.y2);
       // clicked back on the start point → close the loop and end the chain
       const closing = this.chainStart != null && end.distanceTo(this.chainStart) < 1e-3;
-      // auto-infer horizontal/vertical (skip the closing seg + typed angles).
-      // Both ends carry whether they were snapped ONTO existing geometry, so the
-      // correction never moves a point the user deliberately joined.
-      if (!closing && !this.dim.isUserDriven("angle")) {
-        this.inferLineConstraint(entity, this.basePinned, isGeometrySnap(this.lastSnapKind));
+      // auto-infer H/V, perpendicular or tangent (skip the closing seg + typed
+      // angles). Both ends carry whether they were snapped ONTO existing
+      // geometry, so the correction never moves a point the user deliberately
+      // joined.
+      if (!closing) {
+        const r = this.lineInference(entity, isGeometrySnap(this.lastSnapKind));
+        Object.assign(entity, r.ends);
+        this.constraints.push(...relationConstraints(entity.id, r.relations));
       }
+      this.clearPendingGlyph(); // added now: its own badge takes over
       if (closing) {
         this.base = null;
         this.chainStart = null;
@@ -3938,11 +4010,12 @@ export class SketchMode {
         // by moving its START, 0.26 mm off this end at 1.5 degrees, and nothing
         // joined the two segments to pull them back together.
         this.basePinned = true;
-        // Only a SNAPPED end hands its ref on, so the joint between two chained
-        // segments is pinned here but gets no coincident of its own, and a later
-        // Move of one segment still tears it. Emitting one (and a join glyph at
-        // every corner of a polyline) is an open decision, not an oversight.
-        this.baseRef = this.lastSnapRef;
+        // ...and joined: the next segment's start is this one's end, so the
+        // corner between them gets a real coincident, not just one coordinate
+        // (GitHub #17: "corners inside one continuous chain of lines are placed
+        // on each other but not constrained yet"). Whatever this end snapped
+        // onto is joined to it already, and so to the next segment through it.
+        this.baseRef = { id: entity.id, idx: 1 };
         this.showDimFields();
       }
     } else {
@@ -3968,24 +4041,6 @@ export class SketchMode {
     this.constraints.push(
       ...snapCoincidences(entity, startRef, endRef, this.entities, this.constraints, centerRef),
     );
-  }
-
-  /** If a freshly drawn line sits within a few degrees of horizontal/vertical,
-   *  snap it exactly and record the constraint (mainstream MCAD's auto-constrain).
-   *
-   *  `startPinned`/`endPinned` say which ends were placed on existing geometry.
-   *  Making the line exact means moving an endpoint, and this used to always move
-   *  the second one — destroying a join the user had just snapped, by exactly the
-   *  angular error their hand left (field report ecc3e0d6). See autoConstrain.ts. */
-  private inferLineConstraint(e: ResolvedEntity, startPinned = false, endPinned = false) {
-    if (e.type !== "line") return;
-    const r = inferHorizontalVertical(e, { startPinned, endPinned });
-    if (!r.kind) return;
-    e.x1 = r.ends.x1;
-    e.y1 = r.ends.y1;
-    e.x2 = r.ends.x2;
-    e.y2 = r.ends.y2;
-    this.constraints.push({ type: r.kind, line: e.id });
   }
 
   /** The dim fields the drag-draw tools show — see multiDimDefs for why this is
@@ -4379,13 +4434,7 @@ export class SketchMode {
         ? [{ label: linked > 1 ? t("sketch.menu.breakLinkCount", { count: linked }) : t("sketch.menu.breakLink"), onClick: () => this.breakSelectedLinks() }]
         : []),
       ...(canDetach && joint
-        ? [{
-            label: t("sketch.menu.disconnect"),
-            onClick: () => {
-              this.detachArmed = coincKey(joint.x, joint.y);
-              setPrompt(t("sketch.prompt.disconnect"));
-            },
-          }]
+        ? [{ label: t("sketch.menu.disconnect"), onClick: () => this.armDisconnect(joint) }]
         : []),
       { label: t("sketch.menu.deleteEntities", { count: n }), danger: true, onClick: () => this.deleteSelected() },
     ];
@@ -5684,14 +5733,17 @@ export class SketchMode {
 
   /** Commit a finished drag as a single undo step. The pre-drag entities were
    *  already deep-cloned into dragSnapshot for Esc-revert, so that same clone is
-   *  the undo entry — a drag never touches constraints or patterns, so the
-   *  current ones complete the snapshot. */
+   *  the undo entry — a drag never touches patterns, nor constraints except
+   *  for the joins a Disconnect released (dragConsBefore), so the current ones
+   *  complete the snapshot. */
   private bankDrag() {
     const before = this.dragSnapshot;
+    const consBefore = this.dragConsBefore ?? this.constraints;
     this.dragSnapshot = null; // committed — drop the revert buffer
+    this.dragConsBefore = null;
     if (!before || !this.active) return;
     const banked = this.history.bankBefore(
-      { entities: before, constraints: this.constraints, patterns: this.patterns },
+      { entities: before, constraints: consBefore, patterns: this.patterns },
       this.snapshot(),
     );
     if (banked) this.onState?.(); // the undo button just became live — see bankIfChanged
@@ -5833,7 +5885,14 @@ export class SketchMode {
           // a copy, so the indices the solve reports still name the constraints
           // it saw if the live list is edited while it runs
           const solved = [...this.constraints];
-          const r = await compileAndSolve(this.entities, solved, undefined, bias ?? undefined, undefined, this.boundShapeFields());
+          // ...and of the entities, for the same reason: a line committed while
+          // this solve runs is PUSHED onto the live list, and the solver's
+          // write-back maps over the list it was handed, so it met a line it
+          // never compiled and threw, which turns the solver off for the session.
+          // With every chain corner joined, each segment of a chain starts a
+          // solve, so two quick clicks meet one. The version check below then
+          // discards this result and solves again, as it always meant to.
+          const r = await compileAndSolve([...this.entities], solved, undefined, bias ?? undefined, undefined, this.boundShapeFields());
           if (!this.active) break;
           // geometry changed mid-solve (a draw committed): discard, re-solve.
           // Re-arm the bias with it — this result never reached the document, so
@@ -5988,7 +6047,7 @@ export class SketchMode {
     if (coincKey(w.x, w.y) === coincKey(from.x, from.y)) return false;
     this.dragDetach = null;
     // "on the dot": its drawn radius, doubled for the aim of a hand on a mouse
-    const r = detachEndpoint(this.entities, from, press, w, this.constraints, this.endpointDotRadius() * 2);
+    const r = detachEndpoint(this.entities, from, press, w, this.constraints, this.endpointDotRadius() * 2, this.dragDetachRelease);
     if (!r) return true; // nothing shares this point: an ordinary drag
     if (r.kind !== "detached") {
       toast(r.kind === "coincident" ? t("sketch.guard.coincidentHolds") : FIXED_POINT_MSG);
@@ -5998,6 +6057,12 @@ export class SketchMode {
       return false;
     }
     this.entities = r.entities;
+    if (r.constraints) {
+      this.dragConsBefore = this.constraints;
+      this.constraints = r.constraints;
+      this.conflictIdx.clear(); // indices shift; the next solve repopulates
+      this.overIdx.clear();
+    }
     this.dragEntIdx = r.idx;
     from.copy(w); // the pulled end sits under the cursor: the drag pins it from here
     return true;
@@ -6266,14 +6331,16 @@ export class SketchMode {
       this.overlay.setPreview([
         this.entityCurve({ type: "line", id: "", x1: a.x, y1: a.y, x2: cursor.x, y2: cursor.y }),
       ]);
+      this.clearPendingGlyph();
     } else if (this.arcStart && this.arcEnd) {
-      const a = this.arcStart;
-      const b = this.arcEnd;
-      this.overlay.setPreview([
-        this.entityCurve({ type: "arc", id: "", x1: a.x, y1: a.y, x2: b.x, y2: b.y, mx: cursor.x, my: cursor.y }),
-      ]);
+      // the arc the click would make, tangent where it will be, and its badge
+      const { arc, tangents } = this.arcInference(this.arcPoints(cursor), PENDING_ID);
+      const drawn: ResolvedEntity = { type: "arc", id: PENDING_ID, ...arc };
+      this.overlay.setPreview([this.entityCurve(drawn)]);
+      this.showPending(drawn, tangents.map((other): SketchConstraint => ({ type: "tangent2", a: PENDING_ID, b: other })));
     } else {
       this.overlay.setPreview([]);
+      this.clearPendingGlyph();
     }
   }
 

@@ -1003,7 +1003,7 @@ jobs:
       # No SC_TOKEN — this one never reaches the sidecar either. It is a
       # stacking-and-hit-testing question ("what is drawn at this pixel, and what
       # would a click there hit"), so only a real layout engine can answer it;
-      # every unit around it passes while all nine palette controls are
+      # every unit around it passes while every palette control is
       # unreachable.
       - name: Ribbon dropdown vs Sketch Palette end-to-end
         env:

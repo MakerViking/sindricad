@@ -7,12 +7,15 @@ import { esc } from "./escape";
 import { icon } from "./icons";
 import { SKETCH, leavesOf, type ToolItem } from "./ribbon";
 
-export type PaletteToggle = "lockView" | "construction" | "reference" | "grid" | "snap" | "profile" | "dimensions" | "constraints";
+export type PaletteToggle =
+  | "lockView" | "construction" | "reference" | "grid" | "snap" | "autoConstrain" | "profile" | "dimensions" | "constraints";
 
 interface ToggleDef {
   key: PaletteToggle;
   label: string;
   default: boolean;
+  /** locale key of the row's tooltip */
+  title?: string;
 }
 const TOGGLES: ToggleDef[] = [
   // Off by default, and SketchMode.viewLocked agrees. Entering a sketch always
@@ -28,6 +31,11 @@ const TOGGLES: ToggleDef[] = [
   { key: "reference", label: t("palette.toggle.reference"), default: false },
   { key: "grid", label: t("palette.toggle.grid"), default: true },
   { key: "snap", label: t("palette.toggle.snap"), default: true },
+  // On by default, and SketchMode.autoConstrainOff agrees (the same two-places
+  // rule as lockView above). Off draws exactly what the cursor placed: no
+  // Horizontal, Vertical, Perpendicular or Tangent. Snapped and chained joins
+  // stay, since a join is where the user put the point, not a guess.
+  { key: "autoConstrain", label: t("palette.toggle.autoConstrain"), default: true, title: "palette.toggleTitle.autoConstrain" },
   { key: "profile", label: t("palette.toggle.profile"), default: true },
   { key: "dimensions", label: t("palette.toggle.dimensions"), default: true },
   { key: "constraints", label: t("palette.toggle.constraints"), default: true },
@@ -104,6 +112,7 @@ export class SketchPalette {
     for (const t of TOGGLES) {
       const row = document.createElement("label");
       row.className = "palette-row";
+      if (t.title) setTitle(row, t.title);
       const span = document.createElement("span");
       span.textContent = t.label;
       const sw = document.createElement("input");

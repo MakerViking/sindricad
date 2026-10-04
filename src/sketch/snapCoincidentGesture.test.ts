@@ -95,7 +95,7 @@ function drawing(
     base: null, chainStart: null, basePinned: false, baseRef: null,
     lastSnapKind: "free", lastSnapRef: null, lastCursor: new THREE.Vector2(),
     arcStart: null, arcEnd: null, arcStartRef: null, arcEndRef: null, arcCenterRef: null, clickPts: [], arcSweep: 0,
-    constructionMode: false, gridSnap: false, glyphsVisible: false, pendingGlyph: null,
+    constructionMode: false, gridSnap: false, glyphsVisible: false, pendingGlyphs: null,
     dim: {
       isActive: false,
       isUserDriven: (n: string) => n in typed,
@@ -340,8 +340,9 @@ const endsOf = (l: Line) => [start(l), end(l)];
 const hasEnd = (l: Line, p: { x: number; y: number }) => endsOf(l).some((q) => gap(q, p) < 1e-6);
 
 /** A 30 x 20 rectangle drawn with the LINE tool as one chain, closed by clicking
- *  its start again. That closing click snaps onto the chain's start, so the
- *  closing corner carries a coincident: every closed line profile has one. */
+ *  its start again. Every corner carries a coincident: the three inside the
+ *  chain because each segment starts on the one before (GitHub #17), and the
+ *  closing one because that click snaps onto the chain's start. */
 function closedSquare(typed: Record<string, number>) {
   const d = drawing("line", [], typed);
   d.click(0, 0); d.click(30, 0); d.click(30, 20); d.click(0, 20); d.click(0, 0);
@@ -350,9 +351,12 @@ function closedSquare(typed: Record<string, number>) {
 }
 
 describe("Fillet and Chamfer on a corner a snap joined", () => {
-  it("the line tool's closing corner is joined, so the cases below are the everyday ones", () => {
-    const { d, bottom, left } = closedSquare({});
+  it("every corner of a line-tool profile is joined, so the cases below are the everyday ones", () => {
+    const { d, bottom, right, top, left } = closedSquare({});
     expect(coincidents(d.h.constraints)).toEqual([
+      { type: "coincident", e1: bottom.id, p1: 1, e2: right.id, p2: 0 },
+      { type: "coincident", e1: right.id, p1: 1, e2: top.id, p2: 0 },
+      { type: "coincident", e1: top.id, p1: 1, e2: left.id, p2: 0 },
       { type: "coincident", e1: bottom.id, p1: 0, e2: left.id, p2: 1 },
     ]);
   });

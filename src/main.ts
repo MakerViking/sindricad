@@ -1423,6 +1423,7 @@ palette.onToggle = (key, value) => {
     case "reference": sketch.setReferenceDim(value); break;
     case "grid": sketch.setGridVisible(value); break;
     case "snap": sketch.setGridSnap(value); break;
+    case "autoConstrain": sketch.setAutoConstrain(value); break;
     case "profile": overlay.setFillsVisible(value); break;
     case "dimensions": sketch.setDimensionsVisible(value); break;
     case "constraints": sketch.setConstraintsVisible(value); break;

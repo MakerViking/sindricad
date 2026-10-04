@@ -12,9 +12,9 @@
 // two occupy the same vertical band, and nothing coordinates them, so on a
 // narrow enough window the popup paints over the palette and takes its clicks.
 // Measured at HEAD, 1280x800: the popup covered 58,058 px2 = 76% of the palette,
-// `elementFromPoint` at the centre of all NINE palette controls returned a
-// `.ribbon-overflow-item`, and a real press where "Look At" was drawn armed the
-// Trim tool. At 2560, where nothing collapses and there is no ⋯ button at all,
+// `elementFromPoint` at the centre of all NINE palette controls (there were nine
+// then) returned a `.ribbon-overflow-item`, and a real press where "Look At" was
+// drawn armed the Trim tool. At 2560, where nothing collapses and there is no ⋯ button at all,
 // the CONSTRAINTS group's `Constrain ▾` dropdown lands on the palette instead —
 // which is why this file tests both popups, not just the overflow one.
 //
@@ -70,7 +70,8 @@ function readPalette() {
   const r = pal.getBoundingClientRect();
   const shown = !pal.classList.contains("hidden") && r.width > 0 && r.height > 0;
   const controls = [];
-  for (const el of pal.querySelectorAll(".palette-btn, .palette-row")) {
+  const all = pal.querySelectorAll(".palette-btn, .palette-row");
+  for (const el of all) {
     const b = el.getBoundingClientRect();
     if (b.width === 0 || b.height === 0) continue; // not drawn
     const x = Math.round(b.x + b.width / 2), y = Math.round(b.y + b.height / 2);
@@ -82,7 +83,7 @@ function readPalette() {
     });
   }
   return {
-    shown, rect: { x: r.x, y: r.y, w: r.width, h: r.height }, controls,
+    shown, rect: { x: r.x, y: r.y, w: r.width, h: r.height }, controls, total: all.length,
     popups: document.querySelectorAll(".ribbon-overflow-popup").length,
   };
 }
@@ -163,7 +164,9 @@ const overlapArea = (a, b) => {
       stolen.length === 0,
       stolen.length ? stolen.map((c) => `${c.label} -> ${c.hit}`).join(", ") : "none");
     if (expectShown) {
-      check(`${when}: all nine palette controls are back`, p.controls.length === 9,
+      // every control the palette has, counted off the palette itself, so a new
+      // toggle row is not read as a control too many
+      check(`${when}: all ${p.total} palette controls are back`, p.total > 0 && p.controls.length === p.total,
         `${p.controls.length} drawn`);
     }
     return p;

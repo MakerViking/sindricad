@@ -339,9 +339,13 @@ describe("the solver keeps it the shape it was", () => {
     for (const l of [a0, a1]) for (const a of [endA, endB]) expect(offTangent(l, a)).toBeLessThan(1e-6);
   });
 
-  it("CONTROL, why the slot is not held by Tangent: a line tangent to an arc it shares an end with is degenerate", async () => {
-    // The obvious set (each side Tangent to both ends) is reported redundant in
-    // full, so the solve holds nothing and a drag of it conflicts.
+  it("the obvious hold, each side Tangent to both ends, is well posed too now", async () => {
+    // It was not when the slot's hold was chosen: a line tangent to an arc it
+    // shares an end with compiled to planegcs's tangent_la, a degenerate
+    // equation, and all four read redundant, so the solve held nothing and a
+    // drag of it conflicted. A tangent at a shared end compiles to
+    // angle_via_point now (sketchSolve). The construction hold stays: it gives
+    // the same shape and nothing has to change for documents that have it.
     const ex = explodeCompound([SLOT()], [], 0)!;
     const [s0, endB, s1, endA] = ex.outline;
     const tangents: SketchConstraint[] = [
@@ -351,7 +355,8 @@ describe("the solver keeps it the shape it was", () => {
     ];
     const outline = ex.entities.filter((e) => !e.construction);
     const r = await compileAndSolve(outline, tangents);
-    expect(r.overDefined.length).toBe(4);
+    expect(r.overDefined).toEqual([]);
+    expect(r.conflicts).toEqual([]);
   });
 
   it("a rectangle offset from another: no amber once it is lines", async () => {
@@ -521,9 +526,10 @@ describe("Fillet and Chamfer on a shape's sides", () => {
     // of the same polygon lost its hold too, and said a constraint was lost.
     //
     // A filleted one may instead refuse a big resize, with a note: a fillet's
-    // two Tangents share an end with their lines, which planegcs reads as
-    // degenerate, and whether a big jump then solves depends on the order the
-    // solver sees things in. A filleted rectangle with locked sides is refused
+    // two Tangents share an end with their lines, which planegcs read as
+    // degenerate until those compiled to angle_via_point (sketchSolve), and
+    // whether a big jump then solved depended on the order the solver saw
+    // things in. A filleted rectangle with locked sides is refused
     // the same way (60 -> 30 wide). A chamfer has no Tangents and always
     // resizes. What must never happen is the lopsided shape.
     const HEX20 = (): ResolvedEntity => ({ type: "polygon", id: "P", x: 3, y: 7, radius: 20, sides: 6, angle: 17 });
@@ -1078,9 +1084,9 @@ describe("Fillet and Chamfer on a corner something holds", () => {
     const left = ls.find((l) => Math.abs(l.x1) < 1e-9 && Math.abs(l.x2) < 1e-9)!;
     expect(live.s.constraints).toContainEqual({ type: "pointOn", e: ORIGIN_ID, p: 0, curve: "R" });
     expect(live.s.constraints).toContainEqual({ type: "pointOn", e: ORIGIN_ID, p: 0, curve: left.id });
-    // (the fillet's two Tangents draw amber on any two lines: planegcs reads a
-    // tangent at a shared end as redundant, which this change does not touch)
-    expect([...live.s.overIdx].map((i) => live.s.constraints[i]!.type)).toEqual(["tangent2", "tangent2"]);
+    // and the fillet's two Tangents are not amber: a tangent at a shared end
+    // used to compile to an equation planegcs reads as redundant (sketchSolve)
+    expect([...live.s.overIdx].map((i) => live.s.constraints[i]!.type)).toEqual([]);
     // still anchored: pushed 5 mm off, the solve brings both sides back through it
     const pushed = live.s.entities.map((e) => (e.id.startsWith("__") ? e : translated(e, 5, 5, e.id)));
     const r = await compileAndSolve(pushed, live.s.constraints);

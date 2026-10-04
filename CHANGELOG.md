@@ -268,6 +268,18 @@ This file starts on 2026-08-03. For anything before that, see the
   longer shows amber.** The offset also told them to be parallel, which they
   already were.
 
+- **A Tangent where two curves meet is no longer drawn amber.** Every Fillet
+  ties its arc to the two lines with a Tangent at each end, and a Tangent between
+  a line and an arc, or two arcs, that share an end was read as one constraint
+  too many: the badges showed amber, the sketch counted a freedom it did not
+  have, and a drag nearby could fail. It now holds the angle between the two
+  curves at the point they share.
+
+- **Clicking on while the sketch is still solving no longer turns the solver
+  off.** A point clicked before the solve of the last one had finished stopped
+  constraint solving for the rest of the session, with "The 2D constraint solver
+  stopped responding". Now the solve simply runs again with the new geometry.
+
 ### Added
 
 - **Insert > Part from File.** Copies the visible bodies of another SindriCAD
@@ -544,6 +556,21 @@ This file starts on 2026-08-03. For anything before that, see the
   stays as it was. Perpendicular and Circular Pattern now give their full names
   in their tooltips.
 
+- **Perpendicular and Tangent while you draw.** Asked for in
+  [#17](https://github.com/MakerViking/sindricad/issues/17). A line drawn on
+  from the end of another line, within 3 degrees of square to it, is made square
+  and gets a Perpendicular. A line drawn on from the end of an arc, or an arc
+  drawn on from the end of a line or another arc, within 3 degrees of carrying
+  straight on, is made to carry straight on and gets a Tangent. Horizontal and
+  Vertical come first: a line within 3 degrees of either gets that and no
+  Perpendicular, and a Tangent as well only where it already holds. Nothing you
+  snapped moves: a line turns about the end that sits on the other curve and
+  keeps its length, and an arc keeps both its ends and changes only how far it
+  bulges. The badge shows before you click, as Horizontal and Vertical already
+  did, and one undo takes the line or arc away with everything it was given.
+  Auto Constrain in the Sketch Palette turns this off, Horizontal and Vertical
+  included; joins at snapped points stay either way.
+
 ## 0.1.232 (2026-10-02)
 
 ### Changed
@@ -590,10 +617,12 @@ This file starts on 2026-08-03. For anything before that, see the
   onto an existing point, I now add a real Coincident constraint, so the join
   holds when you move, dimension or re-solve either side. This works on line and
   arc ends, circle centres and projected edges, a rectangle corner started on a
-  point, the start of a centre-point arc, and the closing corner of a closed line
-  chain. Pressing on a join's Coincident badge still drags the join. The other corners inside one chain of lines are placed on
-  each other but not constrained yet, so moving a single segment of a polyline
-  can still open those corners.
+  point, the start of a centre-point arc, and every corner of a chain of lines,
+  the closing one included, so moving a single segment of a polyline no longer
+  opens its corners. Pressing on a join's Coincident badge still drags the join,
+  and right-clicking it offers Disconnect to pull the join apart. Trimming a
+  corner off takes its join with it, without a note about a removed constraint.
+  Reported in [#17](https://github.com/MakerViking/sindricad/issues/17).
 
 - **Right-clicking a construction plane no longer cuts every visible body in
   one click.** Cut all bodies is now Split bodies with this plane…, which opens
@@ -887,11 +916,12 @@ This file starts on 2026-08-03. For anything before that, see the
   and only that half's end leaves. Break now says how when it splits a curve.
   Shift-drag does this anywhere the end of a line, arc or spline, or a sketch
   point, shares a spot with another curve's end and no constraint holds it
-  there, not only at a cut: Shift-dragging a polyline corner now opens it. A
-  rectangle, polygon or slot corner, a centre or projected geometry is never the
-  part that moves. An end a Coincident constraint or a Fix holds stays put, and
-  that includes a line or arc end you snapped onto a point, which snapping now
-  joins with a Coincident: delete that constraint first (right-click its badge).
+  there, not only at a cut. A rectangle, polygon or slot corner, a centre or
+  projected geometry is never the part that moves. An end a Fix holds stays put.
+  So does an end a Coincident constraint holds, under Shift-drag: every corner
+  of a chain of lines, and a line or arc end you snapped onto a point. To pull
+  one of those apart, right-click its Coincident badge and pick Disconnect,
+  then drag; the join goes with that end, and one undo brings both back.
 
 - **Offset with Chain Selection takes the whole outline when construction lines
   run to its corners.** They counted as part of the outline, so every corner

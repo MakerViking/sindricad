@@ -44,6 +44,15 @@ const LINE_COLLAPSE_EPS = 1e-7;
 // the solver reports.
 const RECT_COLLAPSE_MIN = 1e-3;
 
+// The normals planegcs's angle_via_point measures between (FreeCAD's
+// CalculateNormal): a line's is its direction a -> b turned a quarter
+// counter-clockwise, a circle's or arc's points from the point to the centre.
+type XY = { x: number; y: number };
+const lineNormal = (a: XY, b: XY): XY => ({ x: -(b.y - a.y), y: b.x - a.x });
+const roundNormal = (centre: XY, q: XY): XY => ({ x: centre.x - q.x, y: centre.y - q.y });
+/** the signed angle from n1 to n2, radians in (-pi, pi] */
+const normalsAngle = (n1: XY, n2: XY) => Math.atan2(n1.x * n2.y - n1.y * n2.x, n1.x * n2.x + n1.y * n2.y);
+
 /** How far off exact a tangency may sit before this file stops calling it one,
  *  and how far past a segment's end a touch point may land before it counts as
  *  off the end (as a fraction of that segment's length). A document-scale
@@ -547,6 +556,43 @@ export async function compileAndSolve(
   // entity kind by id (line/circle/arc) — one lookup for the tangent/equal ladders
   const kindOf = (id: string): "line" | "circle" | "arc" | undefined =>
     ends.has(id) ? "line" : centers.has(id) ? "circle" : arcMap.has(id) ? "arc" : undefined;
+  // The solver point two curves (lines or arcs) both END on, if any: points
+  // merge by position, so a snapped or chained join is one point here.
+  const curveEnds = (id: string): string[] => {
+    const ln = ends.get(id);
+    if (ln) return ln;
+    const ar = arcMap.get(id);
+    return ar ? [ar.ourS, ar.ourE] : [];
+  };
+  const sharedEnd = (a: string, b: string): string | undefined => {
+    const eb = curveEnds(b);
+    return curveEnds(a).find((p) => eb.includes(p));
+  };
+  // The angle angle_via_point is to hold between `a` and `b` at `p`: 0 or pi,
+  // whichever the curves are nearer NOW. planegcs measures it between the two
+  // curves' NORMALS at the point, a line's being its direction p1 -> p2 turned
+  // a quarter counter-clockwise and a circle's or arc's pointing from the point
+  // to the centre (FreeCAD's CalculateNormal). Getting either sign wrong would
+  // hand the solver the cusp instead of the smooth join, and it would fold the
+  // curve over to reach it; inference.test.ts pins that a tangent join stays
+  // put for every orientation (measured: the wrong angle moves it 7 to 20 mm).
+  let posOf: Map<string, SPoint> | null = null;
+  const normalAt = (id: string, p: string): { x: number; y: number } | null => {
+    posOf ??= new Map(points.map((q) => [q.id, q]));
+    const ln = ends.get(id);
+    if (ln) {
+      const a = posOf.get(ln[0]), b = posOf.get(ln[1]);
+      return a && b ? lineNormal(a, b) : null;
+    }
+    const ar = arcMap.get(id);
+    const c = ar && posOf.get(ar.center), q = posOf.get(p);
+    return c && q ? roundNormal(c, q) : null;
+  };
+  const endTangentAngle = (a: string, b: string, p: string): number => {
+    const na = normalAt(a, p), nb = normalAt(b, p);
+    if (!na || !nb) return 0;
+    return Math.abs(normalsAngle(na, nb)) <= Math.PI / 2 ? 0 : Math.PI;
+  };
   // Which rectangles a solve could MIRROR in a way a user constraint can SEE.
   //
   // Not "which rectangles are named". The write-back rebuilds a rectangle from
@@ -756,7 +802,21 @@ export async function compileAndSolve(
     }
     else if (c.type === "tangent2") {
       const ka = kindOf(c.a), kb = kindOf(c.b);
-      if (ka === "line" && kb === "circle") cons.push({ id, type: "tangentLC", line: c.a, circle: c.b });
+      // Two curves that MEET at an end are tangent AT that point, and planegcs's
+      // own tangent_la / tangent_aa cannot say so. They ask for the line's (or
+      // the other circle's) distance from the centre to equal the radius, and
+      // with an end already on both curves that distance is at its MAXIMUM when
+      // they are tangent, so the equation has no slope there: planegcs reported
+      // every such tangent as redundant (amber), counted a degree of freedom it
+      // does not have, and a drag frame could conflict on it. Measured on a
+      // line and an arc sharing an end: dof 7 with or without the tangent.
+      // angle_via_point (FreeCAD's endpoint tangency) holds the angle between
+      // the two curves at the shared point instead, which is well posed. Every
+      // fillet and every tangent the line and arc tools infer is this case.
+      const hasEnds = (k: typeof ka) => k === "line" || k === "arc";
+      const at = hasEnds(ka) && hasEnds(kb) && (ka === "arc" || kb === "arc") ? sharedEnd(c.a, c.b) : undefined;
+      if (at) cons.push({ id, type: "tangentAt", c1: c.a, c2: c.b, p: at, angle: endTangentAngle(c.a, c.b, at) });
+      else if (ka === "line" && kb === "circle") cons.push({ id, type: "tangentLC", line: c.a, circle: c.b });
       else if (ka === "circle" && kb === "line") cons.push({ id, type: "tangentLC", line: c.b, circle: c.a });
       else if (ka === "line" && kb === "arc") cons.push({ id, type: "tangentLA", line: c.a, arc: c.b });
       else if (ka === "arc" && kb === "line") cons.push({ id, type: "tangentLA", line: c.b, arc: c.a });
@@ -1032,6 +1092,7 @@ export async function compileAndSolve(
       else if (c.type === "tangentCC") { positionMovers.add(c.c1); positionMovers.add(c.c2); }
       else if (c.type === "tangentCA") { positionMovers.add(c.circle); positionMovers.add(c.arc); }
       else if (c.type === "tangentAA") { positionMovers.add(c.a1); positionMovers.add(c.a2); }
+      else if (c.type === "tangentAt") { positionMovers.add(c.c1); positionMovers.add(c.c2); } // only rounds are read
       else if (c.type === "diameter" || c.type === "circleRadius") radiusGoverned.add(c.circle);
       else if (c.type === "arcRadius") radiusGoverned.add(c.arc);
       else if (c.type === "equalRadiusCC") { radiusGoverned.add(c.c1); radiusGoverned.add(c.c2); }
@@ -1512,6 +1573,15 @@ export async function compileAndSolve(
           case "tangentCC": return fxRound(c.c1) && fxRound(c.c2) ? tangentRes(c.c1, c.c2) : null;
           case "tangentCA": return fxRound(c.circle) && fxRound(c.arc) ? tangentRes(c.circle, c.arc) : null;
           case "tangentAA": return fxRound(c.a1) && fxRound(c.a2) ? tangentRes(c.a1, c.a2) : null;
+          case "tangentAt": {
+            const normal = (id: string) => {
+              const l = lineEnds.get(id);
+              return l ? lineNormal(P(l.p1), P(l.p2)) : roundNormal(P(centerOf.get(id)!), P(c.p));
+            };
+            if (!(fxLine(c.c1) || fxRound(c.c1)) || !(fxLine(c.c2) || fxRound(c.c2))) return null;
+            const w = normalsAngle(normal(c.c1), normal(c.c2)) - c.angle;
+            return Math.abs(((w % TAU) + TAU + Math.PI) % TAU - Math.PI);
+          }
           case "angleLL": { if (!fxLine(c.l1) || !fxLine(c.l2)) return null; const d1 = lineDir(c.l1), d2 = lineDir(c.l2); const actual = Math.atan2(d1.x * d2.y - d1.y * d2.x, d1.x * d2.x + d1.y * d2.y); const w = ((actual - c.value) % TAU + TAU + Math.PI) % TAU - Math.PI; return Math.abs(w); }
           case "equalRadiusCC": return fxRound(c.c1) && fxRound(c.c2) ? Math.abs(radiusOf.get(c.c1)! - radiusOf.get(c.c2)!) : null;
           case "equalRadiusCA": return fxRound(c.circle) && fxRound(c.arc) ? Math.abs(radiusOf.get(c.circle)! - radiusOf.get(c.arc)!) : null;

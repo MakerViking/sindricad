@@ -21,9 +21,10 @@
 //
 // SCOPE, stated so a green file does not imply more than it covers: this stops
 // auto-H/V from breaking a join. The coincident CONSTRAINT that makes a snapped
-// join survive later edits, and the chained-segment joint, are pinned at the
-// gesture in snapCoincidentGesture.test.ts. A chain joint is pinned, not
-// constrained: no coincident is emitted for it.
+// join survive later edits, and the chained-segment joint (pinned, and joined
+// by a coincident since 2026-10), are pinned at the gesture in
+// snapCoincidentGesture.test.ts. Perpendicular and tangent inference is in
+// inference.test.ts.
 import { describe, it, expect } from "vitest";
 import { inferHorizontalVertical, isGeometrySnap, type LineEnds } from "./autoConstrain";
 import sketchModeSrc from "./sketchMode.ts?raw";
@@ -159,26 +160,36 @@ describe("which snaps count as a join", () => {
 // misleading if they regressed: a pending badge that offers to delete a
 // constraint that does not exist, or one that looks identical to a real one.
 describe("the pre-click constraint badge", () => {
+  // The badge and the click agreeing is asserted by behaviour in
+  // inference.test.ts (hover, read the badges, click, read the constraints).
+  // These pin the shape that makes it hold for every case, not just the tested
+  // ones: one function decides for both.
+  const method = (name: string) => {
+    const at = sketchModeSrc.indexOf(`private ${name}(`);
+    expect(at, `no ${name} in sketchMode: this test's anchor is stale`).toBeGreaterThan(-1);
+    const body = sketchModeSrc.slice(at);
+    return body.slice(0, body.indexOf("\n  }"));
+  };
+
   it("cannot promise a constraint the commit would decline", () => {
-    // Both call inferHorizontalVertical with the same arguments; if the preview
-    // ever grows its own copy of the 3° rule, the two drift and the badge lies.
-    const previewAt = sketchModeSrc.indexOf("previewPendingGlyph(");
-    expect(previewAt, "no previewPendingGlyph in sketchMode — this test's anchor is stale").toBeGreaterThan(-1);
-    const body = sketchModeSrc.slice(sketchModeSrc.indexOf("private previewPendingGlyph("));
-    const fn = body.slice(0, body.indexOf("\n  }"));
-    expect(fn, "the preview no longer uses the shared inference").toContain("inferHorizontalVertical(");
-    expect(fn, "the preview ignores whether the line's start is pinned").toContain("startPinned: this.basePinned");
-    expect(fn, "the preview ignores whether the cursor is on geometry").toContain("isGeometrySnap(cursorSnap)");
+    // If the preview ever grows its own copy of the 3° rule, the two drift and
+    // the badge lies.
+    const preview = method("previewPendingGlyph");
+    const commit = method("commitFromCursor");
+    expect(preview, "the preview no longer uses the shared inference").toContain("this.lineInference(");
+    expect(commit, "the commit no longer uses the shared inference").toContain("this.lineInference(");
+    expect(preview, "the preview ignores whether the cursor is on geometry").toContain("isGeometrySnap(cursorSnap)");
+    expect(commit, "the commit ignores whether the end is on geometry").toContain("isGeometrySnap(this.lastSnapKind)");
+    const shared = method("lineInference");
+    expect(shared, "the inference ignores whether the line's start is pinned").toContain("this.basePinned");
     expect(
-      fn,
-      "the preview no longer honours a typed angle, so it would promise an inference that "
-        + "commitFromCursor skips",
+      shared,
+      "the inference no longer honours a typed angle, so the badge would promise what the click skips",
     ).toContain('isUserDriven("angle")');
   });
 
   it("marks the badge as pending rather than as a real constraint", () => {
-    const fn = sketchModeSrc.slice(sketchModeSrc.indexOf("private previewPendingGlyph("));
-    expect(fn.slice(0, fn.indexOf("\n  }")), "the preview badge is not flagged pending").toContain("pending: true");
+    expect(method("showPending"), "the preview badge is not flagged pending").toContain("pending: true");
   });
 
   it("a pending badge is inert — there is nothing to delete", () => {

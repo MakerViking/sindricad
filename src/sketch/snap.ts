@@ -66,11 +66,13 @@ export interface SnapResult {
  *  of rebuilding the end from a length and an angle (computeGeometry), around
  *  1e-13 mm. Anything the user could see is far above this, and so is the
  *  solver's own 0.001 mm merge bucket (sketchSolve's coincKey). */
-const JOIN_TOL = 1e-6;
+export const JOIN_TOL = 1e-6;
 
 /** The `coincident` constraints a freshly drawn entity owes to the snaps that
  *  PLACED it — `startRef`/`endRef` being whatever its first and second clicks
- *  landed on, or null where they landed on nothing.
+ *  landed on, or null where they landed on nothing. A chained line's start is
+ *  the previous segment's end, so commitFromCursor hands that end in as its
+ *  `startRef` whether or not anything was snapped there.
  *
  *  Emitted only for the solver points a click actually PUTS somewhere:
  *   - a LINE or ARC: its start (idx 0) and end (idx 1);
