@@ -100,7 +100,7 @@ function makeMode(entities: ResolvedEntity[], tool: string, selected: string[] =
   const dim = new DimInput();
   const seen = { previews: [] as unknown[][], solves: 0, modified: 0 };
   Object.assign(s, {
-    active: true, tool, entities, constraints: [], patterns: [], selected: new Set(selected), dim,
+    active: true, tool, entities, constraints: [], patterns: [], selected: new Set(selected), dim, pointCarry: {},
     plane: new SketchPlane("XY"), viewport, gridSnap: false, gridCell: 5,
     candidates: candidatesFromEntities(entities), // what refreshActive builds
     dims: { clearSelection() {} },

@@ -908,7 +908,9 @@ This file starts on 2026-08-03. For anything before that, see the
   constraints and dimensions move to the lines, and a pattern of it rounds every
   copy. An extrude made from it keeps the area it had when you finish the
   sketch, also where a line crosses the shape or another shape shares a side
-  with it. Two sides that do not meet are refused at the second click. A polygon
+  with it, and an extrude that starts from or runs up to one of its corners
+  keeps that corner (the corner you round moves it to where the rounding
+  starts). Two sides that do not meet are refused at the second click. A polygon
   or slot whose size comes from a parameter stays a shape, and I say why.
 
 - **Explode to lines.** Right-click a rectangle, polygon or slot and choose
@@ -916,7 +918,9 @@ This file starts on 2026-08-03. For anything before that, see the
   with, held in the same shape by constraints. A polygon gets two construction
   circles, one through its corners and one touching its sides, and a slot a
   construction line across each end. Nothing about its size is fixed unless you
-  had locked it. An extrude made from it keeps its area. Where a later sketch
+  had locked it. An extrude made from it keeps its area, and an extrude that
+  starts from or runs up to one of its corners, from any sketch, keeps that
+  corner. Where a later sketch
   projects the shape, the projection of its first side follows that line, and
   the other sides keep their last shape and say they lost their source, instead
   of all landing on the first side.

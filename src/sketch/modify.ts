@@ -865,6 +865,13 @@ export type ExplodeResult = {
   holds: SketchConstraint[];
   /** constraints that named the shape and could not be carried over */
   dropped: number;
+  /** where each of the shape's own points went, by its dimRefPoints index:
+   *  corner k to the start of side k's line, a polygon's centre to its ring's,
+   *  a slot's centres to its end arcs', a rectangle's centre to its centre
+   *  point when it has one. An extrude's start or up-to point names a shape's
+   *  point by that index (types.ts ExtrudeRef), and a line has only ends 0
+   *  and 1, so the caller re-points those references with this. */
+  points: Record<number, { e: string; p: number }>;
 };
 
 /** Explode ents[idx], a rectangle, polygon or slot, into the lines (and a
@@ -894,6 +901,9 @@ export type ExplodeResult = {
  *  bounding a different area.) Only on its first side, though, so where the
  *  shape bounded several areas the id alone can name the wrong one: the
  *  caller re-points the extrudes on the sketch (SketchMode.carryRegionRefs).
+ *  An extrude that starts from or runs up to one of the shape's points, from
+ *  any sketch, is re-pointed too (`points`, SketchMode.commitExplodes): the
+ *  first line has only two ends, so its corner 2 or 3 would name nothing.
  *
  *  Every constraint that named the shape is rewritten for the lines: a side
  *  (`R~k`, `P~k`, `S~k`) becomes its line, and a rectangle corner becomes the
@@ -1192,6 +1202,11 @@ export function explodeCompound(
     else dropped++;
   }
   constraints.push(...keep);
+  const points: Record<number, { e: string; p: number }> = {};
+  for (const { p } of dimRefPoints(e)) {
+    const q = point(shape, p);
+    if (q) points[p] = q;
+  }
   return {
     entities: ents.flatMap((o, i) => (i === idx ? made : [o])),
     constraints,
@@ -1200,6 +1215,7 @@ export function explodeCompound(
     helpers,
     holds: keep,
     dropped,
+    points,
   };
 }
 

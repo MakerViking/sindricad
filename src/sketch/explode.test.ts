@@ -36,6 +36,7 @@ import { detectRegions, pointInRegion, rectCorners, regionsByEntities, resolveRe
 import { expandPattern, translated } from "./pattern";
 import { DimInput } from "./dimInput";
 import { liveSketch, PX } from "./liveSketch.testkit";
+import { dimRefPoints } from "./entityDims";
 import { ORIGIN_ID } from "./origin";
 import { contextMenu, type CtxItem } from "../ui/menu";
 import { DocumentStore } from "../document/store";
@@ -602,7 +603,7 @@ type Extrude = Extract<Feature, { type: "extrude" }>;
 
 /** A live sketch that IS sketch f1 of a real document, with extrude e1 built on
  *  it, so finish() commits through the real store the way the app does. */
-function onDocument(ents: ResolvedEntity[], extrude: Partial<Extrude>, patterns: SketchPattern[] = []) {
+function onDocument(ents: ResolvedEntity[], extrude: Partial<Extrude>, patterns: SketchPattern[] = [], more: Feature[] = []) {
   const live = liveSketch(ents);
   const store = new DocumentStore(noBackend(), {
     version: 5,
@@ -610,6 +611,7 @@ function onDocument(ents: ResolvedEntity[], extrude: Partial<Extrude>, patterns:
     features: [
       { id: "f1", type: "sketch", plane: "XY", entities: ents, ...(patterns.length ? { patterns } : {}) },
       { id: "e1", type: "extrude", sketch: "f1", distance: 5, operation: "new", ...extrude },
+      ...more,
     ],
   } as unknown as CadDocument);
   Object.assign(live.s, {
@@ -751,6 +753,79 @@ describe("an extrude built on a shape keeps its area when the shape becomes line
       const r = resolveRegionRef(after, ids, e1.regionHoleEntities![i], null);
       expect(r && pointInRegion(centres[i]!, r), `area ${i}`).toBe(true);
     });
+  });
+});
+
+describe("an extrude that starts from or runs up to a corner of the shape keeps that corner", () => {
+  // The #41 start and up-to points name a rectangle corner by the rectangle's
+  // id and the corner's index (types.ts ExtrudeRef). Explode keeps the id on
+  // the bottom line, which has only ends 0 and 1, so an extrude that ran up to
+  // corner 3 failed at Finish with "the sketch point it runs up to isn't on
+  // its curve any more" and its body was gone (integration check 2b). Its
+  // profile was on ANOTHER sketch, so re-pointing only the extrudes built on
+  // this one would not have reached it.
+  const pointRef = (k: number) => ({ kind: "sketchPoint" as const, sketch: "f1", entity: "R", pointIndex: k });
+  const others = (): Feature[] => [
+    { id: "f0", type: "sketch", plane: "XZ", entities: [{ type: "circle", id: "c0", x: 0, y: 0, radius: 5 }] },
+    { id: "x4", type: "extrude", sketch: "f0", distance: 5, operation: "new", upToRef: pointRef(3) },
+    { id: "x5", type: "extrude", sketch: "f0", distance: 5, operation: "new", startFrom: pointRef(2), upToRef: pointRef(1) },
+  ] as unknown as Feature[];
+  const ext = (doc: ReturnType<typeof onDocument>, id: string) =>
+    doc.store.document.features.find((f): f is Extrude => f.id === id && f.type === "extrude")!;
+  /** where a sketchPoint reference lands in f1 as the document has it now,
+   *  by the numbering the build reads it with (sidecar _sketch_ref_xy) */
+  const landsAt = (doc: ReturnType<typeof onDocument>, ref: Extrude["upToRef"] | Extrude["startFrom"]) => {
+    if (ref?.kind !== "sketchPoint") return null;
+    const f1 = doc.store.document.features.find((f) => f.id === "f1") as { entities: ResolvedEntity[] };
+    const e = f1.entities.find((x) => x.id === ref.entity);
+    const p = e && dimRefPoints(e).find((q) => q.p === ref.pointIndex)?.pos;
+    return p ? [p.x, p.y] : null;
+  };
+  const corner = (k: number) => { const c = rectCorners(30, 25, 60, 50)[k]!; return [c.x, c.y]; };
+
+  it("Explode to lines re-points every such extrude at Finish, on whatever sketch its profile is, and one undo takes it back", async () => {
+    const doc = onDocument([RECT()], {}, [], others());
+    rightClick(doc, 30, 0).find((i) => i.label === t("sketch.menu.explode"))!.onClick!();
+    await doc.settle();
+    doc.finish();
+    expect(landsAt(doc, ext(doc, "x4").upToRef), "x4 runs up to corner 3").toEqual(corner(3));
+    expect(landsAt(doc, ext(doc, "x5").startFrom), "x5 starts from corner 2").toEqual(corner(2));
+    expect(landsAt(doc, ext(doc, "x5").upToRef), "x5 runs up to corner 1").toEqual(corner(1));
+    expect((ext(doc, "x4").upToRef as { entity: string }).entity, "a line other than the one that kept the id").not.toBe("R");
+
+    doc.store.undo();
+    expect(ext(doc, "x4").upToRef).toEqual(pointRef(3));
+    expect(ext(doc, "x5").startFrom).toEqual(pointRef(2));
+    expect(ext(doc, "x5").upToRef).toEqual(pointRef(1));
+  });
+
+  it("so does a Fillet on two of its sides, which explodes it first: the corners it did not round stay exactly where they were", async () => {
+    const doc = onDocument([RECT()], {}, [], others());
+    const box = withBox(doc);
+    doc.s.tool = "fillet";
+    doc.click(40, 0); // the bottom side
+    doc.click(60, 30); // the right side: they meet at corner 1
+    box.enter("radius", "5");
+    await doc.settle();
+    doc.finish();
+    expect(landsAt(doc, ext(doc, "x4").upToRef)).toEqual(corner(3));
+    expect(landsAt(doc, ext(doc, "x5").startFrom)).toEqual(corner(2));
+    // the rounded corner is gone: its reference follows the right side's
+    // line to where the rounding starts, as on a corner drawn with Line
+    const rounded = landsAt(doc, ext(doc, "x5").upToRef)!;
+    expect(rounded[0]).toBeCloseTo(60, 6);
+    expect(rounded[1]).toBeCloseTo(5, 6);
+  });
+
+  it("an explode undone inside the sketch re-points nothing", async () => {
+    const doc = onDocument([RECT()], {}, [], others());
+    rightClick(doc, 30, 0).find((i) => i.label === t("sketch.menu.explode"))!.onClick!();
+    await doc.settle();
+    expect(doc.s.undoEdit()).toBe(true);
+    await doc.settle();
+    doc.finish();
+    expect(ext(doc, "x4").upToRef).toEqual(pointRef(3));
+    expect(ext(doc, "x5").startFrom).toEqual(pointRef(2));
   });
 });
 

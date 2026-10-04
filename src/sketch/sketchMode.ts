@@ -29,7 +29,7 @@ import { SketchHistory, cloneSnapshot, type SketchSnapshot } from "./history";
 import { isPlainNumber, parseField, dimValueOk, fmtLength, fieldText, canonicalDecimal, fieldExpr } from "../ui/units";
 import { splitNameValue } from "../params/engine";
 import { RIGID_ENTITY_NUM_FIELDS, coerceForField, type FieldKind } from "../document/numFields";
-import type { RegionCarry, SketchBinding } from "../document/store";
+import type { PointCarry, RegionCarry, SketchBinding } from "../document/store";
 import { advanceCenterArcSweep, centerArcEntity, circumcenter } from "./arc";
 import { coincKey, compileAndSolve, constraintIndexOf, soleDimEntity, MAX_BIAS_ANCHORS } from "./sketchSolve";
 import { SolverUnavailable } from "./solver";
@@ -425,6 +425,11 @@ export class SketchMode {
    *  the sketch, in its one undo step; they ride in the in-sketch undo
    *  snapshot, so undoing the edit takes them back too. */
   private regionCarry: RegionCarry = {};
+  /** The shapes an edit here exploded, and where each of their points went
+   *  (commitExplodes). finish() re-points with it every extrude, on any
+   *  sketch, that starts from or runs up to one of those points, in the same
+   *  undo step; it rides in the in-sketch undo snapshot like regionCarry. */
+  private pointCarry: PointCarry = {};
   /** The datumPlane feature this sketch is placed ON, when it was created from
    *  one. Round-tripped through finish() so re-editing a sketch never silently
    *  downgrades it from a live datum link to a baked placement. */
@@ -594,6 +599,7 @@ export class SketchMode {
     this.faceAnchor = face ?? null;
     this.store = store;
     this.regionCarry = {};
+    this.pointCarry = {};
     this.history.reset(); // fresh history per session (armed once entities load)
     if (!this.fonts.length) void fetchFonts().then((f) => { this.fonts = f; });
 
@@ -734,7 +740,8 @@ export class SketchMode {
     if (sketch) {
       if (this.editingId) {
         const carry = Object.keys(this.regionCarry ?? {}).length ? this.regionCarry : undefined;
-        store.replaceFeature(this.editingId, sketch, this.drainBindings(sketch.id), carry);
+        const points = Object.keys(this.pointCarry ?? {}).length ? this.pointCarry : undefined;
+        store.replaceFeature(this.editingId, sketch, this.drainBindings(sketch.id), carry, points);
       } else {
         store.addFeature(sketch, undefined, this.drainBindings(sketch.id));
       }
@@ -750,6 +757,7 @@ export class SketchMode {
     const el = this.viewport.domElement;
     this.pendingBindings.clear();
     this.regionCarry = {};
+    this.pointCarry = {};
     el.removeEventListener("pointerdown", this.boundDown);
     el.removeEventListener("pointermove", this.boundMove);
     el.removeEventListener("pointerup", this.boundUp);
@@ -4627,6 +4635,13 @@ export class SketchMode {
    *  The caller has already taken the planned entities and constraints. */
   private commitExplodes(done: { shape: ResolvedEntity; result: ExplodeResult }[], why: "fillet" | "chamfer" | "menu" | "rotate") {
     for (const { shape, result } of done) {
+      // An extrude that starts from or runs up to one of its corners names it
+      // by the shape's id and a corner index, and the line that kept the id
+      // has two ends: corner 2 or 3 would name nothing at Finish (Extrude:
+      // "isn't on its curve any more"). Each point goes where it went.
+      this.pointCarry[shape.id] = Object.fromEntries(
+        Object.entries(result.points).map(([k, q]) => [k, { entity: q.e, pointIndex: q.p }]),
+      );
       // The shape's own id is still there, on its first line. A pattern of the
       // shape copies all of it, not that one line.
       for (const pat of this.patterns) {
@@ -5473,7 +5488,7 @@ export class SketchMode {
   // --- in-sketch undo -------------------------------------------------------
 
   private snapshot(): SketchSnapshot {
-    const carry = this.regionCarry;
+    const carry = this.regionCarry, points = this.pointCarry;
     return cloneSnapshot({
       entities: this.entities,
       constraints: this.constraints,
@@ -5481,6 +5496,7 @@ export class SketchMode {
       // only when there is one, so every session that re-points nothing
       // snapshots (and compares) exactly as before
       ...(carry && Object.keys(carry).length ? { regionCarry: carry } : {}),
+      ...(points && Object.keys(points).length ? { pointCarry: points } : {}),
     });
   }
 
@@ -5490,6 +5506,7 @@ export class SketchMode {
     this.constraints = c.constraints;
     this.patterns = c.patterns;
     this.regionCarry = c.regionCarry ?? {};
+    this.pointCarry = c.pointCarry ?? {};
   }
 
   /** Re-arm the history baseline. Called when the state SETTLES after a solve,
