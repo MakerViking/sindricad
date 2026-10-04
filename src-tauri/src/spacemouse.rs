@@ -235,6 +235,16 @@ pub struct DeviceInventory {
     seen: Vec<String>,
     /// Why the best candidate was NOT used, when that happened.
     note: Option<String>,
+    /// The product name of the device being read, for the status line at the top
+    /// of 3D Mouse Settings. `picked` is a diagnostic (ids, usage, product) and
+    /// not something to show a user.
+    product: Option<String>,
+    /// The product name of a 3D mouse that was found but could not be opened.
+    /// Held here, not only sent as `spacemouse:blocked`: that event fires on the
+    /// reader's first pass, before the webview listens, and is not replayed (see
+    /// `Inventory`), so for a device blocked at launch the settings dialog would
+    /// say no 3D mouse was found (882cf869).
+    unreadable: Option<String>,
 }
 
 /// The last inventory, kept so the frontend can ASK for it.
@@ -342,18 +352,27 @@ fn stream(app: &AppHandle, last: &mut Option<String>) -> Result<(), Blocked> {
         }
     }
 
+    let unreadable = match &blocked {
+        Some(Blocked::Unreadable { name, .. }) => Some(name.clone()),
+        _ => None,
+    };
     let inventory = DeviceInventory {
         picked: chosen.as_ref().map(|(info, _)| describe(info)),
         seen: api.device_list().map(describe).collect(),
         note,
+        product: chosen
+            .as_ref()
+            .map(|(info, _)| info.product_string().unwrap_or("SpaceMouse").to_string()),
+        unreadable,
     };
     // Publish on CHANGE, not once per run: a device plugged in later, or newly
     // rejected, is news — while the no-device case retries every 3s forever and
     // must not spam the log or the event channel.
     let fingerprint = format!(
-        "{:?}|{:?}|{}",
+        "{:?}|{:?}|{:?}|{}",
         inventory.picked,
         inventory.note,
+        inventory.unreadable,
         inventory.seen.len()
     );
     if last.as_deref() != Some(fingerprint.as_str()) {

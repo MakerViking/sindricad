@@ -23,7 +23,7 @@ import { installKeymap } from "./input/keymap";
 import { toggleShortcutHUD } from "./input/shortcuts";
 import { checkForUpdates, scheduleStartupUpdateCheck, showAbout } from "./ui/updates";
 import { TUTORIALS_URL, GUIDE_URL, openHelp } from "./ui/help";
-import { initSpaceMouse, setSpaceMouseConfig, getSpaceMouseMode, setSpaceMouseMode } from "./input/spacemouse";
+import { initSpaceMouse, setSpaceMouseConfig, getSpaceMouseMode, setSpaceMouseMode, setSpaceMouseDevice } from "./input/spacemouse";
 import { SpaceMouseSettings } from "./ui/spaceMouseSettings";
 import { openShortcutSettings } from "./ui/shortcutSettings";
 import { saveDocument, saveDocumentAs, openDocument, openDocumentAtPath, exportModel, exportBody, exportPrintProject, importModel, confirmDiscardChanges } from "./io/files";
@@ -319,12 +319,13 @@ if ("__TAURI_INTERNALS__" in window) {
   // the SpaceMouse in it. Chunked because a crumb is capped at 300 chars, and
   // sticky so twenty later toasts can't evict it.
   let recorded = ""; // the listener and the pull below can both deliver the same one
-  const recordInventory = (payload: {
-    picked: string | null;
-    seen: string[];
-    note?: string | null;
-  }) => {
+  const recordInventory = (payload: Inventory) => {
     const { picked, seen, note } = payload;
+    // What 3D Mouse Settings says at the top: without it a user with no device,
+    // or one the OS won't let us open, got a test cube that never moved and no
+    // reason why (882cf869). Set before the duplicate check below, which is
+    // about the sticky facts and does not look at these two fields.
+    setSpaceMouseDevice({ product: payload.product ?? null, unreadable: payload.unreadable ?? null });
     const fingerprint = `${picked}|${note}|${seen.join(",")}`;
     if (fingerprint === recorded) return;
     recorded = fingerprint;
@@ -339,7 +340,14 @@ if ("__TAURI_INTERNALS__" in window) {
     if (seen.length > shown) stickyFact(`[spacemouse]   +${seen.length - shown} more`);
   };
 
-  type Inventory = { picked: string | null; seen: string[]; note?: string | null };
+  // `product` and `unreadable` are for the status line in 3D Mouse Settings.
+  type Inventory = {
+    picked: string | null;
+    seen: string[];
+    note?: string | null;
+    product?: string | null;
+    unreadable?: string | null;
+  };
 
   // Listen FIRST, then ask — and only once the listener is actually live.
   //

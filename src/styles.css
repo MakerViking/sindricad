@@ -2317,6 +2317,23 @@ button.finish:hover {
   font-size: 11px;
   color: var(--text-dim);
 }
+/* Whether a 3D mouse was found, across both columns above them. The edge colour
+   carries the state; the sentence carries the meaning. */
+.sm-status {
+  grid-column: 1 / -1;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--panel-2);
+  border-left: 3px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  padding: var(--s-2) var(--s-4);
+}
+.sm-status-ok {
+  border-left-color: var(--ok);
+}
+.sm-status-blocked {
+  border-left-color: var(--warn);
+}
 .sm-axis-row {
   display: grid;
   /* minmax, not a fixed track: below 120px the label column is unchanged (the

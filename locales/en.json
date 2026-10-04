@@ -1224,8 +1224,12 @@
       "resetDefaults": "Reset to defaults",
       "rotate": "Rotate",
       "sensitivity": "Sensitivity",
+      "status": {
+        "connected": "Connected: {name}",
+        "none": "No 3D mouse found. The test cube below moves only with a SpaceMouse, not with an ordinary mouse."
+      },
       "suppressed": "{axis}: suppressed by the cross-axis filter",
-      "test": "Test — rotate the cube",
+      "test": "Test: rotate the cube with the puck",
       "title": "3D Mouse Settings",
       "zoom": "Zoom"
     },

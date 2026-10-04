@@ -267,6 +267,12 @@ This file starts on 2026-08-03. For anything before that, see the
   refused up front, because that guard protects against a crash rather than
   judging how editable the result would be.
 
+- **3D Mouse Settings says whether it found your 3D mouse.** A line at the top
+  names the device it is reading, says that no 3D mouse was found, or names one
+  it found but can't open and points to the fix. The test cube moves only with
+  the puck of a 3D mouse, never with an ordinary mouse, and its heading now says
+  so.
+
 - **A bug report sent after a failed import says what went wrong.** The error
   message you saw when an import, export, open or save failed now goes into the
   report. And when the geometry engine crashes in the middle of an operation,

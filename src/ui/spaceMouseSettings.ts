@@ -1,8 +1,9 @@
 // 3D-Mouse settings modal: calibrate the SpaceMouse without guessing the
-// hardware. Shows a LIVE raw-axis readout (push/twist the puck → see which axis
-// moves), lets you bind each camera action to any axis + invert + set
-// sensitivity, and a TEST CUBE driven by the puck (with the current mapping) so
-// you can confirm the feel. All edits apply live and persist.
+// hardware. Says at the top whether a 3D mouse was found, shows a LIVE raw-axis
+// readout (push/twist the puck → see which axis moves), lets you bind each
+// camera action to any axis + invert + set sensitivity, and a TEST CUBE driven
+// by the puck (with the current mapping) so you can confirm the feel. All edits
+// apply live and persist.
 
 import * as THREE from "three";
 import { icon } from "./icons";
@@ -15,12 +16,15 @@ import {
   filterMotion,
   getLatestMotion,
   getSpaceMouseConfig,
+  getSpaceMouseDevice,
+  onSpaceMouseDevice,
   onSpaceMouseMotion,
   resetSpaceMouseConfig,
   setSpaceMouseConfig,
   type ActionName,
   type AxisName,
   type Motion,
+  type SpaceMouseDevice,
 } from "../input/spacemouse";
 
 /** Top of each sensitivity slider's range (its bottom is 0). Exported so the
@@ -31,7 +35,9 @@ export const SENS_MAX = { pan: 0.000003, zoom: 0.0000035, rotate: 0.00001 } as c
 export class SpaceMouseSettings {
   private overlay: HTMLDivElement | null = null;
   private bars = new Map<AxisName, HTMLDivElement>();
+  private status: HTMLElement | null = null;
   private unsub: (() => void) | null = null;
+  private unsubDevice: (() => void) | null = null;
   private raf = 0;
   private three: {
     renderer: THREE.WebGLRenderer;
@@ -48,6 +54,9 @@ export class SpaceMouseSettings {
   open() {
     if (this.overlay) return;
     this.build();
+    // live, so plugging the device in (or fixing its permissions) while the
+    // dialog is open changes the line within the reader's 3 s retry
+    this.unsubDevice = onSpaceMouseDevice((d) => this.renderStatus(d));
     this.unsub = onSpaceMouseMotion((m) => {
       this.lastMotion = m;
       this.clock = performance.now();
@@ -66,12 +75,15 @@ export class SpaceMouseSettings {
     this.raf = 0;
     this.unsub?.();
     this.unsub = null;
+    this.unsubDevice?.();
+    this.unsubDevice = null;
     if (this.three) {
       this.three.renderer.dispose();
       this.three = null;
     }
     this.overlay?.remove();
     this.overlay = null;
+    this.status = null;
     this.bars.clear();
   }
 
@@ -95,6 +107,11 @@ export class SpaceMouseSettings {
 
     const body = el("div", "modal-body sm-grid"); // i18n-ignore CSS class list, not UI text
     panel.appendChild(body);
+
+    // --- across both columns: was a 3D mouse found? ---
+    this.status = el("div", "sm-status");
+    body.appendChild(this.status);
+    this.renderStatus(getSpaceMouseDevice());
 
     // --- left column: live axes + test cube ---
     const left = el("div", "sm-col");
@@ -182,6 +199,28 @@ export class SpaceMouseSettings {
     this.overlay = overlay;
 
     this.initTest(testCanvas);
+  }
+
+  /** The line at the top: whether a 3D mouse was found. The test cube moves
+   *  ONLY with the puck, so a user with no device, or with one the OS won't let
+   *  us open, used to get a cube that sat still and no reason why ("mouse test
+   *  not working", 882cf869). Hidden until the reader has reported (always, in a
+   *  plain browser, which has no reader): better no line than a guess. */
+  private renderStatus(d: SpaceMouseDevice | null) {
+    const line = this.status;
+    if (!line) return;
+    line.hidden = !d;
+    if (!d) return;
+    if (d.product !== null) {
+      line.className = "sm-status sm-status-ok";
+      setText(line, "settings.spaceMouse.status.connected", { name: d.product });
+    } else if (d.unreadable !== null) {
+      line.className = "sm-status sm-status-blocked";
+      setText(line, "status.spaceMouseBlocked", { name: d.unreadable });
+    } else {
+      line.className = "sm-status";
+      setText(line, "settings.spaceMouse.status.none");
+    }
   }
 
   private slider(

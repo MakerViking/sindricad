@@ -236,6 +236,29 @@ export function onSpaceMouseMotion(fn: (m: Motion) => void): () => void {
   return () => motionListeners.delete(fn);
 }
 
+// --- which device the reader found (for the settings dialog's status line) ---
+/** What the native reader last said about the hardware: the product it is
+ *  reading, or one it found but could not open. Both null means it looked and
+ *  found no 3D mouse. Fed from the HID inventory in main.ts. */
+export interface SpaceMouseDevice {
+  product: string | null;
+  unreadable: string | null;
+}
+// null until the reader has reported, and always in a plain browser (no reader)
+let device: SpaceMouseDevice | null = null;
+const deviceListeners = new Set<(d: SpaceMouseDevice) => void>();
+export function getSpaceMouseDevice(): SpaceMouseDevice | null {
+  return device;
+}
+export function setSpaceMouseDevice(d: SpaceMouseDevice) {
+  device = d;
+  for (const fn of deviceListeners) fn(d);
+}
+export function onSpaceMouseDevice(fn: (d: SpaceMouseDevice) => void): () => void {
+  deviceListeners.add(fn);
+  return () => deviceListeners.delete(fn);
+}
+
 export async function initSpaceMouse(
   viewport: Viewport,
   onButton: (pressedMask: number) => void,
