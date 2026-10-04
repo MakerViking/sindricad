@@ -267,6 +267,13 @@ This file starts on 2026-08-03. For anything before that, see the
   refused up front, because that guard protects against a crash rather than
   judging how editable the result would be.
 
+- **A bug report sent after a failed import says what went wrong.** The error
+  message you saw when an import, export, open or save failed now goes into the
+  report. And when the geometry engine crashes in the middle of an operation,
+  the log now records which operation it was running and how far it had got.
+  Before, a report sent right after a failed import could arrive with nothing in
+  it that explained the failure.
+
 ### Fixed
 
 - **Break keeps the constraints of the curve it splits.** A Coincident at either

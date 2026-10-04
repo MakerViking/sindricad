@@ -2362,6 +2362,41 @@ def _on_broken(gen):
     return {"error": {"message": _INIT_FAIL_MSG, "code": errors_mod.ENGINE_UNAVAILABLE}}
 
 
+def _on_worker_died(gen, fn, line):
+    """_on_broken, plus a line in the log saying it happened.
+
+    A worker that dies mid-op (a segfault inside OCCT, or the OS killing it for
+    memory) leaves no traceback, and until this nothing was printed either. Field
+    1c8e8de1, a STEP import on Windows that sat at 44% and then failed, arrived
+    with a log holding only the spawn line and "LISTENING 8765", so a dead worker
+    could not be told apart from a file the reader refused.
+
+    Same ordering as the stall reaper's STALL line: the caller composes the line
+    BEFORE recovery, recovery runs first, and the print sits in a `finally`
+    wrapped so that nothing it does can stop the pool being rebuilt (field
+    f3b9c287, where a print that raised left the only worker slot dead).
+
+    One worker death breaks EVERY in-flight future, so a death with other ops
+    queued behind it prints one line per op, all carrying the same index.
+
+    So does a deliberate kill: a cancel, stall reap or timeout of ANOTHER op
+    (another connection's, since each one serializes its own) breaks this op's
+    future too, and only the op the kill was for knows it was not a crash. A
+    generation _kill_pool marked as reaped did not die, so the line says what
+    did happen instead of blaming `fn` with the killed op's index."""
+    if gen in _reaped_gens:
+        line = (f"WORKER RECYCLED under {getattr(fn, '__name__', fn)!r}: another "
+                "operation's cancel, stall or timeout killed the worker pool, so "
+                "this is not a crash")
+    try:
+        return _on_broken(gen)
+    finally:
+        try:
+            print(line, flush=True)
+        except Exception:
+            pass  # a diagnostic must never be able to fail recovery
+
+
 def _kill_pool(pool):
     """Forcibly terminate a pool's worker process(es) — used to stop a worker that's
     spinning on a runaway OCCT call, since shutdown() alone would wait for it."""
@@ -2405,7 +2440,11 @@ async def _run(loop, fn, *args, timeout=JOB_TIMEOUT):
     except BrokenProcessPool:
         if cancelled():
             return _cancelled_result()
-        return _on_broken(gen)
+        # No index on this line: _run's jobs do not go through _job_entry, so the
+        # heartbeat still holds whatever the last supervised job left in it.
+        return _on_worker_died(gen, fn, (
+            f"WORKER DIED while running {getattr(fn, '__name__', fn)!r}; "
+            "recycling the worker pool"))
 
 
 _EXPORT_SEC_PER_BODY = 0.09  # 4x the measured 22.6 ms/body — see _export_stall_budget
@@ -2528,7 +2567,12 @@ async def _run_stall(loop, fn, *args, stall=STALL_TIMEOUT, on_progress=None):
     except BrokenProcessPool:
         if cancelled():
             return _cancelled_result()
-        return _on_broken(gen)
+        # The pool broke before this job was submitted (a worker that died while
+        # idle, or one that never came up), so it is not this job's own crash,
+        # and the line says so rather than blaming it.
+        return _on_worker_died(gen, fn, (
+            f"WORKER DIED before {getattr(fn, '__name__', fn)!r} could start, the "
+            "pool was already broken; recycling the worker pool"))
     last = _HB.value if _HB is not None else 0
     last_t = loop.time()
     # The pool's warm-up, if this job was submitted before it finished. With
@@ -2620,7 +2664,9 @@ async def _run_stall(loop, fn, *args, stall=STALL_TIMEOUT, on_progress=None):
             # Without it the app showed a bare ": the geometry kernel crashed",
             # naming nothing — see _crash_feature().
             idx = int(_HB_IDX.value) if _HB_IDX is not None else -1
-            res = _on_broken(gen)
+            res = _on_worker_died(gen, fn, (
+                f"WORKER DIED while running {getattr(fn, '__name__', fn)!r} "
+                f"(feature/phase index {idx}); recycling the worker pool"))
             # feature_index only means anything for a real op crash; on an
             # environment failure there is no culprit feature to name, and
             # _crash_feature would rewrite the message into "your shape is

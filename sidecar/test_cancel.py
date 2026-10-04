@@ -21,6 +21,7 @@ Run:  uv run python test_cancel.py
 
 import asyncio
 import json
+import sys
 import time
 
 import websockets
@@ -139,6 +140,61 @@ async def test_geometry_still_works_after_a_cancel():
         server._interference_job = orig
 
 
+class _Tee:
+    """Stdout that is also kept: the sidecar's log lines are what the test reads."""
+
+    def __init__(self, out):
+        self.out, self.parts = out, []
+
+    def write(self, s):
+        self.parts.append(s)
+        return self.out.write(s)
+
+    def flush(self):
+        self.out.flush()
+
+
+async def test_a_cancel_does_not_log_the_job_queued_behind_it_as_a_death():
+    """Each connection serializes its own ops, but the worker pool is shared, so
+    a second connection's op can sit in the pool's queue behind the one being
+    cancelled. The kill that stops the cancelled op breaks that queued op too. It
+    never ran, so the log must not say a worker died running it (field 1c8e8de1's
+    line exists to tell a real death apart; a false one sends the reader after a
+    crash that did not happen)."""
+    orig = server._interference_job
+    server._interference_job = _sleep_job
+    tee = _Tee(sys.stdout)
+    sys.stdout = tee
+    try:
+        async with await _serve():
+            async with websockets.connect(URL) as ws1, websockets.connect(URL) as ws2:
+                await ws1.send(json.dumps({"id": "long", "op": "interference",
+                                           "document": _sleep_doc(SLEEP_SECONDS)}))
+                await asyncio.sleep(1.5)  # let it get into the worker
+                await ws2.send(json.dumps({"id": "queued", "op": "interference",
+                                           "document": _sleep_doc(1)}))
+                await asyncio.sleep(0.5)  # queued in the pool behind `long`
+                await ws1.send(json.dumps({"id": "c1", "op": "cancel", "target": "long"}))
+
+                replies = {}
+                for _ in range(2):
+                    msg = json.loads(await asyncio.wait_for(ws1.recv(), timeout=15))
+                    replies[msg["id"]] = msg
+                queued = json.loads(await asyncio.wait_for(ws2.recv(), timeout=15))
+                assert replies["long"].get("cancelled") is True, replies["long"]
+                assert queued["id"] == "queued" and queued["ok"] is False, (
+                    "precondition: the cancel's kill must reach the queued op: %r" % queued)
+    finally:
+        sys.stdout = tee.out
+        server._interference_job = orig
+    logged = "".join(tee.parts)
+    assert "WORKER DIED" not in logged, (
+        "a cancel was logged as a worker dying under the op queued behind it: %r" % logged)
+    assert "WORKER RECYCLED under '_sleep_job'" in logged, (
+        "the queued op's failure left nothing in the log: %r" % logged)
+    print("  the queued op is logged as recycled, not as a death")
+
+
 async def test_cancel_with_no_job_running_is_harmless():
     async with await _serve():
         async with websockets.connect(URL) as ws:
@@ -189,6 +245,7 @@ async def main():
     for fn in (
         test_cancel_stops_a_running_job,
         test_geometry_still_works_after_a_cancel,
+        test_a_cancel_does_not_log_the_job_queued_behind_it_as_a_death,
         test_cancel_with_no_job_running_is_harmless,
         test_cancel_targeting_another_id_leaves_the_job_alone,
         test_ordering_is_preserved_under_task_dispatch,

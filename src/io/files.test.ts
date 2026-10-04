@@ -330,6 +330,62 @@ describe("an import is one cancellable operation, its build included", () => {
   });
 });
 
+// --- a failed import says why in the bug report (1c8e8de1) -------------------
+//
+// Field report 1c8e8de1: a STEP import on Windows sat at 44%, then failed, and
+// the report filed straight after held no trace of the failure. An import error
+// is shown in a native dialog, and only toasts fed the breadcrumb trail, so the
+// one sentence that said what went wrong never reached the reporter's upload.
+// This goes in through File > Import with a non-English UI: the dialog shows
+// the translation, the trail keeps the English and the key, as a toast's does.
+describe("a failed import is in the bug-report trail", () => {
+  const path = "C:\\parts\\bracket.step";
+  let reported: string[];
+
+  beforeEach(() => {
+    reported = [];
+    (globalThis as unknown as Record<string, unknown>).window = {
+      __TAURI_INTERNALS__: {},
+      addEventListener() {},
+      removeEventListener() {},
+    };
+    vi.doMock("@tauri-apps/plugin-dialog", () => ({
+      open: async () => path,
+      message: async (m: string) => void reported.push(m),
+    }));
+  });
+
+  afterEach(() => {
+    vi.doUnmock("@tauri-apps/plugin-dialog");
+    vi.resetModules();
+    delete (globalThis as unknown as Record<string, unknown>).window;
+  });
+
+  it("records the dialog's reason, in English with its key", async () => {
+    const backend = {
+      async init() {}, onStatus() { return () => {}; }, connected: true,
+      async importGeometry() {
+        return { ok: false, message: "the geometry kernel crashed on this operation" };
+      },
+    } as unknown as GeometryBackend;
+    const store = new DocumentStore(backend, { parameters: {}, features: [] });
+    // the same module instances files.ts gets, so the locale switch reaches it
+    const i18n = await import("../i18n");
+    const { breadcrumbs } = await import("../diagnostics/breadcrumbs");
+    const { importModel } = await import("./files");
+    i18n.setLocale("qps-ploc");
+    await importModel(store, backend);
+
+    expect(reported, "the failure must still be shown").toHaveLength(1);
+    expect(reported[0], "precondition: the dialog is in the UI language").not.toContain("Couldn't import");
+    const trail = breadcrumbs().join("\n");
+    expect(trail, "the import failure never reached the bug-report trail").toContain(
+      "[error] Couldn't import bracket.step: the geometry kernel crashed on this operation <file.error.import>",
+    );
+    expect(store.document.features).toEqual([]);
+  });
+});
+
 describe("a cancelled rebuild is not a failure", () => {
   it("keeps the last model and what was said about it, and changes no feature", async () => {
     let release: ((r: RebuildReply) => void) | null = null;

@@ -257,7 +257,8 @@ class _StubValue:
 _RECYCLES = []
 
 
-def _drive_run_stall(job, stall, warm=None, stdout=None, new_pool=None):
+def _drive_run_stall(job, stall, warm=None, stdout=None, new_pool=None,
+                     plain=False, cancel=False, pool=None):
     """Run server._run_stall(job) against a thread pool and a stub heartbeat.
     Returns (result, elapsed_seconds), and records every pool recycle the
     supervisor performed in the module-level `_RECYCLES`.
@@ -271,7 +272,12 @@ def _drive_run_stall(job, stall, warm=None, stdout=None, new_pool=None):
 
     `new_pool` replaces the stubbed pool rebuild. Pass one that RAISES to
     exercise a recycle that fails halfway: _new_pool constructs a real
-    ProcessPoolExecutor, which can fail (out of fds, no /dev/shm)."""
+    ProcessPoolExecutor, which can fail (out of fds, no /dev/shm).
+
+    `plain` drives `_run` (the wall-clock path, `stall` as its timeout) instead.
+    `cancel` runs the call under a cancel token that has already fired, which is
+    how a Cancel looks once it has killed the worker. `pool` replaces the thread
+    pool, for an executor that is already broken when the job is submitted."""
     import asyncio
     import time as _time
     from concurrent.futures import ThreadPoolExecutor
@@ -281,7 +287,7 @@ def _drive_run_stall(job, stall, warm=None, stdout=None, new_pool=None):
     saved = (server._pool, server._HB, server._HB_IDX, server._kill_pool,
              server._new_pool, server._env_broken, server._warm)
     saved_out = sys.stdout
-    pool = ThreadPoolExecutor(max_workers=1)
+    pool = pool if pool is not None else ThreadPoolExecutor(max_workers=1)
     hb = _StubValue(0)
     _RECYCLES.clear()
     try:
@@ -299,8 +305,14 @@ def _drive_run_stall(job, stall, warm=None, stdout=None, new_pool=None):
         )
 
         async def _go():
+            if cancel:
+                server._CANCEL.set({"cancelled": True})
             t0 = _time.monotonic()
-            res = await server._run_stall(asyncio.get_running_loop(), job, hb, stall=stall)
+            loop = asyncio.get_running_loop()
+            if plain:
+                res = await server._run(loop, job, hb, timeout=stall)
+            else:
+                res = await server._run_stall(loop, job, hb, stall=stall)
             return res, _time.monotonic() - t0
 
         if stdout is not None:
@@ -496,6 +508,136 @@ def test_the_stall_line_survives_a_failed_pool_rebuild():
     # ...and the kill still ran, exactly once, BEFORE the rebuild attempt.
     assert _RECYCLES == ["kill", "new-raised"], _RECYCLES
     print(f"{PASS} rebuild raised {raised!r} and the stall was still logged")
+
+
+# --- field 1c8e8de1: a worker that DIED left nothing in the log ---------------
+# A STEP import on Windows sat at 44%, then failed, and the log that came with
+# the report held only the spawn line and "LISTENING 8765". A stall prints its
+# STALL line; a worker that died outright (a segfault inside OCCT, or the OS
+# killing it for memory) went through _on_broken, which printed nothing, so a
+# crash could not be told apart from a file the reader refused. These drive the
+# real supervisors with a job that dies the way a dead worker reports itself to
+# the caller: its future raises BrokenProcessPool.
+
+
+def _dies_reading(hb):
+    """Publishes import phase 0 ("Reading file"), then its worker dies under it."""
+    from concurrent.futures.process import BrokenProcessPool
+
+    import server
+    server._HB_IDX.value = 0
+    hb.value += 1
+    raise BrokenProcessPool("A process in the process pool was terminated abruptly")
+
+
+def _came_up():
+    """A resolved warm-up: the worker started, so its death is an op crash and
+    not a broken install."""
+    from concurrent.futures import Future
+    fut = Future()
+    fut.set_result(True)
+    return fut
+
+
+def _utf8_out():
+    import io
+    return io.TextIOWrapper(io.BytesIO(), encoding="utf-8", write_through=True)
+
+
+def test_a_worker_that_dies_mid_job_says_so_in_the_log():
+    """The line names the job and the phase it died in, and the crash is still
+    handled exactly as before: the per-op message, the index _crash_feature turns
+    into a feature, one fresh pool."""
+    out = _utf8_out()
+    res, _ = _drive_run_stall(_dies_reading, stall=5.0, warm=_came_up(), stdout=out)
+    logged = out.buffer.getvalue().decode("utf-8")
+    assert "WORKER DIED while running '_dies_reading' (feature/phase index 0)" in logged, \
+        f"a dead worker left nothing in the log: {logged!r}"
+    err = (res or {}).get("error") or {}
+    assert err.get("message") == "the geometry kernel crashed on this operation", res
+    assert err.get("feature_index") == 0, f"the culprit index was lost: {res}"
+    assert _RECYCLES == ["new"], f"the dead pool was not replaced exactly once: {_RECYCLES}"
+    print(f"{PASS} a dead worker is logged: {logged.strip()[:72]}...")
+
+
+def test_a_cancel_that_kills_the_worker_is_not_logged_as_a_death():
+    """Cancel works by killing the worker, so it surfaces as the same exception.
+    It is the user stopping something, not a crash, and must not read as one."""
+    out = _utf8_out()
+    res, _ = _drive_run_stall(_dies_reading, stall=5.0, warm=_came_up(), stdout=out,
+                              cancel=True)
+    logged = out.buffer.getvalue().decode("utf-8")
+    assert (res or {}).get("cancelled"), f"a cancel was not reported as one: {res}"
+    assert "WORKER DIED" not in logged, f"a cancel was logged as a crash: {logged!r}"
+    assert _RECYCLES == [], f"a cancel went through the crash recovery: {_RECYCLES}"
+    print(f"{PASS} a cancel that kills the worker logs nothing")
+
+
+def test_the_death_line_can_never_cost_the_recycle():
+    """Both directions of f3b9c287's lesson. A print that raises must not stop the
+    pool being replaced (one worker slot: a dead pool is a dead engine), and a
+    rebuild that raises must not take the line with it."""
+
+    class _Unwritable:
+        def write(self, _s):
+            raise UnicodeEncodeError("cp932", "", 0, 1, "illegal multibyte sequence")
+
+        def flush(self):
+            pass
+
+    res, _ = _drive_run_stall(_dies_reading, stall=5.0, warm=_came_up(),
+                              stdout=_Unwritable())
+    msg = str(((res or {}).get("error") or {}).get("message", ""))
+    assert msg == "the geometry kernel crashed on this operation", \
+        f"the unprintable line replaced the crash result: {res}"
+    assert _RECYCLES == ["new"], f"a print that raised skipped the recycle: {_RECYCLES}"
+
+    def _new_pool_fails():
+        _RECYCLES.append("new-raised")
+        raise OSError("[Errno 24] Too many open files")
+
+    out = _utf8_out()
+    raised = None
+    try:
+        _drive_run_stall(_dies_reading, stall=5.0, warm=_came_up(), stdout=out,
+                         new_pool=_new_pool_fails)
+    except OSError as exc:
+        raised = exc
+    logged = out.buffer.getvalue().decode("utf-8")
+    assert raised is not None, "precondition: the failing rebuild must propagate"
+    assert "WORKER DIED" in logged, f"a failed rebuild swallowed the line: {logged!r}"
+    print(f"{PASS} the line survives a failed rebuild, and a failed print cannot skip one")
+
+
+def test_every_path_that_meets_a_dead_worker_logs_it():
+    """_run (fonts, text, geometry migration) meets a dead worker too, and so does
+    a job submitted to a pool that broke while idle. _run's line carries no index:
+    its jobs do not reset the heartbeat, so one would name the PREVIOUS job's
+    feature."""
+    from concurrent.futures.process import BrokenProcessPool
+
+    out = _utf8_out()
+    _drive_run_stall(_dies_reading, stall=5.0, warm=_came_up(), stdout=out, plain=True)
+    logged = out.buffer.getvalue().decode("utf-8")
+    assert "WORKER DIED while running '_dies_reading'; recycling" in logged, \
+        f"_run left a dead worker unlogged: {logged!r}"
+    assert "index" not in logged, f"_run named a stale index: {logged!r}"
+
+    class _BrokenPool:
+        def submit(self, *_a, **_k):
+            raise BrokenProcessPool("A child process terminated abruptly")
+
+        def shutdown(self, *_a, **_k):
+            pass
+
+    out = _utf8_out()
+    res, _ = _drive_run_stall(_dies_reading, stall=5.0, warm=_came_up(), stdout=out,
+                              pool=_BrokenPool())
+    logged = out.buffer.getvalue().decode("utf-8")
+    assert "WORKER DIED before '_dies_reading' could start" in logged, \
+        f"a pool broken before submit left nothing in the log: {logged!r}"
+    assert (res or {}).get("error"), res
+    print(f"{PASS} _run and a pool broken before submit both log the death")
 
 
 def test_server_relaxes_its_own_stdio_error_handler():
@@ -1493,6 +1635,10 @@ if __name__ == "__main__":
     test_a_diagnostic_that_raises_cannot_skip_the_pool_recycle()
     test_the_reaper_logs_when_its_stdout_can_take_it()
     test_the_stall_line_survives_a_failed_pool_rebuild()
+    test_a_worker_that_dies_mid_job_says_so_in_the_log()
+    test_a_cancel_that_kills_the_worker_is_not_logged_as_a_death()
+    test_the_death_line_can_never_cost_the_recycle()
+    test_every_path_that_meets_a_dead_worker_logs_it()
     test_server_relaxes_its_own_stdio_error_handler()
     test_the_long_mesh_passes_tick_from_inside_their_loops()
     test_the_fitter_never_goes_quiet_for_a_second()

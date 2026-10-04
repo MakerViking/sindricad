@@ -9,7 +9,8 @@ import type { GeometryBackend } from "../geometry/client";
 import type { CadDocument, ExportFormat, Feature, ImportFormat } from "../types";
 import { clearRecovery } from "./recovery";
 import { noteRecent } from "./recentFiles";
-import { localeTag, t } from "../i18n";
+import { localeTag, sourceOf, t } from "../i18n";
+import { crumb } from "../diagnostics/breadcrumbs";
 import { fmtCount } from "../ui/units";
 import { exportReport } from "./exportReport";
 
@@ -896,8 +897,15 @@ async function importPath(store: DocumentStore, geometry: GeometryBackend, path:
 }
 
 /** Surface an error to the user — a native dialog in the app, console otherwise.
- *  (Import used to fail silently, which read as "nothing happened".) */
+ *  (Import used to fail silently, which read as "nothing happened".)
+ *
+ *  Breadcrumbed first, the way a toast is: a native dialog never reaches the
+ *  bug reporter on its own, so a STEP import that failed on Windows (1c8e8de1)
+ *  arrived with the failure text nowhere in the report. Same shape as toast.ts,
+ *  the English text and its key, so support can read a report from any locale. */
 async function reportError(msg: string) {
+  const src = sourceOf(msg);
+  crumb(src ? `[error] ${src.english} <${src.key}>` : `[error] ${msg}`);
   if (isTauri()) {
     const { message } = await import("@tauri-apps/plugin-dialog");
     await message(msg, { title: "SindriCAD", kind: "error" });
