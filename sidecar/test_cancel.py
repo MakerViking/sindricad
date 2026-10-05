@@ -168,6 +168,12 @@ async def test_a_cancel_does_not_log_the_job_queued_behind_it_as_a_death():
     try:
         async with await _serve():
             async with websockets.connect(URL) as ws1, websockets.connect(URL) as ws2:
+                # Warm the worker first: on a cold CI runner its first start takes
+                # longer than the 1.5 s below, so `long` was not running yet when
+                # the cancel arrived, and `queued` then waited out the cold start.
+                await ws1.send(json.dumps({"id": "warm", "op": "interference",
+                                           "document": _sleep_doc(0)}))
+                await asyncio.wait_for(ws1.recv(), timeout=120)
                 await ws1.send(json.dumps({"id": "long", "op": "interference",
                                            "document": _sleep_doc(SLEEP_SECONDS)}))
                 await asyncio.sleep(1.5)  # let it get into the worker
