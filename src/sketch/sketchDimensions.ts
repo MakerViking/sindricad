@@ -16,6 +16,7 @@ import { overlayHost, outsideRect, clampIntoRect } from "../viewport/overlayHost
 import type { SketchPlane } from "./plane";
 import type { ResolvedEntity } from "./snap";
 import { entityDims, staggeredDefaults, type DimField, type ConstraintDim, type EntityDim } from "./entityDims";
+import { entityDimKey } from "./dimRows";
 import { isOriginGeometry } from "./origin";
 import { isImeComposing } from "../ui/focus";
 import { stepDoublePress, type PressRecord } from "../input/doublePress";
@@ -81,6 +82,9 @@ interface DimLabel {
    *  side), so the editor must take a negative back — see units.dimValueOk.
    *  Absent on every other dim, which are magnitudes. */
   signed?: boolean;
+  /** Which dimension this is, in the parameters panel's terms (dimRows'
+   *  `key`), so a row the panel points at can light up its label here. */
+  key?: string;
 }
 
 /** an extra, non-entity label (e.g. a distance constraint's value); valueMm
@@ -227,6 +231,7 @@ export class SketchDimensions {
     for (const { i, d } of entityLabels(entities)) {
       const expr = this.entityExprOf?.(i, d.field);
       const field = d.field;
+      const id = entities[i]?.id;
       const backing = this.onEntityConstraint?.(i, field) ?? null;
       const lock = backing === "free" ? (this.onEntityLock?.(i, field) ?? null) : null;
       this.addLabel({
@@ -240,9 +245,11 @@ export class SketchDimensions {
         ...(typeof backing === "function" ? { onDelete: backing } : {}),
         ...(backing === "free" ? { measured: true } : {}),
         ...(lock ? { onLock: lock } : {}),
+        ...(id ? { key: entityDimKey(id, field) } : {}),
       });
     }
     for (const x of extras) this.addLabel(x);
+    this.highlight(this.highlightKey); // a rebuild keeps what the panel points at lit
     this.lastCamHash = ""; // force a reposition on the next frame
     if (!this.raf) this.loop();
   }
@@ -269,6 +276,14 @@ export class SketchDimensions {
     });
     this.lastCamHash = ""; // the camera didn't move; force the reposition pass
     return true;
+  }
+
+  /** The label the parameters panel is pointing at (its row is hovered or
+   *  focused), drawn lit; null for none. Kept across rebuilds. */
+  private highlightKey: string | null = null;
+  highlight(key: string | null) {
+    this.highlightKey = key;
+    for (const l of this.labels) l.el.classList.toggle("sketch-dim-linked", key !== null && l.key === key);
   }
 
   hide() {

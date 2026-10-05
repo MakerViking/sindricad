@@ -1697,6 +1697,32 @@ button.active {
   font-style: italic;
   margin-right: 4px;
 }
+/* A sketch dimension's row: the parameter's name, once it has one, on its own
+   line above what the dimension measures ("Rectangle 1 · Width mm"). The fx:
+   marker goes on the first of the two lines rather than ahead of both. */
+.param-dim-name {
+  display: block;
+  color: var(--text);
+  font-weight: 600;
+}
+.param-row-dim.fx-row label::before {
+  content: none;
+}
+.param-row-dim.fx-row label > span:first-child::before {
+  content: "fx:";
+  color: var(--accent);
+  font-style: italic;
+  margin-right: 4px;
+}
+/* the rows of what is selected on the canvas */
+.param-row-linked {
+  background: var(--accent-tint);
+  border-radius: var(--r-sm);
+  box-shadow: 0 0 0 3px var(--accent-tint);
+}
+.param-row-linked label {
+  color: var(--text);
+}
 /* parameter whose cached value is stale (cycle / missing ref / non-finite) —
    same amber as the solver's over-defined flag */
 .param-stale input {
@@ -2249,6 +2275,13 @@ button.finish:hover {
 .sketch-dim.over { border-color: var(--warn); color: var(--warn); }
 /* the dimension the Delete key will remove (set by a click or a right-click) */
 .sketch-dim.is-selected { outline: 2px solid var(--accent); outline-offset: 1px; }
+/* the dimension whose row the parameters panel is pointing at: the hover look,
+   held, so the row and its label are seen together */
+.sketch-dim.sketch-dim-linked {
+  background: var(--accent-tint-2);
+  border-color: var(--accent-hot);
+  color: var(--accent-hot);
+}
 /* non-select tools: labels visible but click-through (a label floating over a
    circle center must not swallow the dimension/draw pick underneath) */
 .sketch-dims.dims-passive .sketch-dim {

@@ -1022,6 +1022,38 @@
       "sketchPoint": "Sketch point",
       "vertex": "Corner"
     },
+    "sketchDim": {
+      "between": "{a} to {b}",
+      "construction": "{label} (construction)",
+      "entity": {
+        "arc": "Arc {n}",
+        "circle": "Circle {n}",
+        "line": "Line {n}",
+        "point": "Point {n}",
+        "polygon": "Polygon {n}",
+        "projected": "Projected {n}",
+        "rectangle": "Rectangle {n}",
+        "slot": "Slot {n}",
+        "spline": "Spline {n}",
+        "text": "Text {n}"
+      },
+      "kind": {
+        "dimension": "Dimension",
+        "distance": "Distance",
+        "horizontal": "Horizontal distance",
+        "offset": "Offset",
+        "radialGap": "Radial gap",
+        "vertical": "Vertical distance"
+      },
+      "label": "{subject} · {dim}",
+      "newSketch": "New sketch",
+      "none": "No dimensions in this sketch yet. Dimension something and its value shows here.",
+      "origin": "Origin",
+      "renameAria": "Name for {label}",
+      "renameHint": "Double-click to name this dimension. A named dimension is a parameter other values can use.",
+      "xAxis": "X axis",
+      "yAxis": "Y axis"
+    },
     "startFrom": {
       "clearAria": "Clear where the extrude starts",
       "clearTitle": "Start on the sketch plane instead",
@@ -1616,6 +1648,7 @@
         "lineTangent": "That line is tangent to the circle — the edge-to-edge distance measures 0, nothing to drive.",
         "mustBeNonZero": "must evaluate to a non-zero value",
         "mustBePositive": "must evaluate to a positive value",
+        "namedInSession": "\"{name}\" is named in this sketch, and other values can use it once the sketch is finished",
         "noDocument": "no document",
         "noEntity": "no entity",
         "noExpression": "this dimension can't hold an expression yet",

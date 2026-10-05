@@ -24,11 +24,14 @@ export function validatedInput(value: string, commit: (raw: string) => string | 
  *  landing, undo, load) never clobbers an edit in progress inside `root`.
  *  Focus alone is the wrong guard (commits land async while the panel keeps
  *  focus); track uncommitted KEYSTROKES instead: typing sets the flag, the
- *  change event (Enter/blur = commit or revert) clears it. */
+ *  change event (Enter/blur = commit or revert) clears it. So does focus
+ *  leaving the box: text typed and then typed back, or a box closed with
+ *  Escape, fires no change event, and the panel then never drew again. */
 export function keystrokeGuard(root: HTMLElement, render: () => void): () => void {
   let editing = false;
   root.addEventListener("input", () => (editing = true), true);
   root.addEventListener("change", () => (editing = false), true);
+  root.addEventListener("focusout", () => (editing = false), true);
   return () => {
     if (!editing) render();
   };

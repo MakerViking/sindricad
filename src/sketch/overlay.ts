@@ -214,6 +214,7 @@ export class SketchOverlay {
   private activeFills = new THREE.Group(); // profile fills for the active (hidden) sketch
   private activeSketch = new THREE.Group(); // active sketch's committed curves
   private previewGroup = new THREE.Group(); // the rubber-band, rebuilt per move
+  private linkGroup = new THREE.Group(); // geometry of the parameters-panel row being pointed at
   private snapMarker: THREE.Mesh;
   /** The endpoint(s) a constraint flow is holding. A POOL rather than one mesh:
    *  symmetric holds two points before it asks for the axis, and with a single
@@ -239,6 +240,7 @@ export class SketchOverlay {
       this.activeFills,
       this.activeSketch,
       this.previewGroup,
+      this.linkGroup,
     );
     this.group.renderOrder = 10;
 
@@ -749,6 +751,26 @@ export class SketchOverlay {
   setPreview(objects: THREE.Object3D[]) {
     this.clearGroup(this.previewGroup);
     for (const o of objects) this.previewGroup.add(o);
+  }
+
+  /** The geometry a parameters-panel row measures, lit while the row is
+   *  hovered or focused. Its own group, so a tool's preview and this never
+   *  clear each other. */
+  setLinkHighlight(objects: THREE.Object3D[]) {
+    this.clearGroup(this.linkGroup);
+    for (const o of objects) this.linkGroup.add(o);
+  }
+
+  /** The same for a CLOSED sketch: its entities `ids`, drawn on the plane the
+   *  sketch sits on, whether or not the sketch is shown, so pointing at a row
+   *  says where its dimension is even on a sketch a feature has hidden. */
+  linkSketchEntities(doc: CadDocument, sketchId: string, ids: readonly string[], color: number) {
+    const objs: THREE.Object3D[] = [];
+    for (const id of ids) {
+      const hit = this.sketchEntity(doc, sketchId, id);
+      if (hit) objs.push(...curveObjects([hit.entity], hit.plane, color, true));
+    }
+    this.setLinkHighlight(objs);
   }
 
   setSnap(world: THREE.Vector3 | null, _kind: SnapKind = "free", camera?: THREE.Camera) {

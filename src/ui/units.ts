@@ -111,6 +111,7 @@ import type { FieldKind } from "../document/numFields";
 import { isImeComposing } from "./focus";
 import { UNITS, parseExpr, refsOfNode, tokenize, type ExprNode } from "../params/parse";
 import { evalExpr, evalNode } from "../params/eval";
+import { splitNameValue } from "../params/engine";
 export type { FieldKind };
 
 /** numeric value to show in a field: angles stay in degrees, lengths convert */
@@ -403,6 +404,20 @@ export function fieldExpr(raw: string, kind: FieldKind = "length"): string | nul
   // operations as `meant`, so the rewrite evaluates to `meant` exactly.
   if (asTyped === meant) return s;
   return `(${bare.body})*1 ${unit}`;
+}
+
+/** Typed dimension text as the expression a sketch STORES for it: what the
+ *  user meant, spelled so the parameters engine evaluates it the same on every
+ *  rebuild (fieldExpr). In inches `1/16` was a sixteenth of a MILLIMETRE,
+ *  because the engine reads a bare literal in mm, and `1/16 in` was 1/(16 in).
+ *  A `name=` prefix is kept; text that does not parse goes through untouched,
+ *  so the engine's own message is the one shown. Shared by the canvas label
+ *  and the parameters panel, which store the same dimension. */
+export function storedDimExpr(raw: string, kind: FieldKind): string {
+  const nv = splitNameValue(raw);
+  const expr = fieldExpr(nv ? nv.expr : raw, kind);
+  if (expr === null) return raw;
+  return nv ? `${nv.name}=${expr}` : expr;
 }
 
 /** `s` as arithmetic that names no parameter: the AST of everything before an

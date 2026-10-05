@@ -3,20 +3,21 @@
 // client so any mutation re-runs the tree; results + errors are pushed to
 // listeners (viewport, timeline, tree).
 
-import type { CadDocument, DimField, Feature, ParamTarget, PlaneDef, PlaneSpec, ProjectedSource, ProjectionUpdate, RebuildReply, RebuildResult, Selector, SketchConstraint, SketchEntity, ViewCubeSide, ViewOverride } from "../types";
-import { TRIMMED_AWAY } from "../types";
+import { isDriven, TRIMMED_AWAY } from "../types";
+import type { CadDocument, DimField, ExtrudeStart, Feature, ParamTarget, PlaneDef, PlaneSpec, ProjectedSource, ProjectionUpdate, RebuildReply, RebuildResult, Selector, SketchConstraint, SketchEntity, ViewCubeSide, ViewOverride } from "../types";
 import type { GeometryBackend, ProjectionResult, QueryResult } from "../geometry/client";
 import { featureErrorText } from "../geometry/featureErrorText";
-import { migrateDocument, savedVersion } from "./migrate";
-import { applyDrivingDimsDirect, planDimEdit, upsertDrivingDim } from "../sketch/directDims";
+import { FORMAT_VERSION, migrateDocument, savedVersion } from "./migrate";
+import { applyDrivingDimsDirect, dimBindingFor, planDimEdit, upsertDrivingDim, type DimBinding } from "../sketch/directDims";
+import { rowConstraintAt, type SketchDimRow } from "../sketch/dimRows";
 import { entityDims, rebindPolygonSides } from "../sketch/entityDims";
 import { followOffsets, followRefusal, type FollowRefusal } from "../sketch/modify";
-import type { ResolvedEntity } from "../sketch/snap";
-import { isDimConstraint } from "../sketch/id";
+import { isDimConstraint, newConstraintId } from "../sketch/id";
 import { resolveRealEntities, toSketchEntity } from "../sketch/resolve";
+import type { ResolvedEntity } from "../sketch/snap";
 import * as params from "../params/engine";
 import type { FieldKind } from "./numFields";
-import { DEFAULT_EXTRUDE_DISTANCE, boundShapeFields, hasUpToTarget, writeTarget } from "./numFields";
+import { DEFAULT_EXTRUDE_DISTANCE, boundShapeFields, dimValueFromParam, hasUpToTarget, paramValueOfDim, writeTarget } from "./numFields";
 import { p2lSideFlipped, paramStep, paramSteps, refreshStep, refreshSteps } from "./projectionWalk";
 import { applyPointCarry, type PointCarry } from "./pointCarry";
 import { sketchLabel } from "./sketchLabel";
@@ -315,6 +316,14 @@ export function displayBodyName(
   const piece = depth < 8 ? pieceOf(id) : undefined;
   const base = piece ? displayBodyName(piece[0], own, pieceOf, depth + 1) : undefined;
   return piece && base ? t("feature.split.pieceName", { name: base, n: piece[1] }) : undefined;
+}
+
+/** Sketch `f`'s real entities by id, resolved once for every listed dimension
+ *  asked about. One saved without an id is left out: there is nothing to bind
+ *  it by (its resolved id is made up afresh on every resolve). */
+function realEntitiesById(f: Extract<Feature, { type: "sketch" }>, parameters: CadDocument["parameters"]): Map<string, ResolvedEntity> {
+  const saved = new Set(f.entities.map((x) => x.id));
+  return new Map(resolveRealEntities(f, parameters).filter((e) => saved.has(e.id)).map((e) => [e.id, e]));
 }
 
 /** A persisted display-only override map (id -> value): sketch/body/plane
@@ -1230,14 +1239,221 @@ export class DocumentStore {
     });
   }
 
+  // --- a CLOSED sketch's dimensions, from the parameters panel's rows ---
+  // (an open sketch's go to its session instead: SketchMode.commitPanelDim)
+
+  /** A plain number typed into listed dimension `row` of closed sketch
+   *  `sketchId`, canonical (mm, or degrees). A dimension a parameter holds
+   *  keeps its parameter, now holding this number (setTargetValue's rule);
+   *  any other is written the way its canvas label writes it. */
+  setSketchDimValue(sketchId: string, row: SketchDimRow, value: number) {
+    const f = this.closedSketch(sketchId);
+    if (!f) return;
+    const slot = this.sketchDimSlot(f, row, realEntitiesById(f, this.doc.parameters));
+    const target = slot ? this.slotTarget(f, row, slot) : null;
+    if (target && this.boundName(target)) {
+      this.queueParamCommit((d) => params.commitFieldExpr(d, target, String(value), row.kind));
+      return;
+    }
+    const ref = row.ref;
+    if (ref.kind === "entity") {
+      // by id, and by place for an entity saved before entities had ids
+      const at = f.entities.findIndex((x) => x.id === ref.id);
+      const i = at >= 0 ? at : f.entities[ref.index] && !f.entities[ref.index]!.id ? ref.index : -1;
+      if (i >= 0) this.setSketchDimension(sketchId, i, ref.field, value);
+      return;
+    }
+    this.paramChain = this.paramChain
+      .then(() => this.commitSketchConstraintDim(sketchId, ref, value))
+      .catch((e) => {
+        console.error("sketch dimension edit failed:", e);
+        this.onWarning?.(t("sketch.dimension.applyFailed"));
+      });
+  }
+
+  /** A formula, or `name=formula`, typed into listed dimension `row` of
+   *  closed sketch `sketchId`, spelled as units.storedDimExpr stores it. It
+   *  binds where directDims.dimBindingFor says, a dimension nothing holds yet
+   *  being locked in the same undo step as the re-solve. `accept` is the
+   *  dimension's own rule about the value (units.dimValueOk: a length is
+   *  positive), asked once the formula is evaluated. Returns an error or null. */
+  setSketchDimExpr(sketchId: string, row: SketchDimRow, expr: string, accept: (value: number) => string | null): string | null {
+    const f = this.closedSketch(sketchId);
+    if (!f) return null;
+    if (row.driven) return t("sketch.dimension.error.notEditable");
+    const slot = this.sketchDimSlot(f, row, realEntitiesById(f, this.doc.parameters));
+    if (!slot) return t("sketch.dimension.error.noExpression");
+    const target = this.slotTarget(f, row, slot);
+    const c = params.classifyExprInput(this.doc, expr, row.kind, target ? this.boundName(target) : null);
+    if (!c.ok) return c.error;
+    const refused = accept(c.value);
+    if (refused) return refused;
+    this.queueParamCommit((d) => {
+      const tg = this.claimSketchSlot(d, sketchId, row);
+      if (!tg) return;
+      if (c.name) params.commitNamedFieldExpr(d, tg, c.name, c.expr, row.kind);
+      else params.commitFieldExpr(d, tg, c.expr, row.kind);
+    });
+    return null;
+  }
+
+  /** Name listed dimension `row` of closed sketch `sketchId` (the panel's
+   *  double-click on its label): it becomes a parameter by that name holding
+   *  the value it has now, so nothing moves, or the parameter it has already
+   *  is renamed. Only a dimension the user names becomes a parameter (decision
+   *  B10); one nothing holds yet is locked in the same step. */
+  nameSketchDim(sketchId: string, row: SketchDimRow, name: string): string | null {
+    const f = this.closedSketch(sketchId);
+    if (!f) return null;
+    if (row.driven) return t("sketch.dimension.error.notEditable");
+    const slot = this.sketchDimSlot(f, row, realEntitiesById(f, this.doc.parameters));
+    if (!slot) return t("sketch.dimension.error.noExpression");
+    const target = this.slotTarget(f, row, slot);
+    const bound = target ? this.boundName(target) : null;
+    if (bound === name) return null;
+    if (bound) return this.renameParam(bound, name);
+    // not defsOf, which would CREATE an empty table on the document to read it
+    const bad = params.validateName(this.doc.paramDefs ?? {}, name);
+    if (bad) return bad;
+    // the constraint's own number when there is one: an X/Y distance keeps its
+    // sign, and an unsolved sketch is not quietly moved to what it measures
+    const held = slot.kind === "constraint" ? f.constraints?.[slot.at] : undefined;
+    const expr = String(held && isDimConstraint(held) ? paramValueOfDim(held) : row.valueMm);
+    this.queueParamCommit((d) => {
+      const tg = this.claimSketchSlot(d, sketchId, row);
+      if (tg) params.commitNamedFieldExpr(d, tg, name, expr, row.kind);
+    });
+    return null;
+  }
+
+  /** The parameter behind each listed dimension of closed sketch `sketchId`:
+   *  asked once per listing, then of every row. A sketch no parameter drives,
+   *  which is most of them, answers null for every row without looking; one
+   *  that has some resolves its entities once, not once a row (a sketch of a
+   *  few thousand lines lists as many rows). */
+  sketchDimBindings(sketchId: string): (row: SketchDimRow) => { name: string; expr: string; value: number } | null {
+    const f = this.closedSketch(sketchId);
+    if (!f || !this.hasSketchParams(sketchId)) return () => null;
+    const byId = realEntitiesById(f, this.doc.parameters);
+    return (row) => {
+      const slot = this.sketchDimSlot(f, row, byId);
+      const target = slot ? this.slotTarget(f, row, slot) : null;
+      return target && this.boundName(target) ? this.boundExpr(target) : null;
+    };
+  }
+
+  /** Does any parameter drive a number of sketch `sketchId`? Asked without
+   *  creating the table (see boundName). */
+  hasSketchParams(sketchId: string): boolean {
+    const defs = this.doc.paramDefs;
+    return !!defs && Object.values(defs).some((d) => d.target !== undefined && d.target.kind !== "feature" && d.target.sketch === sketchId);
+  }
+
+  /** The parameter bound to `target`, asked without CREATING the table
+   *  (params.defsOf adds an empty one to read it, and a document that has
+   *  none must not gain one because a sketch was selected: migrate drops an
+   *  empty table, so the file would change bytes for nothing). */
+  private boundName(target: ParamTarget): string | null {
+    return this.doc.paramDefs ? params.boundParam(this.doc, target) : null;
+  }
+
+  private closedSketch(id: string): Extract<Feature, { type: "sketch" }> | null {
+    const f = this.doc.features.find((x): x is Extract<Feature, { type: "sketch" }> => x.type === "sketch" && x.id === id);
+    return f ?? null;
+  }
+
+  /** Where listed dimension `row` of sketch `f` keeps a parameter: a
+   *  constraint row is its own constraint, an entity badge is asked of
+   *  directDims.dimBindingFor. Null when it cannot hold one: a reference
+   *  dimension, a slot's length, an entity saved without an id to bind by.
+   *  `byId` is the sketch's entities (realEntitiesById). */
+  private sketchDimSlot(f: Extract<Feature, { type: "sketch" }>, row: SketchDimRow, byId: ReadonlyMap<string, ResolvedEntity>): DimBinding | null {
+    const cons = f.constraints ?? [];
+    const ref = row.ref;
+    if (ref.kind === "constraint") {
+      const at = rowConstraintAt(cons, ref);
+      const c = cons[at];
+      return c && !isDriven(c) ? { kind: "constraint", at } : null;
+    }
+    const e = byId.get(ref.id);
+    // a lock holds what the entity measures NOW, which a queued commit may
+    // find different from the number the row was drawn with
+    const mm = e && entityDims(e).find((d) => d.field === ref.field)?.valueMm;
+    return e && mm !== undefined ? dimBindingFor(cons, e, ref.field, mm) : null;
+  }
+
+  /** The target a slot is bound by today; null where nothing holds the
+   *  dimension yet (a lock to add) or its constraint has no id to name. */
+  private slotTarget(f: Extract<Feature, { type: "sketch" }>, row: SketchDimRow, slot: DimBinding): ParamTarget | null {
+    if (slot.kind === "entity") return row.ref.kind === "entity" ? { kind: "entity", sketch: f.id, entity: row.ref.id, field: slot.field } : null;
+    if (slot.kind === "lock") return null;
+    const c = f.constraints?.[slot.at];
+    return c && isDimConstraint(c) && c.id ? { kind: "constraint", sketch: f.id, constraint: c.id } : null;
+  }
+
+  /** The slot made real in draft `d`, inside a parameter commit, asked again of
+   *  the draft (the document can have moved on while the commit queued): a
+   *  lock's constraint added at the value the dimension measures, a constraint
+   *  given an id. Returns the target to bind, or null when it is gone. */
+  private claimSketchSlot(d: CadDocument, sketchId: string, row: SketchDimRow): ParamTarget | null {
+    const f = d.features.find((x): x is Extract<Feature, { type: "sketch" }> => x.type === "sketch" && x.id === sketchId);
+    const slot = f ? this.sketchDimSlot(f, row, realEntitiesById(f, d.parameters)) : null;
+    if (!f || !slot) return null;
+    if (slot.kind === "entity") return this.slotTarget(f, row, slot);
+    if (slot.kind === "lock") {
+      const id = newConstraintId();
+      f.constraints = upsertDrivingDim(f.constraints ?? [], { ...slot.c, id } as SketchConstraint);
+      return { kind: "constraint", sketch: sketchId, constraint: id };
+    }
+    const c = f.constraints?.[slot.at];
+    if (!c || !isDimConstraint(c)) return null;
+    c.id ??= newConstraintId();
+    return { kind: "constraint", sketch: sketchId, constraint: c.id };
+  }
+
+  /** A number typed into a CONSTRAINT dimension of a closed sketch (a radius,
+   *  an angle, a distance between two entities): retyped and re-solved the way
+   *  commitSketchDimension does a badge, in one mutate. An offset keeps its
+   *  side (numFields.dimValueFromParam). */
+  private async commitSketchConstraintDim(sketchId: string, ref: Extract<SketchDimRow["ref"], { kind: "constraint" }>, value: number): Promise<void> {
+    const cur = this.closedSketch(sketchId);
+    if (!cur) return;
+    const at = rowConstraintAt(cur.constraints ?? [], ref);
+    const old = cur.constraints?.[at];
+    if (!old || !isDimConstraint(old) || isDriven(old)) return;
+    const retyped = { ...old, value: dimValueFromParam(old, value) } as SketchConstraint;
+    const constraints = (cur.constraints ?? []).map((c, i) => (i === at ? retyped : c));
+    let next: Extract<Feature, { type: "sketch" }> = { ...cur, constraints };
+    const r = await this.solveSketchOutcome(next, this.doc.parameters);
+    if (r.status === "solved") next = { ...next, entities: r.entities };
+    else if (r.status === "failed") this.onParamSolveIssue?.(sketchId);
+    else if (r.status === "unavailable") {
+      // No solver (directDims): the one-entity dimensions are written into
+      // the geometry, and only the entity that moved is re-serialized.
+      const resolved = resolveRealEntities(cur, this.doc.parameters);
+      const was = resolved.map((e) => JSON.stringify(e));
+      if (applyDrivingDimsDirect(resolved, [retyped])) {
+        next = { ...next, entities: cur.entities.map((e, j) => (JSON.stringify(resolved[j]) === was[j] ? e : toSketchEntity(resolved[j]!))) };
+      }
+    }
+    // the same guard as commitSketchDimension: the solve was awaited
+    if (this.doc.features.find((x) => x.id === sketchId) !== cur) return;
+    if ((this.openSketchId?.() ?? null) === sketchId) return;
+    this.mutate((d) => {
+      const i = d.features.findIndex((x) => x.id === sketchId);
+      if (i >= 0) d.features[i] = next;
+    });
+  }
+
   /** The shared commit tail: apply `fn`, keep the parameter invariant (bound
-   *  field number == cached param value) across EVERY document edit — this also
-   *  GCs model params whose dim or feature was just deleted and refreshes the
-   *  derived `parameters` cache — then dirty/emit/rebuild. mutate() prepends
-   *  the undo entry + redo clear + valve re-arm; a DERIVED commit (projection
-   *  refresh) calls this directly because machine-derived state must never
-   *  occupy an undo step, and its immediate rebuild is what closes the refresh
-   *  loop (steady state: a quiet rebuild). */
+   *  field number == cached param value, but for an offset, which takes the
+   *  value's magnitude and keeps its side: numFields.dimValueFromParam) across
+   *  EVERY document edit — this also GCs model params whose dim or feature was
+   *  just deleted and refreshes the derived `parameters` cache — then
+   *  dirty/emit/rebuild. mutate() prepends the undo entry + redo clear + valve
+   *  re-arm; a DERIVED commit (projection refresh) calls this directly because
+   *  machine-derived state must never occupy an undo step, and its immediate
+   *  rebuild is what closes the refresh loop (steady state: a quiet rebuild). */
   private applyDerived(fn: (doc: CadDocument) => void, immediate = true) {
     fn(this.doc);
     if (this.doc.paramDefs) this.applyRecompute(params.recompute(this.doc));

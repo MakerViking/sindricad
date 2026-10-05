@@ -321,6 +321,19 @@ This file starts on 2026-08-03. For anything before that, see the
   away from its middle. Requested in
   [#17](https://github.com/MakerViking/sindricad/issues/17).
 
+- **Name a sketch's dimensions, and see which one is which.** The Parameters
+  panel names each sketch dimension by what it measures, like "Rectangle 1 ·
+  Width" or "Line 2 · Length (construction)", instead of a column of identical
+  "Width" and "Length" rows. Double-click a row's label to name the dimension,
+  or type `wall=60` as its value, in the panel or on the canvas. A named
+  dimension is a parameter you can use in other values (one named while its
+  sketch is open, once you finish the sketch), and only the ones you name
+  become parameters. Naming a rectangle's width or height locks it at the size
+  it has. Pointing at a row lights up its geometry and its dimension on the
+  canvas, and selecting geometry in an open sketch highlights its rows. While a
+  sketch is open, the panel lists that sketch's dimensions as you work,
+  including the ones you have just added.
+
 - **Insert > Part from File.** Copies the visible bodies of another SindriCAD
   document into the one you have open, so a screw, standoff or insert you
   modelled once can be checked for fit in every project that uses it. Several
@@ -951,6 +964,19 @@ This file starts on 2026-08-03. For anything before that, see the
   A spline you draw now builds as the very curve you see. Splines already in
   your documents keep building as they did, so nothing you have made changes
   shape.
+
+- **Every sketch dimension shows in the Parameters panel.** A dimension on an
+  arc, an angle, or a distance between two pieces of geometry never appeared
+  there; only the sizes of single shapes did. They are all listed now, and a
+  value typed into any of them changes the sketch.
+
+- **Typing a value into an arc's diameter on the canvas changes it.** The
+  dimension took the number and nothing happened.
+
+- **An inward offset stays inward when a parameter drives it.** Naming an
+  offset's dimension, or giving it a formula, moved the copy to the other side.
+  A parameter now sets an offset's distance and never its side, even when its
+  formula goes below zero.
 
 - **Opening a STEP or mesh file no longer asks you to save first.** File > Open
   adds those to the document you have open, so it now asks "Save your changes

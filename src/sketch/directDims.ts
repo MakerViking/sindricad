@@ -26,6 +26,7 @@ import type { ResolvedEntity } from "./snap";
 import type { DimField, SketchConstraint } from "../types";
 import { isDimConstraint, newConstraintId } from "./id";
 import { entityDims } from "./entityDims";
+import { RIGID_ENTITY_NUM_FIELDS } from "../document/numFields";
 
 const EPS = 1e-9;
 
@@ -241,6 +242,41 @@ export function upsertDrivingDim(constraints: SketchConstraint[], c: SketchConst
   });
   const dim = isDimConstraint(c) && !c.id ? { ...c, id: replacedId ?? newConstraintId() } : c;
   return [...kept, dim];
+}
+
+/** Where a badge keeps a parameter, when an expression or a NAME is given to
+ *  it (the canvas label and the parameters panel ask the same question):
+ *    constraint → the driving constraint that holds it, at index `at`
+ *    entity     → the shape's own number (a polygon's radius, a slot's width:
+ *                 the solver never moves these, so the parameter writes them)
+ *    lock       → nothing holds it yet; `c` is the constraint to add first,
+ *                 at the value the badge measures, so naming moves nothing
+ *  null = it cannot hold one: a slot's length is its two centres, not a number.
+ *
+ *  A governing X/Y distance that holds the extent the other way round (a
+ *  negative value, see retypeValue) is null too. The badge shows a magnitude,
+ *  and a parameter writes its value as it is, so binding one there would turn
+ *  the rectangle inside out; that dimension's own label shows the sign, and
+ *  takes the parameter instead. */
+export type DimBinding =
+  | { kind: "constraint"; at: number }
+  | { kind: "entity"; field: string }
+  | { kind: "lock"; c: SketchConstraint };
+
+export function dimBindingFor(
+  constraints: SketchConstraint[],
+  e: { type: ResolvedEntity["type"]; id: string },
+  field: DimField,
+  mm: number,
+): DimBinding | null {
+  const at = governingDimAt(constraints, e, field);
+  if (typeof at === "number") {
+    const c = constraints[at]!;
+    return isDimConstraint(c) && c.value < 0 ? null : { kind: "constraint", at };
+  }
+  if (RIGID_ENTITY_NUM_FIELDS[e.type]?.some(([f]) => f === field)) return { kind: "entity", field };
+  const lock = at === "free" ? lockDimFor(e, field, mm) : null;
+  return lock ? { kind: "lock", c: lock } : null;
 }
 
 /** Apply what can be applied without solving. Mutates `entities` in place and

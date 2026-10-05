@@ -45,6 +45,7 @@ import { hiddenBodiesCue } from "./ui/hiddenBodiesCue";
 import { LoadDebts } from "./viewport/loadDebts";
 import { FEATURE_META } from "./ui/featureMeta";
 import { SketchOverlay } from "./sketch/overlay";
+import { EDGE_HOVER } from "./viewport/colors3d";
 import { SketchMode, type SketchTool } from "./sketch/sketchMode";
 import { setTextBackend } from "./sketch/textCache";
 import { solveSketch, initSolver } from "./sketch/solver";
@@ -397,6 +398,31 @@ const tree = new BrowserTree(document.getElementById("browser")!, store);
 // exposed here): lets a perf harness time a tree render directly.
 if (import.meta.env.DEV) (window as any).tree = tree;
 const inspector = new Inspector(document.getElementById("inspector")!, store);
+// The parameters panel and the sketcher, both ways (report 9e9ae278): while a
+// sketch is open the panel lists ITS dimensions and edits them through the
+// session; pointing at a row lights up what it measures, and selecting on the
+// canvas marks the rows. A closed sketch's row lights up on its own plane.
+inspector.liveSketch = () => {
+  const v = sketch.panelDims();
+  return v && {
+    ...v,
+    selected: sketch.selectedIds,
+    binding: sketch.panelBindings(),
+    commit: (row, raw) => sketch.commitPanelDim(row, raw),
+    rename: (row, name) => sketch.namePanelDim(row, name),
+  };
+};
+inspector.onDimHover = (sketchId, row) => {
+  if (sketch.active) {
+    sketch.highlightPanelDim(row);
+    return;
+  }
+  if (row && sketchId) overlay.linkSketchEntities(store.document, sketchId, row.entities, EDGE_HOVER);
+  else overlay.setLinkHighlight([]);
+  viewport.requestRender();
+};
+sketch.onDimsChanged = () => inspector.sketchChanged();
+sketch.onSelectionChange = () => inspector.sketchSelectionChanged(sketch.selectedIds);
 // On-canvas dimension boxes and tool panels accept expressions (`31.53+2*1.62`,
 // `wall*2`), so they need the document's parameters to resolve names.
 setFieldParams(() => store.document.parameters);
@@ -1437,6 +1463,9 @@ sketch.onState = () => {
   // The Dimension tool's right-click menu has its own Reference switch; without
   // this the palette's box kept the old value, and handed it to the next sketch.
   if (sketch.active) palette.set("reference", sketch.referenceDim);
+  // opening or closing a sketch swaps what the panel lists, and a binding made
+  // in the session changes a row without changing any geometry
+  inspector.sketchChanged();
   // The undo/redo buttons live and die with the sketch history while a sketch is
   // open, and `store.onDocChange` cannot see that — the document does not change
   // when you draw a line. onState is where every in-sketch undo checkpoint lands

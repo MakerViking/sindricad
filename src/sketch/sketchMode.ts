@@ -26,9 +26,10 @@ import {
 import { pickEntity, pointBeatsCurve, tangencyPoints, trimSpan, trimWithConstraints, detachEndpoint, detachableEnd, isBreakCut, filletCorner, chamferCorner, cornerJoins, explodeCompound, polygonRingHolds, rotationTie, translationTie, offsetEntity, offsetChain, offsetChainJunction, signedOffsetAt, followOffsets, followRefusal, breakWithConstraints, joinLines, extendLine, breakLink, attachmentPoints, bodyDragBlocked, bodyDragFrame, fixPinnedIds, pickDragPoint, FIXED_POINT_MSG, PROJECTED_FIXED_MSG, type ExplodeResult, type OffsetResult, type TrimResult } from "./modify";
 import { newEntityId, newConstraintId, isDimConstraint, notePatternId } from "./id";
 import { SketchHistory, cloneSnapshot, type SketchSnapshot } from "./history";
-import { isPlainNumber, parseField, dimValueOk, fmtLength, fieldText, canonicalDecimal, fieldExpr } from "../ui/units";
-import { splitNameValue } from "../params/engine";
-import { RIGID_ENTITY_NUM_FIELDS, coerceForField, type FieldKind } from "../document/numFields";
+import { isPlainNumber, parseField, dimValueOk, fmtLength, fieldText, canonicalDecimal, fieldExpr, storedDimExpr } from "../ui/units";
+import { splitNameValue, validateName } from "../params/engine";
+import { parseExpr, refsOfNode } from "../params/parse";
+import { RIGID_ENTITY_NUM_FIELDS, coerceForField, dimValueFromParam, paramValueOfDim, type FieldKind } from "../document/numFields";
 import type { RegionCarry, SketchBinding } from "../document/store";
 import { composePointCarry, polygonSidesCarry, type PointCarry } from "../document/pointCarry";
 import { advanceCenterArcSweep, centerArcEntity, circumcenter } from "./arc";
@@ -36,7 +37,8 @@ import { coincKey, compileAndSolve, constraintIndexOf, soleDimEntity, MAX_BIAS_A
 import { SolverUnavailable } from "./solver";
 import { p2lSideFlipped, refreshStep, refreshSteps } from "../document/projectionWalk";
 import { resolveRealEntities, toSketchEntity } from "./resolve";
-import { applyDrivingDimsDirect, governingDimAt, lockDimFor, measuredLocks, planDimEdit } from "./directDims";
+import { applyDrivingDimsDirect, dimBindingFor, governingDimAt, lockDimFor, measuredLocks, planDimEdit } from "./directDims";
+import { constraintDimKey, rowConstraintAt, sketchDimRows, type SketchDimRow } from "./dimRows";
 import { dimConflictMsg, withdrawTrial, type SketchTrial } from "./dimConflict";
 import { expandPattern, translated, rotated, scaled } from "./pattern";
 import { candidatesFromEntities, snap, snapCoincidences, type SnapKind, type SnapCandidate, type PointRef } from "./snap";
@@ -197,19 +199,6 @@ function sideCountOk(n: number | null): n is number {
   return n != null && Number.isFinite(n) && Math.round(n) >= 3 && Math.round(n) <= 64;
 }
 
-/** Typed dimension text as the expression the sketch STORES for it: what the
- *  user meant, spelled so the parameters engine evaluates it the same on every
- *  rebuild (ui/units.fieldExpr). In inches `1/16` was a sixteenth of a
- *  MILLIMETRE, because the engine reads a bare literal in mm, and `1/16 in` was
- *  1/(16 in). A `name=` prefix is kept; text that does not parse goes through
- *  untouched, so the engine's own message is the one shown. */
-function storedDimExpr(raw: string, kind: FieldKind): string {
-  const nv = splitNameValue(raw);
-  const expr = fieldExpr(nv ? nv.expr : raw, kind);
-  if (expr === null) return raw;
-  return nv ? `${nv.name}=${expr}` : expr;
-}
-
 /** One Fillet/Chamfer pick: the entity, and for a rectangle or polygon the
  *  SIDE it took (`<id>~k`), which becomes a line when the tool runs. */
 type CornerPick = { idx: number; side: string | null };
@@ -282,6 +271,12 @@ export class SketchMode {
    *  constructionShown(). Fired from refreshActive, which every selection change
    *  and every edit ends in (it is what paints the selection). */
   onConstructionShown: ((on: boolean, mixed: boolean) => void) | null = null;
+  /** The open sketch's dimensions may have changed (geometry, constraints,
+   *  bindings): the parameters panel lists them again (see panelDims). */
+  onDimsChanged: (() => void) | null = null;
+  /** The entity selection changed: the panel marks the rows of what is
+   *  selected (see selectedIds). */
+  onSelectionChange: (() => void) | null = null;
 
   private plane = new SketchPlane("XY");
   private entities: ResolvedEntity[] = [];
@@ -852,6 +847,7 @@ export class SketchMode {
     this.viewport.hoverEntity(null); // drop any Project-tool 3D hover highlight
     this.overlay.setPreview([]);
     this.overlay.setSnap(null);
+    if (this.panelRow) this.highlightPanelDim(null); // it lit this sketch's geometry
     this.viewport.onZoomScale = null; // stop rescaling a grid we are about to drop
     this.removeGrid();
     this.viewport.exitSketchView();
@@ -977,9 +973,13 @@ export class SketchMode {
     if (this.dimPicks.length) this.refreshDimPlan();
     if (this.dimsVisible) this.dims.show(this.entities, this.plane, this.constraintDimExtras());
     else this.dims.hide();
+    // a solve replaces every entity object, so the row the panel is pointing
+    // at is drawn again from the fresh list
+    if (this.panelRow) this.drawPanelHighlight();
     this.redrawGlyphs();
     this.sayTextFailures();
     this.showConstruction();
+    this.onDimsChanged?.();
     // On-demand renderer: a keyboard-driven repaint (e.g. async text glyphs landing
     // via redraw()) fires no pointer event, so force a frame or it won't draw until
     // the next mouse move.
@@ -1512,9 +1512,13 @@ export class SketchMode {
               this.commitConstraintPlace(d.cIndex, ox, oy, done),
           }
           : {}),
+        ...(con ? { key: constraintDimKey(con, d.cIndex) } : {}),
+        // Any dimension constraint, not only the placed ones: an arc's diameter
+        // is the one this label shows that has no `place`, and typing a number
+        // into it used to change nothing.
         commit: (val: number) => {
           const c = this.constraints[d.cIndex];
-          if (c && isPlacedDim(c)) this.writeDimValue(c, val);
+          if (c && isDimConstraint(c)) this.writeDimValue(c, val);
         },
         onDelete: () => this.deleteConstraint(d.cIndex),
         // Lock/Unlock, the two directions of "does this dimension hold?".
@@ -1542,7 +1546,8 @@ export class SketchMode {
    *  stored value is SIGNED, the sign being which side the copy sits on. Typing
    *  "3" into an inward offset must keep it inward — a bare `c.value = val`
    *  would silently flip it outward. Same abs-display trap as the drag path;
-   *  centralising the write is what stops the two sites drifting apart.
+   *  centralising the write is what stops the two sites drifting apart. The
+   *  rule is numFields.dimValueFromParam, which a parameter's write keeps too.
    *
    *  The X/Y distances are signed too and deliberately get NO carve-out here:
    *  unlike offset they DISPLAY their sign, so the user can type it, and
@@ -1550,7 +1555,7 @@ export class SketchMode {
    *  unsayable. The editor gate (units.dimValueOk) is what lets the negative
    *  through to this line. */
   private writeDimValue(c: SketchConstraint & { value: number }, val: number) {
-    c.value = c.type === "offset" && c.value < 0 ? -Math.abs(val) : val;
+    c.value = dimValueFromParam(c, val);
     // A single-entity dimension moves that entity. Without this the solve runs
     // free and planegcs splits the correction across everything the dimension
     // can reach: report d8c5265e retyped a circle's diameter and the rectangle
@@ -1738,11 +1743,32 @@ export class SketchMode {
     const bound = key ? (this.docBinding(key)?.name ?? null) : null;
     const pending = key ? (this.pendingBindings.get(key)?.name ?? null) : null;
     const c = this.store.classifyTargetExpr(bound, pending, storedDimExpr(raw, kind), kind);
-    if (!c.ok) return { error: c.error };
+    if (!c.ok) return { error: this.sessionNameRefused(raw, pending) ?? c.error };
     if (!dimValueOk(c.value, kind, signed)) {
       return { error: t(signed ? "sketch.dimension.error.mustBeNonZero" : "sketch.dimension.error.mustBePositive") };
     }
     return { value: c.value, expr: c.expr, ...(c.name ? { name: c.name } : {}) };
+  }
+
+  /** Why the engine did not know a parameter formula `raw` names, when the
+   *  name was given in THIS session: a dimension named since the sketch opened
+   *  is not in the document until Finish, and "unknown parameter" would say
+   *  the name never took. `own` is the name of the dimension being edited.
+   *  Null for any other refusal, which the engine's own message explains. */
+  private sessionNameRefused(raw: string, own: string | null): string | null {
+    const named = new Set<string>();
+    for (const b of this.pendingBindings.values()) if (b.name) named.add(b.name);
+    if (!named.size) return null;
+    let refs: string[];
+    try {
+      refs = refsOfNode(parseExpr(splitNameValue(raw)?.expr ?? raw));
+    } catch {
+      return null; // it does not parse: the engine's message says where
+    }
+    const saved = this.store?.document.paramDefs ?? {};
+    const name = refs.find((r) => named.has(r) && !(r in saved));
+    if (!name) return null;
+    return name === own ? t("params.error.selfReference", { name }) : t("sketch.dimension.error.namedInSession", { name });
   }
 
   /** Record/refresh the pending binding for a dim edit: formulas always bind
@@ -1779,17 +1805,25 @@ export class SketchMode {
   /** Raw label input on an entity dimension. Line length / circle diameter
    *  convert to their driving constraint (existing behavior) and bind there;
    *  solver-rigid direct fields (polygon radius, slot width…) bind as entity
-   *  targets. Everything else: numbers only for now.
-   *  defer: expressions on rectangle W/H + derived dims (slot length) — needs
-   *  an auto-constraint conversion; revisit when a user asks for it. */
+   *  targets. A rectangle's width or height binds on the constraint that holds
+   *  it, and one nothing holds is locked first (directDims.dimBindingFor), so
+   *  a name given to it in the parameters panel is a parameter that drives it.
+   *  A slot's length is its two centres and takes numbers only. */
   private commitEntityDimExpr(index: number, field: DimField, raw: string): string | null {
     const e = this.entities[index];
     if (!e) return t("sketch.dimension.error.noEntity");
     if (e.type === "line" && field === "length") return this.commitConvertedDim({ type: "distance", line: e.id, value: 0 }, raw);
     if (e.type === "circle" && field === "diameter") return this.commitConvertedDim({ type: "diameter", circle: e.id, value: 0 }, raw);
-    const bindable = RIGID_ENTITY_NUM_FIELDS[e.type]?.some(([f]) => f === field);
-    if (!bindable) return t("sketch.dimension.error.noExpression");
     const write = (v: number) => this.shapeFieldWrite(index, field, coerceForField(field, v));
+    const b = dimBindingFor(this.constraints, e, field, entityDims(e).find((d) => d.field === field)?.valueMm ?? 0);
+    if (!b) return t("sketch.dimension.error.noExpression");
+    if (b.kind === "lock") return this.commitConvertedDim({ ...b.c, value: 0 } as Extract<SketchConstraint, { type: "distance" }>, raw);
+    if (b.kind === "constraint") {
+      const c = this.constraints[b.at];
+      if (!c || !isDimConstraint(c)) return t("sketch.dimension.error.notEditable");
+      if (!c.id) c.id = newConstraintId();
+      return this.commitExprInput(`c:${c.id}`, "length", raw, (v) => this.writeDimValue(c, v));
+    }
     return this.commitExprInput(`e:${e.id}:${field}`, "length", raw, (v) => {
       const written = write(v);
       if (typeof written !== "string") this.entities = written;
@@ -1802,7 +1836,9 @@ export class SketchMode {
   }
 
   /** Entity length/⌀ input that must live on a driving constraint: evaluate
-   *  first, place the constraint (id carries over on replace), then bind. */
+   *  first, place the constraint (id carries over on replace), then bind. A
+   *  rectangle's extent arrives here as the `distance` on its side that Lock
+   *  would write. */
   private commitConvertedDim(base: Extract<SketchConstraint, { type: "distance" } | { type: "diameter" }>, raw: string): string | null {
     const prior =
       base.type === "distance"
@@ -1822,17 +1858,189 @@ export class SketchMode {
   /** the driving expression shown on an entity dim label, when bound. */
   private entityDimExpr(index: number, field: DimField): string | undefined {
     const e = this.entities[index];
-    if (!e) return undefined;
-    if (e.type === "line" && field === "length") {
-      const c = this.constraints.find((k): k is Extract<SketchConstraint, { type: "distance" }> => k.type === "distance" && k.line === e.id);
-      return c?.id ? this.exprFor(`c:${c.id}`) : undefined;
+    const key = e ? this.entityBindingKey(e, field) : null;
+    return key ? this.exprFor(key) : undefined;
+  }
+
+  /** The binding slot of an entity badge (`c:<id>` on the constraint that
+   *  holds it, `e:<id>:<field>` on a shape's own number), or null when it has
+   *  none yet. One rule with commitEntityDimExpr: directDims.dimBindingFor. */
+  private entityBindingKey(e: ResolvedEntity, field: DimField): string | null {
+    // the value only sizes a lock, and a lock has no key until it is added
+    const b = dimBindingFor(this.constraints, e, field, 0);
+    if (b?.kind === "entity") return `e:${e.id}:${field}`;
+    if (b?.kind !== "constraint") return null;
+    const c = this.constraints[b.at];
+    return c && isDimConstraint(c) && c.id ? `c:${c.id}` : null;
+  }
+
+  // --- the parameters panel's view of this sketch ---------------------------
+  // While a sketch is open the panel lists ITS dimensions, live, and every edit
+  // made there is the edit the dimension's own label would make: the same
+  // commit, the same pending binding (report 9e9ae278). The document copy is
+  // the one finish() overwrites, so nothing here writes it.
+
+  /** The dimension row the panel is pointing at (hovered or focused). */
+  private panelRow: SketchDimRow | null = null;
+  /** The selection last announced through onSelectionChange. */
+  private notifiedSelection = "";
+
+  /** The open sketch's dimensions, as the panel lists them; null when no
+   *  sketch is open. `sketchId` is null for a sketch not saved yet. */
+  panelDims(): { sketchId: string | null; rows: SketchDimRow[] } | null {
+    if (!this.active) return null;
+    return { sketchId: this.editingId, rows: sketchDimRows(this.entities, this.constraints) };
+  }
+
+  /** What is selected on the canvas, by entity id. */
+  get selectedIds(): ReadonlySet<string> {
+    return this.selected;
+  }
+
+  /** The binding slot behind a listed dimension (see pendingBindings), or null
+   *  when it has none yet. `entityOf` finds the row's entity (a map, when
+   *  every row is asked). */
+  private rowBindingKey(row: SketchDimRow, entityOf = (id: string) => this.entities.find((x) => x.id === id)): string | null {
+    const ref = row.ref;
+    if (ref.kind === "entity") {
+      const e = entityOf(ref.id);
+      return e ? this.entityBindingKey(e, ref.field) : null;
     }
-    if (e.type === "circle" && field === "diameter") {
-      const c = this.constraints.find((k): k is Extract<SketchConstraint, { type: "diameter" }> => k.type === "diameter" && k.circle === e.id);
-      return c?.id ? this.exprFor(`c:${c.id}`) : undefined;
+    const c = this.constraints[rowConstraintAt(this.constraints, ref)];
+    return c && isDimConstraint(c) && c.id ? `c:${c.id}` : null;
+  }
+
+  /** The parameter each listed dimension carries, typed this session or
+   *  saved: its name (none yet for a formula the commit will name dN) and
+   *  expression. Asked once per listing, then of every row, because the panel
+   *  lists again on every change to the sketch: one with no binding at all,
+   *  the usual case, answers null for every row without looking. */
+  panelBindings(): (row: SketchDimRow) => { name?: string; expr: string } | null {
+    const saved = this.editingId !== null && this.store?.hasSketchParams(this.editingId) === true;
+    if (!this.pendingBindings.size && !saved) return () => null;
+    const byId = new Map(this.entities.map((e) => [e.id, e]));
+    return (row) => {
+      const slot = this.rowBindingKey(row, (id) => byId.get(id));
+      if (!slot) return null;
+      const pend = this.pendingBindings.get(slot);
+      const doc = saved ? this.docBinding(slot) : null;
+      const expr = pend?.expr ?? doc?.expr;
+      if (expr === undefined) return null;
+      const name = pend?.name ?? doc?.name;
+      return { expr, ...(name ? { name } : {}) };
+    };
+  }
+
+  /** Text typed into a listed dimension's row: exactly what typing it into
+   *  that dimension's label does (SketchDimensions.beginEdit). A formula, a
+   *  `name=` and any edit of a bound dimension go through the binding; a plain
+   *  number on an unbound one is the value. */
+  commitPanelDim(row: SketchDimRow, raw: string): string | null {
+    if (!this.active) return null;
+    const ref = row.ref;
+    if (ref.kind === "entity") {
+      const i = this.entities.findIndex((e) => e.id === ref.id);
+      if (i < 0) return t("sketch.dimension.error.noEntity");
+      if (!isPlainNumber(raw) || this.entityDimExpr(i, ref.field) !== undefined) {
+        return this.commitEntityDimExpr(i, ref.field, canonicalDecimal(raw));
+      }
+      const mm = parseField(raw, "length");
+      if (!dimValueOk(mm, "length")) return t("sketch.dimension.error.invalidValue");
+      this.editDimension(i, ref.field, mm);
+      this.onState?.();
+      return null;
     }
-    if (RIGID_ENTITY_NUM_FIELDS[e.type]?.some(([f]) => f === field)) return this.exprFor(`e:${e.id}:${field}`);
-    return undefined;
+    const c = this.constraints[rowConstraintAt(this.constraints, ref)];
+    if (!c || !isDimConstraint(c) || isDriven(c)) return t("sketch.dimension.error.notEditable");
+    if (!isPlainNumber(raw) || (c.id && this.exprFor(`c:${c.id}`) !== undefined)) {
+      if (!c.id) c.id = newConstraintId();
+      return this.commitExprInput(`c:${c.id}`, row.kind, canonicalDecimal(raw), (v) => this.writeDimValue(c, v), row.signed);
+    }
+    const v = parseField(raw, row.kind);
+    if (!dimValueOk(v, row.kind, row.signed)) return t("sketch.dimension.error.invalidValue");
+    this.writeDimValue(c, v);
+    return null;
+  }
+
+  /** Name a listed dimension (the panel's double-click on its label): it
+   *  becomes a parameter by that name, holding the value it has now, so
+   *  nothing moves. Renames the parameter it already has. A dimension nothing
+   *  holds yet (a rectangle's width) is locked first, the way Lock would. The
+   *  name lands with the sketch at Finish, like every binding made here. */
+  namePanelDim(row: SketchDimRow, name: string): string | null {
+    if (!this.active || !this.store) return null;
+    // a reference dimension measures; a parameter would hold nothing there
+    if (row.driven) return t("sketch.dimension.error.notEditable");
+    const ref = row.ref;
+    let key = this.rowBindingKey(row);
+    if (!key && ref.kind === "constraint") {
+      // a dimension saved before dimensions had ids gets one now, to bind by
+      const c = this.constraints[rowConstraintAt(this.constraints, ref)];
+      if (!c || !isDimConstraint(c)) return t("sketch.dimension.error.notEditable");
+      c.id = newConstraintId();
+      key = `c:${c.id}`;
+    }
+    if (!key) {
+      const e = ref.kind === "entity" ? this.entities.find((x) => x.id === ref.id) : undefined;
+      const b = e && ref.kind === "entity" ? dimBindingFor(this.constraints, e, ref.field, row.valueMm) : null;
+      if (b?.kind !== "lock") return t("sketch.dimension.error.noExpression");
+      // refused BEFORE the lock lands, so a bad name changes nothing
+      const bad = this.nameRefused(name, null);
+      if (bad) return bad;
+      const c = { ...b.c };
+      this.setDrivingDimension(c); // stamps the id (see commitConvertedDim)
+      key = `c:${(c as { id?: string }).id!}`;
+    }
+    const current = this.pendingBindings.get(key)?.name ?? this.docBinding(key)?.name;
+    if (name === current) return null;
+    const bad = this.nameRefused(name, key);
+    if (bad) return bad;
+    const held = key.startsWith("c:") ? this.constraints.find((c) => isDimConstraint(c) && c.id === key!.slice(2)) : undefined;
+    // the value it holds now, as a literal: the constraint's own number when
+    // there is one, so an X/Y distance keeps its sign
+    const expr = this.exprFor(key) ?? String(held && isDimConstraint(held) ? paramValueOfDim(held) : row.valueMm);
+    this.pendingBindings.set(key, { expr, kind: row.kind, name });
+    this.refreshActive();
+    this.onState?.();
+    return null;
+  }
+
+  /** Why `name` cannot name the dimension at binding slot `key`: the engine's
+   *  rules, and a name another dimension of this session already took (it is
+   *  not in the document until Finish). A dimension's own saved name is free
+   *  to take back. */
+  private nameRefused(name: string, key: string | null): string | null {
+    for (const [k, b] of this.pendingBindings) {
+      if (k !== key && b.name === name) return t("params.name.exists", { name });
+    }
+    if (key && this.docBinding(key)?.name === name) return null;
+    // not defsOf, which would CREATE an empty table on the document to read it
+    return validateName(this.store!.document.paramDefs ?? {}, name);
+  }
+
+  /** Light up a listed dimension's geometry and its label (the panel's hover
+   *  or focus on its row); null puts them back. */
+  highlightPanelDim(row: SketchDimRow | null) {
+    if (!this.active) return;
+    this.panelRow = row;
+    this.drawPanelHighlight();
+  }
+
+  private drawPanelHighlight() {
+    const ids = new Set(this.panelRow?.entities ?? []);
+    const ents = this.entities.filter((e) => ids.has(e.id));
+    this.overlay.setLinkHighlight(ents.length ? curveObjects(ents, this.plane, EDGE_HOVER, true) : []);
+    this.dims.highlight(this.panelRow?.key ?? null);
+    this.viewport.requestRender();
+  }
+
+  /** Tell the panel when the selection changed. Called from activeCurves, the
+   *  one place every visible selection change is drawn through. */
+  private noteSelection() {
+    const now = [...this.selected].join("\n");
+    if (now === this.notifiedSelection) return;
+    this.notifiedSelection = now;
+    this.onSelectionChange?.();
   }
 
   /** A parameter commit landed (store.onParamsApplied): refresh every bound
@@ -1851,7 +2059,10 @@ export class SketchMode {
     let touched = false;
     for (const c of this.constraints) {
       if (!isDimConstraint(c) || !c.id) continue;
-      const next = valueFor(`c:${c.id}`);
+      const raw = valueFor(`c:${c.id}`);
+      // an offset keeps its side (numFields.dimValueFromParam), as it does
+      // when the closed sketch's parameter is written
+      const next = raw == null ? null : dimValueFromParam(c, raw);
       if (next != null && next !== c.value) {
         c.value = next;
         touched = true;
@@ -4502,6 +4713,7 @@ export class SketchMode {
   }
 
   private activeCurves(derived: ResolvedEntity[]): THREE.Object3D[] {
+    this.noteSelection();
     const objs: THREE.Object3D[] = [];
     // ~5px across at the current zoom. Endpoints are only drawn on the ACTIVE
     // sketch: they are click targets for the constraint tools, and putting a dot

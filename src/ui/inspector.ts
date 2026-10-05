@@ -8,10 +8,12 @@
 import type { DocumentStore } from "../document/store";
 import type { Feature, Num, ParamTarget } from "../types";
 import { FEATURE_META, planeLabel, refLabel } from "./featureMeta";
-import { getUnit, onUnitChange, round, fieldText, isPlainNumber, parseField, fmtNumber, canonicalDecimal } from "./units";
+import { getUnit, onUnitChange, round, fieldText, isPlainNumber, parseField, fmtNumber, canonicalDecimal, dimValueOk, storedDimExpr } from "./units";
 import { validatedInput, keystrokeGuard } from "./liveInputs";
-import { resolveEntities } from "../sketch/resolve";
-import { entityDims } from "../sketch/entityDims";
+import { isImeComposing } from "./focus";
+import { resolveRealEntities } from "../sketch/resolve";
+import { dimRowLabel, sketchDimRows, type SketchDimRow } from "../sketch/dimRows";
+import { isNumericLiteral } from "../params/parse";
 import { FEATURE_NUM_FIELDS as NUM_FIELDS, hasUpToTarget, isHelixSweep } from "../document/numFields";
 import type { FieldKind } from "../document/numFields";
 import { icon } from "./icons";
@@ -54,6 +56,25 @@ function labelOf(type: Feature["type"]): string {
   return (FEATURE_META[type] as { label: string } | undefined)?.label ?? type;
 }
 
+/** A sketch's dimensions as the panel lists and edits them: the OPEN sketch's
+ *  through its session (main.ts wires SketchMode in), a closed one's through
+ *  the store (Inspector.closedSketchDims). The rows render the same either
+ *  way. */
+export interface SketchDimSource {
+  /** null for an open sketch that has not been saved yet */
+  sketchId: string | null;
+  rows: SketchDimRow[];
+  /** what is selected on the canvas, by entity id (empty for a closed sketch) */
+  selected: ReadonlySet<string>;
+  /** the parameter a row's dimension carries: its name (none yet for a formula
+   *  an open sketch will name dN at Finish) and its expression */
+  binding(row: SketchDimRow): { name?: string; expr: string } | null;
+  /** text typed into the row (a number, a formula, `name=formula`) */
+  commit(row: SketchDimRow, raw: string): string | null;
+  /** a name given on the row's label */
+  rename(row: SketchDimRow, name: string): string | null;
+}
+
 export class Inspector {
   private el: HTMLElement;
   private selectedId: string | null = null;
@@ -73,12 +94,28 @@ export class Inspector {
    *  tool started must still refuse. */
   lockReason: () => string | null = () => null;
 
+  /** The sketch open in the sketcher, when one is: while it is, the panel lists
+   *  ITS dimensions, live, whatever is selected (main.ts points it at
+   *  SketchMode). Edits go to the session, the copy Finish writes. */
+  liveSketch: () => SketchDimSource | null = () => null;
+  /** A sketch dimension's row was hovered or focused, or left (null): main.ts
+   *  lights up the geometry it measures and its label on the canvas. */
+  onDimHover: (sketchId: string | null, row: SketchDimRow | null) => void = () => {};
+
+  /** render(), unless a value is being typed in this panel (keystrokeGuard) */
+  private guardedRender: () => void;
+  /** the sketch dimension rows on screen, for marking the canvas selection */
+  private dimRowEls: { row: SketchDimRow; el: HTMLElement }[] = [];
+
   constructor(container: HTMLElement, private store: DocumentStore) {
     this.el = container;
     // async param commits can land mid-edit — same re-render guard as the
     // params dialog (keystrokeGuard)
-    store.onDocChange(keystrokeGuard(container, () => this.render()));
+    this.guardedRender = keystrokeGuard(container, () => this.render());
+    store.onDocChange(this.guardedRender);
     onUnitChange(() => this.render());
+    // a re-render can take a hovered row away without a mouseleave
+    container.addEventListener("mouseleave", () => this.onDimHover(null, null));
     // A build can start or stop the selected feature failing without touching
     // the document. Only the failure text follows it, never the editor rows: a
     // build must not take the caret out of a field. Optional-called, like the
@@ -93,6 +130,7 @@ export class Inspector {
    *  steal the caret out of whatever the user was typing in. */
   select(id: string | null, focus = false) {
     this.selectedId = id;
+    this.onDimHover(null, null); // the rows it pointed at are going
     this.render();
     if (focus) this.focusFeatureEditor();
   }
@@ -101,6 +139,32 @@ export class Inspector {
    *  lockReason may have changed. */
   refresh() {
     this.render();
+  }
+
+  /** The open sketch changed (its geometry, dimensions or bindings, or it
+   *  opened or closed): list its dimensions again, unless one is being typed. */
+  sketchChanged() {
+    this.guardedRender();
+  }
+
+  /** The canvas selection changed to `selected` (entity ids): mark the rows
+   *  of the dimensions on it, and bring the first into view (report
+   *  9e9ae278). The rows on screen are marked as they are; nothing is listed
+   *  again for a click. */
+  sketchSelectionChanged(selected: ReadonlySet<string>) {
+    const first = this.markSelectedRows(selected);
+    first?.scrollIntoView({ block: "nearest" });
+  }
+
+  /** Mark the rows whose geometry is in `sel`; returns the first marked. */
+  private markSelectedRows(sel: ReadonlySet<string>): HTMLElement | null {
+    let first: HTMLElement | null = null;
+    for (const { row, el } of this.dimRowEls) {
+      const on = row.entities.some((id) => sel.has(id));
+      el.classList.toggle("param-row-linked", on);
+      if (on) first ??= el;
+    }
+    return first;
   }
 
   /** Run one write from this panel, unless it is locked. Returns the lock's
@@ -130,6 +194,7 @@ export class Inspector {
     this.el.innerHTML = "";
     this.featureBox = null;
     this.failureBox = null;
+    this.dimRowEls = [];
 
     // Said once, at the top, rather than per row: the rows below are disabled
     // and this is the only place that says why.
@@ -156,6 +221,22 @@ export class Inspector {
       this.el.appendChild(row);
     }
 
+    // --- the open sketch, whatever is selected: its dimensions are what the
+    // user is working on, and the ones drawn since it opened are in the
+    // session only (report cac30e98: a new dimension on an arc never listed) ---
+    const live = this.liveSketch();
+    if (live) {
+      const box = document.createElement("div");
+      this.featureBox = box;
+      this.el.appendChild(box);
+      box.appendChild(title(
+        live.sketchId ? t("inspector.featureTitle", { label: t("tool.sketch"), id: live.sketchId }) : t("inspector.sketchDim.newSketch"),
+        true,
+      ));
+      this.renderSketchDims(box, live, locked);
+      return;
+    }
+
     // --- selected feature editor ---
     if (!this.selectedId) {
       // "Select a feature to edit its values" would contradict the lock hint
@@ -177,27 +258,15 @@ export class Inspector {
     this.featureBox = box;
     this.el.appendChild(box);
 
-    // sketch: editable per-entity dimensions (same descriptors as the in-canvas
-    // labels). The store applies the value with the SAME semantics as the canvas
-    // editor — a length/diameter becomes a driving constraint and the sketch
-    // re-solves — and owns the open-sketch case; this panel only reports the
-    // gesture (field report 8b49c06e).
+    // sketch: every dimension the canvas shows a value for (sketch/dimRows),
+    // named for whose it is. The store applies a value with the SAME semantics
+    // as the canvas editor — a length/diameter becomes a driving constraint
+    // and the sketch re-solves (field report 8b49c06e) — and binds a formula
+    // or a name the way the canvas label does.
     if (f.type === "sketch") {
       box.appendChild(title(t("inspector.featureTitle", { label: t("tool.sketch"), id: f.id }), true));
       box.appendChild(this.failureBlock());
-      const resolved = resolveEntities(f, doc.parameters);
-      resolved.forEach((e, i) => {
-        for (const d of entityDims(e)) {
-          box.appendChild(
-            numberRow(
-              `${d.label} ${unit}`,
-              d.valueMm,
-              (mm) => this.whenUnlocked(() => this.store.setSketchDimension(f.id, i, d.field, mm)),
-              locked,
-            ),
-          );
-        }
-      });
+      this.renderSketchDims(box, this.closedSketchDims(f), locked);
       return;
     }
 
@@ -328,6 +397,131 @@ export class Inspector {
     }
   }
 
+  /** A closed sketch's dimensions, edited through the store. A plain number
+   *  is the value in the display unit; anything else is a formula, stored as
+   *  the canvas label stores it (units.storedDimExpr). */
+  private closedSketchDims(f: Extract<Feature, { type: "sketch" }>): SketchDimSource {
+    const doc = this.store.document;
+    return {
+      sketchId: f.id,
+      rows: sketchDimRows(resolveRealEntities(f, doc.parameters), f.constraints ?? []),
+      selected: new Set(),
+      binding: this.store.sketchDimBindings(f.id),
+      commit: (row, raw) => {
+        if (isPlainNumber(raw)) {
+          const v = parseField(raw, row.kind);
+          if (!dimValueOk(v, row.kind, row.signed)) return t("sketch.dimension.error.invalidValue");
+          this.store.setSketchDimValue(f.id, row, v);
+          return null;
+        }
+        const accept = (v: number) =>
+          dimValueOk(v, row.kind, row.signed)
+            ? null
+            : t(row.signed ? "sketch.dimension.error.mustBeNonZero" : "sketch.dimension.error.mustBePositive");
+        return this.store.setSketchDimExpr(f.id, row, storedDimExpr(canonicalDecimal(raw), row.kind), accept);
+      },
+      rename: (row, name) => this.store.nameSketchDim(f.id, row, name),
+    };
+  }
+
+  /** One row per sketch dimension: "Rectangle 1 · Width mm", the parameter's
+   *  name above it once it has one, and the value, a formula, or `name=formula`
+   *  typed beside it. Double-clicking the label names the dimension, which is
+   *  what makes it a parameter (decision B10). Pointing at a row lights up its
+   *  geometry on the canvas (onDimHover). */
+  private renderSketchDims(box: HTMLElement, src: SketchDimSource, locked: boolean) {
+    if (!src.rows.length) {
+      const hint = document.createElement("div");
+      hint.className = "empty-state";
+      setText(hint, "inspector.sketchDim.none");
+      box.appendChild(hint);
+      return;
+    }
+    const unit = getUnit();
+    for (const row of src.rows) {
+      const b = src.binding(row);
+      const fx = !!b && !isNumericLiteral(b.expr);
+      const value = fieldText(row.valueMm, row.kind);
+      // a formula shows as typed; a number, bound or not, in the display unit
+      // (the canvas label's rule, SketchDimensions.beginEdit)
+      const shown = row.driven ? t("sketch.dimension.drivenValue", { value }) : fx ? b!.expr : value;
+      const label = dimRowLabel(row, row.kind === "angle" ? "°" : ` ${unit}`);
+      const el = dimRow(label, b?.name ?? null, shown, (raw) => {
+        const lock = this.lockReason();
+        if (lock) return lock;
+        // the text it was given is the value rounded for display: unchanged
+        // text is not an edit (the feature rows' rule)
+        if (raw === shown) return null;
+        return src.commit(row, raw);
+      }, locked || row.driven);
+      if (fx) {
+        el.classList.add("fx-row");
+        el.title = `${b!.name ?? ""}${b!.name ? " = " : ""}${b!.expr} = ${fmtNumber(round(row.valueMm))}`;
+      }
+      if (row.driven) el.title = t("sketch.dimension.title.reference");
+      const lab = el.children[0] as HTMLElement;
+      if (!row.driven && !locked) {
+        setTitle(lab, "inspector.sketchDim.renameHint");
+        lab.addEventListener("dblclick", () => this.beginRename(lab, row, b?.name ?? null, label, src));
+      }
+      const point = (on: boolean) => this.onDimHover(src.sketchId, on ? row : null);
+      el.addEventListener("mouseenter", () => point(true));
+      el.addEventListener("mouseleave", () => point(false));
+      el.addEventListener("focusin", () => point(true));
+      el.addEventListener("focusout", () => point(false));
+      this.dimRowEls.push({ row, el });
+      box.appendChild(el);
+    }
+    this.markSelectedRows(src.selected);
+  }
+
+  /** The label turned into a name box: Enter, Tab or a click elsewhere names
+   *  the dimension, as every other box in the panel commits on leaving it;
+   *  Escape puts the label back. A refused name stays in the box, red, saying
+   *  why. */
+  private beginRename(lab: HTMLElement, row: SketchDimRow, name: string | null, label: string, src: SketchDimSource) {
+    if (lab.querySelector("input")) return;
+    const input = document.createElement("input");
+    input.type = "text";
+    input.className = "param-dim-rename";
+    input.value = name ?? "";
+    input.setAttribute("aria-label", t("inspector.sketchDim.renameAria", { label }));
+    lab.textContent = "";
+    lab.appendChild(input);
+    input.focus();
+    input.select();
+    let closed = false;
+    const close = () => {
+      if (closed) return;
+      closed = true;
+      // leaving the box first ends the panel's typing guard (keystrokeGuard),
+      // so the next document change draws the panel again
+      if ((document as { activeElement?: unknown }).activeElement === input) input.blur();
+      this.render();
+    };
+    const commit = () => {
+      const next = input.value.trim();
+      if (!next || next === name) return close();
+      const err = this.lockReason() ?? src.rename(row, next);
+      if (!err) return close();
+      input.classList.add("input-error");
+      input.title = err;
+    };
+    input.addEventListener("input", () => input.classList.remove("input-error"));
+    input.addEventListener("keydown", (e: KeyboardEvent) => {
+      e.stopPropagation();
+      if (isImeComposing(e)) return;
+      if (e.key === "Escape") close();
+      if (e.key === "Enter") commit();
+    });
+    // Leaving the box names it too (the value boxes' and Modify > Parameters'
+    // rule): a name typed and then clicked away from was thrown away. A name
+    // refused on Enter is asked again and refused again, so it stays red.
+    input.addEventListener("blur", () => {
+      if (!closed) commit();
+    });
+  }
+
   /** The block under the selected feature's title that says why it failed. */
   private failureBlock(): HTMLElement {
     const el = document.createElement("div");
@@ -450,6 +644,26 @@ function numberRow(label: string, mm: number, onChange: (mm: number) => string |
     }
   });
   row.append(lab, input);
+  return row;
+}
+
+/** A sketch dimension's row: a text row whose label also carries the name of
+ *  the parameter the dimension is, when it is one. */
+function dimRow(label: string, name: string | null, value: string, commit: (raw: string) => string | null, locked: boolean): HTMLElement {
+  const row = textRow(label, value, commit, locked);
+  row.className = "param-row param-row-dim";
+  const lab = row.children[0] as HTMLElement;
+  lab.textContent = "";
+  if (name) {
+    const n = document.createElement("span");
+    n.className = "param-dim-name";
+    n.textContent = name;
+    lab.appendChild(n);
+  }
+  const what = document.createElement("span");
+  what.className = "param-dim-what";
+  what.textContent = label;
+  lab.appendChild(what);
   return row;
 }
 

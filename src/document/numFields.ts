@@ -239,6 +239,25 @@ export function coerceForField(field: string, value: number): number {
   return Math.max(min, Math.round(value));
 }
 
+/** The number a value becomes on dimension constraint `c`, from a parameter
+ *  or typed. An offset SHOWS its magnitude and stores which side the copy sits
+ *  on as the sign (types.ts), so the value gives the magnitude and the stored
+ *  side is kept, whatever the value's own sign. Written as it came, an inward
+ *  offset named or given a formula came back outward, and a formula that went
+ *  below zero flipped the copy across. Every other dimension takes the value
+ *  as it is. */
+export function dimValueFromParam(c: { type: string; value: number }, v: number): number {
+  if (c.type !== "offset") return v;
+  return c.value < 0 ? -Math.abs(v) : Math.abs(v);
+}
+
+/** The other way: the number a parameter holds for dimension constraint `c`
+ *  when one is made for it (a dimension being named): an offset's magnitude,
+ *  any other dimension's value as it is, so naming moves nothing. */
+export function paramValueOfDim(c: { type: string; value: number }): number {
+  return c.type === "offset" ? Math.abs(c.value) : c.value;
+}
+
 /** Write an evaluated parameter value into its target field. Returns the
  *  affected sketch id (for the re-solve cascade) or null when the target is
  *  gone or the value didn't change. Non-finite values are never written.
@@ -256,7 +275,8 @@ export function writeTarget(doc: CadDocument, target: ParamTarget, value: number
   if (!Number.isFinite(value)) return null;
   const rt = resolveTarget(doc, target);
   if (!rt) return null;
-  const v = coerceForField(rt.field, value);
+  const coerced = coerceForField(rt.field, value);
+  const v = target.kind === "constraint" ? dimValueFromParam(rt.holder as { type: string; value: number }, coerced) : coerced;
   const was = rt.holder[rt.field];
   if (was === v) return null;
   rt.holder[rt.field] = v;

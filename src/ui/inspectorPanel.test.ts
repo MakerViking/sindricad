@@ -89,6 +89,7 @@ function makeStore(features: Feature[], parameters: Record<string, number> = { w
     paramIssues: {} as Record<string, string>,
     onDocChange: () => () => {},
     boundExpr: () => null,
+    sketchDimBindings: () => () => null,
     isParamBound: () => false,
     setParam: (name: string, v: number) => writes.push(`param ${name}=${v}`),
     setTargetValue: (t: { field: string }, v: number) => writes.push(`field ${t.field}=${v}`),
