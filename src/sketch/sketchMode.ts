@@ -5730,8 +5730,11 @@ export class SketchMode {
                 : r.dragRefused === "geometry" ? t("sketch.guard.dragFlattens")
                 : FIXED_POINT_MSG);
             }
-          } else if (d && this.dragFrom) {
-            this.dragFrom.set(d.toX, d.toY); // track grabbed pt
+          } else if (d && this.dragFrom && !this.conflict) {
+            // track the grabbed point, which moved only if the result landed:
+            // a conflicting frame is thrown away above, and an anchor advanced
+            // past it drifts the same way a refused one would
+            this.dragFrom.set(d.toX, d.toY);
           }
           this.refreshDragGeometry(); // curves, badges, glyphs; candidates rebuilt on endDrag
         } else if (this.pendingRefresh) {

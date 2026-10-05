@@ -1428,8 +1428,20 @@ export async function compileAndSolve(
     // Classify these "inert" constraints ourselves: satisfied → redundant
     // (amber), violated → conflict (red) — through the same reporting channel
     // the solver's own diagnosis uses.
-    const conflicts = [...r.conflicts];
-    const redundant = [...r.redundant];
+    //
+    // A PROJECTED arc's own rules are redundant, never a conflict: they tie
+    // three pinned points to a centre compileArc put on the circle through
+    // them, with the radius and angles free, so they hold by construction.
+    // planegcs still lists them as conflicting whenever a temporary pin (a
+    // drag frame's cursor) sits off the line a real constraint holds the
+    // grabbed point to, which is nearly every drag of a dimensioned point, and
+    // the frame was thrown away: a hole dimensioned in a sketch with a
+    // projected arc could not be dragged by its centre (field report
+    // 66d7eb71). Measured: a real conflict keeps its own constraints in the list.
+    const projArcRules = new Set(arcs.filter((a) => projRounds.has(a.id)).map((a) => `${a.id}_rules`));
+    const solverConflicts = r.conflicts.filter((id) => !projArcRules.has(id));
+    const conflicts = [...solverConflicts];
+    const redundant = [...r.redundant, ...r.conflicts.filter((id) => projArcRules.has(id))];
     // No fixed points (no projected geometry, no `fix`) ⇒ no constraint can be
     // inert (every inertResidual arm requires fx/fxLine/fxRound operands, and
     // projRounds is only ever populated alongside fixedPts) — skip the whole
@@ -1870,7 +1882,7 @@ export async function compileAndSolve(
     // relying on ok:false to protect the document. Revisit the day a
     // non-converged solve is seen writing something a user notices.
     return {
-      entities: out, dof: r.dof, ok: r.ok && conflicts.length === r.conflicts.length,
+      entities: out, dof: r.dof, ok: r.ok && conflicts.length === solverConflicts.length,
       conflicts, overDefined: [...redundant, ...r.partiallyRedundant],
       ...(dragRefused ? { dragRefused } : {}),
     };

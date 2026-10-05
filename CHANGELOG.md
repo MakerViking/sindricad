@@ -142,6 +142,12 @@ This file starts on 2026-08-03. For anything before that, see the
   so and names the sketch every time the file opens, instead of only telling
   you the extrude doesn't reach any body and to drag the other way.
 
+- **A dimensioned point drags in a sketch with a projected arc.** In a sketch
+  that held a projected arc, like the rim of a cylinder, dragging a hole held
+  by a dimension by its centre did nothing, and a moment later said projected
+  geometry is fixed, as if you had grabbed something else. It now drags, along
+  the line its dimension allows.
+
 - **A Combine of many small pieces no longer makes the engine look stopped.**
   Checking each piece against the body could run for a minute and a half without
   a sign of life, so the engine was restarted as if it had hung, on every retry.
