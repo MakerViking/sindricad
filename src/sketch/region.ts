@@ -84,6 +84,8 @@ export function entityPolyline(e: ResolvedEntity): THREE.Vector2[] {
           return arcPolyline(v(e.curve.x1, e.curve.y1), v(e.curve.x2, e.curve.y2), v(e.curve.mx, e.curve.my), ARC_SEGS);
         case "poly":
           return e.curve.pts.map(([x, y]) => v(x, y));
+        case "point":
+          return [v(e.curve.x, e.curve.y)]; // like a sketch point: no extent
       }
   }
 }

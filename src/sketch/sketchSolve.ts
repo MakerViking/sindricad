@@ -342,6 +342,13 @@ export async function compileAndSolve(
           pinProjected(m.ourS, m.ourE, m.center);
           projRounds.add(e.id);
         }
+      } else if (cv.kind === "point") {
+        // a projected point (a body corner, another sketch's point): a sketch
+        // point that is pinned. Mergeable like a sketch point, so a coincident
+        // user endpoint fuses onto it and is anchored by it.
+        const pid = getPoint(cv.x, cv.y, true);
+        pointMap.set(e.id, pid);
+        pinProjected(pid);
       } else {
         // poly: only the first/last samples are real, addressable model points
         // (ONE for a closed poly — projEndSamples). Register them like spline

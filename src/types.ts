@@ -72,11 +72,23 @@ export type Selector = (
 // numbers only (no Num) — the SIDECAR authors these, rounded to 6 decimals, and
 // refreshes them when the source geometry changes. arc = 3 points like a native
 // arc; poly is the sampled fallback (tilted circles, bsplines, silhouettes).
+//
+// Decision A7 added two things, both on projections made since only:
+// - `smooth` on a poly: the kernel builds ONE spline through the samples
+//   instead of a straight segment between each pair. The sidecar sets it, on a
+//   link whose source carries `smooth` (below), when the source curve has no
+//   corner inside it. The app still draws, regions and snaps the samples, which
+//   lie on the true curve. Absent = faceted, as every older projection builds.
+// - `point`: a projected point (a body corner or another sketch's point), a
+//   fixed point constraints and dimensions can use. It never joins a profile.
+//   An older build throws on one, so a document holding one is saved as
+//   format v6 (migrate.savedVersion).
 export type ProjectedCurve =
   | { kind: "line"; x1: number; y1: number; x2: number; y2: number }
   | { kind: "circle"; x: number; y: number; r: number }
   | { kind: "arc"; x1: number; y1: number; x2: number; y2: number; mx: number; my: number }
-  | { kind: "poly"; pts: [number, number][] };
+  | { kind: "poly"; pts: [number, number][]; smooth?: true }
+  | { kind: "point"; x: number; y: number };
 
 /** THE addressable end samples of a projected poly: its first and last points,
  *  collapsed to one entry when the poly is closed (first == last — sidecar
@@ -95,16 +107,33 @@ export function projEndSamples(cv: Extract<ProjectedCurve, { kind: "poly" }>): [
 // stable ids (no fingerprint needed). A multi-curve pick (a face boundary, a
 // rectangle) emits N sibling entities sharing `group` so Break Link / delete can
 // act on the whole projection.
+//
+// `smooth` marks a link made since decision A7: its curves that the sidecar has
+// to sample come back marked smooth (see ProjectedCurve). It lives on the link,
+// not only on the curve, because a refresh can pass through an exact circle (a
+// tilted source turned square to the sketch) and must know to come back smooth.
+// Absent on every older link, which keeps building the faceted polyline.
+type SmoothLink = { smooth?: true };
+
 export type ProjectedSource =
-  | { kind: "edge" | "faceBoundary"; body: string; sel: Selector; group?: string }
+  | ({ kind: "edge" | "faceBoundary"; body: string; sel: Selector; group?: string } & SmoothLink)
   // `index`: this sibling's edge index within the source entity's deterministic
   // edge list (multi-edge sources only) — the sidecar's authoritative refresh
   // correspondence, stable across sibling deletions and source moves.
   // TRIMMED_AWAY there marks a projection of a curve Trim cut: it names no
   // edge, so it stays stale (last shape kept) instead of following the piece
   // that kept the curve's id.
-  | { kind: "sketchCurve"; sketch: string; entity: string; group?: string; index?: number }
-  | { kind: "silhouette"; body: string; group?: string };
+  | ({ kind: "sketchCurve"; sketch: string; entity: string; group?: string; index?: number } & SmoothLink)
+  | ({ kind: "silhouette"; body: string; group?: string } & SmoothLink)
+  // A body corner, as one END of an edge: the edge by its by:"match"
+  // fingerprint, `end` by ExtrudeRef's corner convention (end 1 lies further
+  // along the fingerprint's sign-normalised direction), so it names the same
+  // corner however the kernel orients the rebuilt edge. Never by:"nearest".
+  | { kind: "vertex"; body: string; sel: Selector; end: 0 | 1 }
+  // A committed sketch's point by stable id and `pointIndex`, numbered as
+  // dimRefPoints numbers it (ExtrudeRef's sketchPoint): a sketch point, a
+  // line's end, a circle's or an arc's centre, a rectangle's corner.
+  | { kind: "sketchPoint"; sketch: string; entity: string; pointIndex: number };
 
 // One rebuild-time projection refresh entry (sidecar _recompute_projections):
 // either a recomputed curve that moved beyond tolerance (stale:false — also

@@ -54,6 +54,7 @@ function entCenter(e: ResolvedEntity): THREE.Vector2 {
       if (cv.kind === "line") return V((cv.x1 + cv.x2) / 2, (cv.y1 + cv.y2) / 2);
       if (cv.kind === "circle") return V(cv.x, cv.y);
       if (cv.kind === "arc") return V(cv.mx, cv.my);
+      if (cv.kind === "point") return V(cv.x, cv.y);
       const p = cv.pts[Math.floor(cv.pts.length / 2)] ?? cv.pts[0];
       return p ? V(p[0], p[1]) : V(0, 0);
     }

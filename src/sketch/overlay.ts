@@ -872,6 +872,14 @@ export function curveObjects(
       }
       continue;
     }
+    if (e.type === "projected" && e.curve.kind === "point") {
+      // A projected point (a body corner, another sketch's point) draws as a
+      // sketch point does, in the link's colour, amber when stale, the way a
+      // projected curve does; an emphasis pass's colour wins, as it does there.
+      const linkColor = e.stale === true ? PROJECTED_STALE_COLOR : PROJECTED_COLOR;
+      add(pointMarker(plane, e.curve.x, e.curve.y, highlight ? color : linkColor));
+      continue;
+    }
     if (e.type === "text") {
       const faces = getCachedText(e);
       if (faces && faces.length) {

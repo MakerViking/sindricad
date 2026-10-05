@@ -1846,6 +1846,8 @@
       "failed": "projection failed",
       "ownCurves": "Can't project the active sketch's own curves",
       "patternCopy": "Pattern copies can't be projected — pick the pattern's source curve",
+      "pointDup": "That point is already projected into this sketch",
+      "points": "Points",
       "silhouette": "Body silhouette",
       "silhouetteDup": "That body's silhouette is already projected into this sketch",
       "sketchCurves": "Sketch curves"

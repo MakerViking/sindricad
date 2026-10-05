@@ -315,6 +315,7 @@ export class Picker {
     const w = new THREE.Vector3();
     let best: THREE.Vector3 | null = null;
     let bestD = maxPx;
+    let bestZ = Infinity;
     for (const e of near) {
       for (const p of [e.points[0], e.points[e.points.length - 1]]) {
         if (!p) continue;
@@ -324,9 +325,15 @@ export class Picker {
         const sx = (this.scratch.x * 0.5 + 0.5) * rect.width + rect.left;
         const sy = (-this.scratch.y * 0.5 + 0.5) * rect.height + rect.top;
         const d = Math.hypot(sx - clientX, sy - clientY);
-        if (d > bestD || behind(w)) continue;
+        // Of two corners on one pixel, the one in FRONT: a prism's top and
+        // bottom corners seen square on (as a sketch on its top face sees
+        // them) tie, and the last one looked at used to win, which was the
+        // hidden one as often as not. NDC z grows away from the camera.
+        const stacked = best !== null && Math.abs(d - bestD) <= STACKED_PX;
+        if ((stacked ? this.scratch.z >= bestZ : d > bestD) || behind(w)) continue;
         best = w.clone();
         bestD = d;
+        bestZ = this.scratch.z;
       }
     }
     if (!best) return null;
@@ -339,6 +346,10 @@ export class Picker {
     return { point: at, edges: ending };
   }
 }
+
+// How near on screen (px) two corners must be to count as one pixel, where
+// pickVertex takes the one in front rather than the nearer.
+const STACKED_PX = 0.5;
 
 // three.js Line2 raycast threshold is ~0.5× the on-screen pixel radius, so ~26
 // gives a comfortable ~13px grab radius. Candidates are then narrowed by screen

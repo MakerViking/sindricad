@@ -189,6 +189,53 @@ describe("projected geometry compiles as fixed solver primitives", () => {
     expect(projectedOf(r.entities)).toEqual([ents[0]]);
   });
 
+  it("projected point (a body corner, another sketch's point): pinned, and a coincident user end follows a refresh", async () => {
+    // Decision A7. The oracle is the REFRESH: the user line's start still sits
+    // where the point WAS, and only a real, compiled coincident pulls it onto
+    // where the point is now. A positional merge alone would leave it behind.
+    const constraints: SketchConstraint[] = [
+      { type: "coincident", e1: "u", p1: 0, e2: "pt", p2: 0 },
+      { type: "horizontal", line: "u" },
+      { type: "distance", line: "u", value: 20 },
+    ];
+    const before = [projected("pt", { kind: "point", x: 10, y: 5 }), line("u", 10, 5, 30, 5)];
+    const r1 = await compileAndSolve(before, constraints);
+    expect(r1.ok).toBe(true);
+    expect(r1.conflicts).toEqual([]);
+    // the start is pinned by the point, horizontal + length take the rest
+    expect(r1.dof, "the coincident to the fixed point must anchor the line").toBe(0);
+    expect(projectedOf(r1.entities)).toEqual([before[0]]);
+    const u1 = r1.entities.find((e) => e.id === "u");
+    if (u1?.type !== "line") throw new Error("line lost");
+
+    const r2 = await compileAndSolve([projected("pt", { kind: "point", x: 14, y: -3 }), u1], constraints);
+    expect(r2.ok).toBe(true);
+    const u2 = r2.entities.find((e) => e.id === "u");
+    if (u2?.type !== "line") throw new Error("line lost");
+    expect(u2.x1).toBeCloseTo(14, 6); // followed the corner
+    expect(u2.y1).toBeCloseTo(-3, 6);
+    expect(u2.y2).toBeCloseTo(-3, 6); // horizontal held
+    expect(Math.hypot(u2.x2 - u2.x1, u2.y2 - u2.y1)).toBeCloseTo(20, 6);
+  });
+
+  it("a dimension from a projected point drives the user geometry, never the point", async () => {
+    const ents = [projected("pt", { kind: "point", x: 0, y: 0 }), line("u", 30, 10, 45, 10)];
+    const constraints: SketchConstraint[] = [
+      { type: "horizontal", line: "u" },
+      { type: "p2pDistance", e1: "pt", p1: 0, e2: "u", p2: 0, value: 12 },
+    ];
+    const r = await compileAndSolve(ents, constraints);
+    expect(r.ok).toBe(true);
+    expect(r.conflicts).toEqual([]);
+    expect(projectedOf(r.entities)).toEqual([ents[0]]); // untouched
+    const u = r.entities.find((e) => e.id === "u");
+    if (u?.type !== "line") throw new Error("line lost");
+    expect(Math.hypot(u.x1, u.y1)).toBeCloseTo(12, 5);
+    // and a drag of it is refused as projected geometry, not a user pin
+    const d = await compileAndSolve(ents, [], { fromX: 0, fromY: 0, toX: 3, toY: 3 });
+    expect(d.dragRefused).toBe("projected");
+  });
+
   it("dragRefused distinguishes a user `fix` pin, and a free drag reports nothing", async () => {
     const ents = [line("u", 0, 0, 20, 0)];
     const fixed = await compileAndSolve(ents, [{ type: "fix", e: "u", p: 0 }], { fromX: 0, fromY: 0, toX: 5, toY: 5 });
@@ -227,6 +274,20 @@ describe("Break Link — constraints survive the projected→native conversion",
     if (dragged?.type !== "line") throw new Error("line lost");
     expect(dragged.x1).toBeCloseTo(-5, 6);
     expect(dragged.y1).toBeCloseTo(3, 6);
+  });
+
+  it("a broken projected point is a native sketch point, same id, its constraints intact", async () => {
+    const constraints: SketchConstraint[] = [{ type: "coincident", e1: "u", p1: 0, e2: "pt", p2: 0 }];
+    const ents = [projected("pt", { kind: "point", x: 3, y: 4 }), line("u", 3, 4, 20, 4)];
+    const broken = breakLink(ents, new Set(["pt"]));
+    expect(broken[0]).toEqual({ type: "point", id: "pt", x: 3, y: 4 });
+    const r = await compileAndSolve(broken, constraints);
+    expect(r.ok).toBe(true);
+    expect(r.conflicts).toEqual([]);
+    // free now: dragging it works and carries the joined end along
+    const d = await compileAndSolve(broken, constraints, { fromX: 3, fromY: 4, toX: 6, toY: 8 });
+    expect(d.dragRefused).toBeUndefined();
+    expect(d.entities.find((e) => e.id === "pt")).toMatchObject({ x: 6, y: 8 });
   });
 
   it("a p2p dim to a broken closed poly (now C0-closed spline) still resolves at index 0", async () => {

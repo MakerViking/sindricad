@@ -70,6 +70,13 @@ import { t } from "../i18n";
 // That includes the ones Explode, and Fillet or Chamfer on a polygon, write to
 // keep a shape's form, so exploding the shape a document was stamped for can
 // save it as v5 again.
+//
+// A projected POINT (a body corner or another sketch's point, also 2026-10)
+// stamps v6 too: an older build has no such curve kind, and drawing, snapping,
+// finding the areas of, checking or solving a sketch that holds one throws
+// there. A smooth projected curve does not: an older build builds it in
+// straight pieces, as it always did, and its link keeps the flag, so this
+// build makes it smooth again.
 
 /** .sindri file-format version: the newest this build reads (bump when the
  *  on-disk shape changes incompatibly). A document is SAVED as the oldest
@@ -77,9 +84,15 @@ import { t } from "../i18n";
 export const FORMAT_VERSION = 6;
 
 /** The version a document is saved as: v6 when a sketch names a shape's
- *  corner, centre or side (see v5 → v6 above), else v5. */
+ *  corner, centre or side or holds a projected point (see v5 → v6 above),
+ *  else v5. */
 export function savedVersion(features: readonly Feature[]): number {
-  return features.some(usesShapeOperands) ? 6 : 5;
+  return features.some((f) => usesShapeOperands(f) || usesProjectedPoints(f)) ? 6 : 5;
+}
+
+/** True if a sketch holds a projected point (v5 → v6 above). */
+function usesProjectedPoints(f: Feature): boolean {
+  return f.type === "sketch" && f.entities.some((e) => e.type === "projected" && e.curve.kind === "point");
 }
 
 /** Point fields a constraint names together with its entity (types.ts). */

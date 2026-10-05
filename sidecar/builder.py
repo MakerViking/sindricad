@@ -6544,6 +6544,8 @@ def _sketch_ref_xy(e, p, val):
             return None
         if ck == "circle":
             return (cv["x"], cv["y"]) if p == 0 else None
+        if ck == "point":
+            return (cv["x"], cv["y"]) if p == 0 else None
         if ck == "poly":
             pts = cv.get("pts") or []
             if not pts:
@@ -16803,7 +16805,18 @@ def _entity_edges(e, val):
                      if i == 0 or math.hypot(p[0] - pts[i - 1][0], p[1] - pts[i - 1][1]) > 1e-9]
             if len(dedup) < 2:
                 return []
+            # A poly the projection marked smooth (decision A7: a link made
+            # since, from a smooth source curve) builds ONE spline through the
+            # samples, which lie on the true curve. Every other poly stays the
+            # faceted polyline it always built, so an old document rebuilds
+            # unchanged.
+            if cv.get("smooth"):
+                spline = _smooth_poly_edge(pts)
+                if spline is not None:
+                    return [spline]
             return list(Polyline(*[(p[0], p[1], 0) for p in dedup]).edges())
+        # a projected point (a body corner, another sketch's point) is
+        # reference-only, like a sketch point
         return []
     return []
 
@@ -16868,6 +16881,149 @@ def _catmull_rom_edge(pts, closed):
         mults.SetValue(k + 1, 4 if not closed and k in (0, spans) else 2)
     curve = Geom_BSplineCurve(arr, knots, mults, 3, closed)
     return Edge(BRepBuilderAPI_MakeEdge(curve).Edge())
+
+
+# The sharpest turn between two consecutive samples a smooth projected poly may
+# have and still be built as a spline: only a FOLD turns further, a curve seen
+# exactly edge-on running out and back along one line (a circle at 90 degrees
+# to the sketch), and that stays faceted. Anything short of it builds right
+# with the samples' own parameters (_smooth_poly_edge): MEASURED on circles of
+# radius 0.2, 1 and 10 tilted 30 to 89.9 degrees, whose worst turn reaches 179,
+# every spline was valid and within 3.7e-4 of the true area (the faceted
+# outline of the small ones is 2.6e-2 short).
+_SMOOTH_MAX_TURN_DEG = 175.0
+
+
+def _smooth_poly_edge(pts):
+    """One spline edge through a projected poly's samples (2-D [x, y] pairs),
+    periodic when the poly closes on itself. None when the samples cannot be
+    one smooth curve (a fold, fewer than three distinct samples) or the kernel
+    refuses them: the caller builds the faceted polyline then, which is what
+    every projection built before this.
+
+    The samples are evenly spaced along the SOURCE curve (_project_edge_to_plane),
+    so sample i sits at parameter i/n of a smooth curve, and that is the
+    parameter each one is given. Projection squeezes the spacing: a circle
+    tilted 80 degrees to the sketch has samples almost six times closer at its
+    ends than along its sides, and the kernel's default spacing-based
+    parameters then overshoot the ends (measured on a radius-10 circle: +9.2e-4
+    of the area, worse than the faceted outline's -4.2e-4; -2.0e-6 with these
+    parameters)."""
+    n = len(pts) - 1
+    keep = [i for i in range(len(pts))
+            if i == 0 or math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]) > 1e-9]
+    closed = n > 1 and pts[0][0] == pts[-1][0] and pts[0][1] == pts[-1][1]
+    if closed:
+        keep = [i for i in keep if i != n]
+    ring = [pts[i] for i in keep]
+    if len(ring) < 3:
+        return None
+    segs = list(zip(ring, ring[1:] + ring[:1])) if closed else list(zip(ring, ring[1:]))
+    dirs = [(b[0] - a[0], b[1] - a[1]) for a, b in segs]
+    pairs = zip(dirs, dirs[1:] + dirs[:1]) if closed else zip(dirs, dirs[1:])
+    cos_max = math.cos(math.radians(_SMOOTH_MAX_TURN_DEG))
+    for (ux, uy), (vx, vy) in pairs:
+        norm = math.hypot(ux, uy) * math.hypot(vx, vy)
+        if norm <= 0 or (ux * vx + uy * vy) / norm < cos_max:
+            return None
+    params = [i / n for i in keep] + ([1.0] if closed else [])
+    try:
+        return Edge.make_spline([(p[0], p[1], 0) for p in ring], periodic=closed,
+                                parameters=params)
+    except Exception:
+        return None
+
+
+def _unsmoothed(e):
+    """A projected entity with its poly's smooth flag dropped: the faceted
+    polyline every projection built before decision A7."""
+    return {**e, "curve": {k: v for k, v in (e.get("curve") or {}).items() if k != "smooth"}}
+
+
+# How near a curve's end must be to a chord of a smooth projected poly to be ON
+# it, and how far from both of that chord's samples to be BETWEEN them. The app
+# computes such an end (a trim or an extend to the curve) in doubles from the
+# same sample numbers, so it is on the chord to ~1e-13; every gap that matters
+# (the spline's bulge past a chord) is above 1e-4 mm.
+_CHORD_TOL = 1e-6
+
+
+def _smooth_polys_ended_on(entities, val):
+    """Ids of the smooth projected polys (decision A7) another curve of the
+    sketch ENDS on between two samples. The app draws, trims and splits areas
+    along the straight chords between the samples, and the spline the kernel
+    builds through them bulges past every chord. So a line the app trimmed to
+    the curve stops short of the spline: the two areas the user sees on either
+    side of it are one here, and an extrude of either took the whole outline
+    without a word. Such a poly builds the faceted polyline the app draws. A
+    curve that crosses it or ends on a sample is no problem: the kernel splits
+    a crossing itself, and the spline passes through every sample."""
+    smooth = {}
+    for e in entities:
+        cv = e.get("curve") or {}
+        if (e.get("type") == "projected" and e.get("id") and not e.get("construction")
+                and cv.get("kind") == "poly" and cv.get("smooth")):
+            smooth[e["id"]] = cv.get("pts") or []
+    if not smooth:
+        return set()
+    ends = []  # (whose, x, y)
+    for e in entities:
+        if e.get("construction"):
+            continue
+        cv = e.get("curve") or {}
+        if e.get("type") == "projected" and cv.get("kind") == "poly":
+            # a poly ends at its first and last sample (none when closed): the
+            # samples between are no curve's end, in the app or here
+            pts = cv.get("pts") or []
+            if len(pts) >= 2 and pts[0] != pts[-1]:
+                ends += [(e.get("id"), pts[0][0], pts[0][1]), (e.get("id"), pts[-1][0], pts[-1][1])]
+            continue
+        try:
+            eds = _entity_edges(e, val)
+        except Exception:
+            continue  # the build proper says what is wrong with it
+        for ed in eds:
+            if ed.is_closed:
+                continue  # a circle has no end, only a seam the app never sees
+            for p in (ed.start_point(), ed.end_point()):
+                ends.append((e.get("id"), p.X, p.Y))
+    out = set()
+    for eid, pts in smooth.items():
+        xs, ys = [p[0] for p in pts], [p[1] for p in pts]
+        lo_x, hi_x = min(xs) - _CHORD_TOL, max(xs) + _CHORD_TOL
+        lo_y, hi_y = min(ys) - _CHORD_TOL, max(ys) + _CHORD_TOL
+        if any(who != eid and lo_x <= x <= hi_x and lo_y <= y <= hi_y and _between_samples(pts, x, y)
+               for who, x, y in ends):
+            out.add(eid)
+    return out
+
+
+def _between_samples(pts, x, y):
+    """Is (x, y) on a chord of the poly `pts`, away from both of its samples?"""
+    for (ax, ay), (bx, by) in zip(pts, pts[1:]):
+        dx, dy = bx - ax, by - ay
+        length2 = dx * dx + dy * dy
+        if length2 <= 0:
+            continue
+        t = ((x - ax) * dx + (y - ay) * dy) / length2
+        if not 0 < t < 1 or math.hypot(ax + t * dx - x, ay + t * dy - y) > _CHORD_TOL:
+            continue
+        if math.hypot(x - ax, y - ay) > _CHORD_TOL and math.hypot(x - bx, y - by) > _CHORD_TOL:
+            return True
+    return False
+
+
+def _three_ends_meet(edges, tol=_CHORD_TOL):
+    """Do three or more of these edges' ends meet at one point?"""
+    cells = {}
+    for ed in edges:
+        for p in (ed.start_point(), ed.end_point()):
+            cells.setdefault((math.floor(p.X / tol), math.floor(p.Y / tol)), []).append(p)
+    for (i, j), here in cells.items():
+        near = [q for di in (-1, 0, 1) for dj in (-1, 0, 1) for q in cells.get((i + di, j + dj), ())]
+        if any(sum((p - q).length <= tol for q in near) >= 3 for p in here):
+            return True
+    return False
 
 
 def _entity_edge(e, val):
@@ -17858,6 +18014,11 @@ def _build_sketch(f, val, datums=None):
             entities.extend(_expand_pattern(pat, by_id, val))
     by_id_all = {e["id"]: e for e in entities if e.get("id")}  # text pathRef lookup
     text_local = []  # glyph faces (2D local); integrated into faces + located_faces below
+    # Smooth projected polys (decision A7) that build faceted in THIS sketch,
+    # because another curve ends on one between two samples; and each one that
+    # did build as a spline, with its faceted pieces, for the loops below.
+    ended_on = _smooth_polys_ended_on(entities, val)
+    faceted_of = {}
 
     for e in entities:
         if e.get("construction"):
@@ -17974,7 +18135,11 @@ def _build_sketch(f, val, datums=None):
                 faces.append(Pos(cv["x"], cv["y"]) * Circle(cv["r"]))
                 all_edges.extend(_own(e, _entity_edges(e, val)))
             else:
-                for ed in _own(e, _entity_edges(e, val)):
+                ent = _unsmoothed(e) if e.get("id") in ended_on else e
+                eds = _own(e, _entity_edges(ent, val))
+                if (ent.get("curve") or {}).get("smooth") and len(eds) == 1:
+                    faceted_of[id(eds[0])] = _entity_edges(_unsmoothed(ent), val)
+                for ed in eds:
                     edges.append(ed)
                     all_edges.append(ed)
         elif et == "text":
@@ -17985,7 +18150,18 @@ def _build_sketch(f, val, datums=None):
             text_local.extend(_text_faces(e, val, path_edge))
 
     if edges:
-        faces.extend(_faces_from_edges(edges))
+        # Wire.combine pairs up the curve ends where three or more meet (a
+        # silhouette's rim and its side line, say) by the order of the edges,
+        # and a smooth poly is one edge where it used to be dozens, so the loop
+        # it closes there can change: MEASURED on a tilted cylinder's
+        # silhouette, the whole outline (270 mm2) became one 96 mm2 piece of
+        # it, and Revolve, Sweep and an extrude with no area picked would have
+        # used that. At such a junction the loops come from the faceted pieces,
+        # exactly as before smooth polys; the area cells (below) stay smooth.
+        loops = edges
+        if faceted_of and _three_ends_meet(edges):
+            loops = [piece for ed in edges for piece in faceted_of.get(id(ed), [ed])]
+        faces.extend(_faces_from_edges(loops))
     faces.extend(text_local)  # glyph faces union into the whole-sketch profile (extrude)
 
     # the located open/closed path wire from the free edges (for sweep paths),
@@ -18656,7 +18832,27 @@ def _project_pt(plane, p):
     return l.X, l.Y
 
 
-def _project_edge_to_plane(edge, plane):
+def _project_point(plane, p):
+    """A world point as a projected POINT curve on `plane` (decision A7)."""
+    x, y = _project_pt(plane, p)
+    return {"kind": "point", "x": _r6(x), "y": _r6(y)}
+
+
+def _smooth_source(edge):
+    """Is the edge's curve smooth all along (tangent-continuous, not C0)? A
+    smooth projection builds its samples as a spline; a source with a corner
+    inside one edge (a degree-1 B-spline from another program, say) would have
+    that corner rounded off, so it stays faceted."""
+    from OCP.BRepAdaptor import BRepAdaptor_Curve
+    from OCP.GeomAbs import GeomAbs_Shape
+
+    try:
+        return BRepAdaptor_Curve(edge.wrapped).Continuity() != GeomAbs_Shape.GeomAbs_C0
+    except Exception:
+        return False
+
+
+def _project_edge_to_plane(edge, plane, smooth=False):
     """Project one located 3D edge onto `plane` → a ProjectedCurve dict.
 
     Exact where exactness survives projection: a line stays a line (degenerate
@@ -18664,7 +18860,12 @@ def _project_edge_to_plane(edge, plane):
     parallel to the plane normal stays a circle (closed) or a 3-point arc
     (open). Everything else (tilted circle, ellipse, bspline) is sampled to a
     poly — build123d's position_at is arc-length parametrized, so samples are
-    evenly spaced along the curve."""
+    evenly spaced along the curve.
+
+    `smooth` is the link's own flag (source.smooth, set on every projection
+    made since decision A7): a sampled poly from a smooth source curve is then
+    marked smooth too, and builds as one spline (_entity_edges). Never the
+    view-aligned line's two-sample poly, which is a point, not a curve."""
     ct = _edge_curve(edge)
     if ct == "line":
         ax, ay = _project_pt(plane, edge.position_at(0))
@@ -18711,18 +18912,20 @@ def _project_edge_to_plane(edge, plane):
     for p in samples:
         x, y = _project_pt(plane, p)
         pts.append([_r6(x), _r6(y)])
+    if smooth and _smooth_source(edge):
+        return {"kind": "poly", "pts": pts, "smooth": True}
     return {"kind": "poly", "pts": pts}
 
 
 def _curve_close(a, b, tol=1e-4):
     """Structural compare of two ProjectedCurve dicts: same kind and every number
     within `tol` (the projection-refresh change tolerance). Polys compare
-    pointwise; a length mismatch is a change."""
+    pointwise; a length mismatch is a change, and so is the smooth flag."""
     if a.get("kind") != b.get("kind"):
         return False
     if a.get("kind") == "poly":
         pa, pb = a.get("pts") or [], b.get("pts") or []
-        if len(pa) != len(pb):
+        if len(pa) != len(pb) or bool(a.get("smooth")) != bool(b.get("smooth")):
             return False
         return all(
             abs(p[0] - q[0]) <= tol and abs(p[1] - q[1]) <= tol for p, q in zip(pa, pb)
@@ -18739,8 +18942,8 @@ def _curve_reversed(c):
     if k == "arc":
         return {**c, "x1": c["x2"], "y1": c["y2"], "x2": c["x1"], "y2": c["y1"]}
     if k == "poly":
-        return {"kind": "poly", "pts": list(reversed(c.get("pts") or []))}
-    return c  # circle: orientation-free
+        return {**c, "pts": list(reversed(c.get("pts") or []))}
+    return c  # circle, point: orientation-free
 
 
 def _curve_rep(c):
@@ -18795,7 +18998,7 @@ def _curve_oriented(c, cached):
     return c
 
 
-def _project_silhouette(shape, plane):
+def _project_silhouette(shape, plane, smooth=False):
     """The visible outline (HLR) of a body projected onto `plane`, as a list of
     ProjectedCurve dicts in the plane's 2D frame.
 
@@ -18841,7 +19044,7 @@ def _project_silhouette(shape, plane):
             # HLR edges carry only 2D curve-on-surface data; materialize a 3D
             # curve first — build123d's length/position_at SEGFAULT without it
             BRepLib.BuildCurves3d_s(ed)
-            c = _project_edge_to_plane(Edge(ed), Plane.XY)
+            c = _project_edge_to_plane(Edge(ed), Plane.XY, smooth)
             if c["kind"] == "poly":
                 xs = [p[0] for p in c["pts"]]
                 ys = [p[1] for p in c["pts"]]
@@ -18960,26 +19163,28 @@ def _recompute_projections(f, ctx):
 
     # silhouette groups: one fresh HLR curve list per BODY (computed once), each
     # (body, group) sibling set assigned from its own copy of that list
+    # (a link made since smooth projection marks its smooth polys, so the list
+    # is per body AND flag)
     sil_groups = {}
     for e in ents:
         s = e.get("source") or {}
         if s.get("kind") == "silhouette":
-            sil_groups.setdefault((s.get("body"), s.get("group")), []).append(e)
+            sil_groups.setdefault((s.get("body"), s.get("group"), bool(s.get("smooth"))), []).append(e)
     sil_assign = {}
     sil_fresh = {}
-    for (body_id, _g), group in sil_groups.items():
+    for (body_id, _g, smooth), group in sil_groups.items():
         group.sort(key=lambda x: (len(x["id"]), x["id"]))
-        if body_id not in sil_fresh:
+        if (body_id, smooth) not in sil_fresh:
             body = ctx.find_body(body_id)
             try:
-                sil_fresh[body_id] = (
-                    _project_silhouette(body["shape"], plane)
+                sil_fresh[(body_id, smooth)] = (
+                    _project_silhouette(body["shape"], plane, smooth)
                     if body is not None and body.get("shape") is not None
                     else None
                 )
             except Exception:
-                sil_fresh[body_id] = None  # HLR failure = lost source (lenient)
-        sil_assign.update(_assign_silhouette(group, sil_fresh[body_id]))
+                sil_fresh[(body_id, smooth)] = None  # HLR failure = lost source (lenient)
+        sil_assign.update(_assign_silhouette(group, sil_fresh[(body_id, smooth)]))
 
     for e in ents:
         if (e.get("source") or {}).get("kind") == "silhouette":
@@ -19033,6 +19238,7 @@ def _fresh_curve(e, plane, prefix, curve_fresh, ctx):
     """_fresh_projection's resolution, before the kind check."""
     src = e.get("source") or {}
     kind = src.get("kind")
+    smooth = bool(src.get("smooth"))
     if kind in ("edge", "faceBoundary"):
         # faceBoundary persists PER-EDGE by:"match" sels too (see the pick site
         # in sketchMode.ts) — both kinds resolve via resolve_edges. LENIENT on
@@ -19045,14 +19251,14 @@ def _fresh_curve(e, plane, prefix, curve_fresh, ctx):
         edges = resolve_edges(body["shape"], src.get("sel"))
         if not edges:
             return None  # the source edge is gone — keep last shape
-        return _project_edge_to_plane(edges[0], plane)
+        return _project_edge_to_plane(edges[0], plane, smooth)
     if kind == "sketchCurve":
-        key = (src.get("sketch"), src.get("entity"))
+        key = (src.get("sketch"), src.get("entity"), smooth)
         if key not in curve_fresh:
             try:
                 src_plane, eds = _resolve_sketch_curve(prefix, src, ctx.datums, ctx.val)
                 curve_fresh[key] = [
-                    _project_edge_to_plane(src_plane * ed, plane) for ed in eds
+                    _project_edge_to_plane(src_plane * ed, plane, smooth) for ed in eds
                 ]
             except Exception:
                 curve_fresh[key] = None  # lost source (lenient), memoized
@@ -19071,6 +19277,19 @@ def _fresh_curve(e, plane, prefix, curve_fresh, ctx):
         if len(fresh) == 1:
             return fresh[0]
         return None  # multi-edge sibling without an index: unresolvable
+    if kind == "vertex":
+        # a body corner: one END of its by:"match" edge, the same lenient
+        # resolution as an edge source above
+        body = ctx.find_body(src.get("body"))
+        if body is None or body.get("shape") is None or src.get("end") not in (0, 1):
+            return None
+        edges = resolve_edges(body["shape"], src.get("sel"))
+        if not edges:
+            return None
+        return _project_point(plane, _edge_end(edges[0], src["end"]))
+    if kind == "sketchPoint":
+        src_plane, xy = _resolve_sketch_point(prefix, src, ctx.datums, ctx.val)
+        return _project_point(plane, src_plane.from_local_coords(xy))
     return None  # unknown kind: unresolvable
 
 
@@ -19087,9 +19306,11 @@ def project_geometry(document, plane_spec, sources):
     of 0.121 s. Note the poisoning happened even when the pick itself FAILED, so
     the flag belongs on the call, not on the success path.
 
-    Returns {"results": [{source_index, ok, curves: [{fp?, curve}], error?}]}
+    Returns {"results": [{source_index, ok, curves: [{fp?, end?, curve}], error?}]}
     — `fp` (a sidecar-authored edge fingerprint for a by:"match" selector) only
-    for body-edge sources; sketch curves are tracked by stable ids."""
+    for body-edge and body-corner sources, `end` (which end of that edge the
+    corner is) only for a corner; sketch curves and points are tracked by
+    stable ids."""
     # The datum registry comes back from the build itself, not from a replay of
     # the document's datum features: a `face`-anchored datum needs the bodies to
     # resolve, and a bodies-free replay would silently answer with its stale
@@ -19122,11 +19343,10 @@ def _require_body(bodies, bid):
     return body
 
 
-def _resolve_sketch_curve(features, src, datums, val):
-    """Resolve a sketchCurve source against `features` to (source plane, local
-    boundary edges). Raises with the strict pick-time messages on a missing
-    sketch / entity or an entity with no curve; the lenient refresh path
-    (_fresh_projection) catches any raise and treats it as a lost source."""
+def _source_sketch_entity(features, src, what):
+    """The sketch feature and entity a sketchCurve or sketchPoint source names
+    (`what` is "curve" or "point", for the words), or the strict pick-time
+    refusal on a missing sketch or entity."""
     sf = next(
         (f for f in features
          if f.get("type") == "sketch" and f.get("id") == src.get("sketch")),
@@ -19142,18 +19362,129 @@ def _resolve_sketch_curve(features, src, datums, val):
         None,
     )
     if ent is None:
-        raise ValueError("the source curve no longer exists in its sketch")
+        raise ValueError(f"the source {what} no longer exists in its sketch")
+    return sf, ent
+
+
+def _resolve_sketch_curve(features, src, datums, val):
+    """Resolve a sketchCurve source against `features` to (source plane, local
+    boundary edges). Raises with the strict pick-time messages on a missing
+    sketch / entity or an entity with no curve; the lenient refresh path
+    (_fresh_projection) catches any raise and treats it as a lost source."""
+    sf, ent = _source_sketch_entity(features, src, "curve")
     eds = _entity_edges(ent, val)
     if not eds:
         raise ValueError(f'a "{ent.get("type")}" entity has no curve to project')
     return _plane_of(sf["plane"], datums), eds
 
 
+def _resolve_sketch_point(features, src, datums, val):
+    """Resolve a sketchPoint source against `features` to (source plane, local
+    (x, y)): point `pointIndex` of a committed sketch entity, numbered as
+    dimRefPoints numbers it (_sketch_ref_xy). The strict pick-time messages,
+    like _resolve_sketch_curve's; the lenient refresh treats any raise as a lost
+    source."""
+    sf, ent = _source_sketch_entity(features, src, "point")
+    xy = _sketch_ref_xy(ent, src.get("pointIndex"), val)
+    if xy is None:
+        raise ValueError("that point of the source sketch can't be projected")
+    return _plane_of(sf["plane"], datums), xy
+
+
+def _refuse_lossy(diag):
+    """The strict pick-time refusal of a body selector that resolved only by a
+    best-effort or marginal path. LOSSY is the flag that means that — every
+    diagnostic assertion in the suite keys on it. Refusing on a merely non-empty
+    `diag` was equivalent once, but it also swept up advisory entries and turned
+    a perfectly good pick into a hard failure (see the note in
+    geom_select._nearest_one)."""
+    lossy = next((d for d in diag if d.get("lossy")), None)
+    if lossy is not None:
+        raise ValueError(
+            "the source selection is ambiguous on this body — "
+            + (lossy.get("reason") or "low-confidence match")
+        )
+
+
+# How far a picked corner may sit from the end of the edge it was picked on
+# (the viewport's tessellation stores float32, ~1e-4 mm at a metre). Further
+# means the edge the pick resolved to is not the one under the cursor, and the
+# pick is refused rather than bound to a corner nobody clicked.
+_CORNER_PICK_TOL = 1e-2
+
+
+def _corner_edge(shape, edge, end):
+    """The (edge, end) a body corner is kept by: ONE of the edges that end
+    there, the same whichever of them the pick came in on. A box corner ends
+    three edges, and which one a click finds depends on the side the cursor
+    comes from, so without this the same corner clicked twice could be kept
+    twice, as two (fingerprint, end) pairs the app cannot tell are one corner.
+    Straight edges first (a straight edge's fingerprint is the least
+    ambiguous, as the viewport's corner pick has it), then the lowest middle,
+    x then y then z. The pick's own edge when the corner's other edges can't
+    be found (a body whose edges don't share their corners)."""
+    from OCP.BRep import BRep_Tool
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_VERTEX
+    from OCP.TopExp import TopExp
+    from OCP.TopoDS import TopoDS
+    from OCP.TopTools import TopTools_IndexedDataMapOfShapeListOfShape
+
+    at = _edge_end(edge, end)
+    ends = (TopExp.FirstVertex_s(edge.wrapped), TopExp.LastVertex_s(edge.wrapped))
+    vertex = min(ends, key=lambda v: (Vector(BRep_Tool.Pnt_s(v)) - at).length)
+    vmap = TopTools_IndexedDataMapOfShapeListOfShape()
+    TopExp.MapShapesAndAncestors_s(shape.wrapped, TopAbs_VERTEX, TopAbs_EDGE, vmap)
+    if not vmap.Contains(vertex):
+        return edge, end
+    found = []
+    for s in _list_shapes(vmap.FindFromKey(vertex)):
+        ed = TopoDS.Edge_s(s)
+        if not BRep_Tool.Degenerated_s(ed) and not any(ed.IsSame(x.wrapped) for x in found):
+            found.append(Edge(ed))
+
+    def rank(x):
+        m = _edge_mid(x)
+        return (_edge_curve(x) != "line", round(m.X, 6), round(m.Y, 6), round(m.Z, 6))
+
+    best = min(found, key=rank, default=edge)
+    return best, min((0, 1), key=lambda k: (_edge_end(best, k) - at).length)
+
+
 def _project_source(src, plane, document, bodies, datums):
-    """Resolve ONE projection source to its [{fp?, curve}] list, or raise with a
-    user-facing message. Source kinds: edge / faceBoundary / sketchCurve /
-    silhouette (whole-body HLR outline)."""
+    """Resolve ONE projection source to its [{fp?, end?, curve}] list, or raise
+    with a user-facing message. Source kinds: edge / faceBoundary / sketchCurve /
+    silhouette (whole-body HLR outline) / vertex (a body corner, picked as the
+    end of an edge nearest `point`) / sketchPoint (a committed sketch's point)."""
     kind = src.get("kind")
+    smooth = bool(src.get("smooth"))  # a link made since decision A7
+    if kind == "vertex":
+        body = _require_body(bodies, src.get("body"))
+        shape = body["shape"]
+        diag = []
+        edges = resolve_edges(shape, src.get("sel"), diag=diag)
+        if not edges:
+            raise ValueError("the source corner no longer exists on the body")
+        _refuse_lossy(diag)
+        edge = edges[0]
+        end = src.get("end")
+        if end not in (0, 1):
+            at = src.get("point")
+            if not isinstance(at, (list, tuple)) or len(at) != 3:
+                raise ValueError("pick a corner of the body to project")
+            q = Vector(*at)
+            d0, d1 = ((_edge_end(edge, k) - q).length for k in (0, 1))
+            end = 1 if d1 < d0 else 0
+            if min(d0, d1) > _CORNER_PICK_TOL * max(1.0, q.length / 1000):
+                raise ValueError("that corner isn't an end of the edge it was picked on. Pick it again.")
+        edge, end = _corner_edge(shape, edge, end)
+        # the persisted form: the edge's by:"match" fingerprint and the end
+        # index (_edge_end's convention, the one ExtrudeRef's corner uses)
+        return [{"fp": edge_fingerprint(edge, shape), "end": end,
+                 "curve": _project_point(plane, _edge_end(edge, end))}]
+    if kind == "sketchPoint":
+        val = _make_val(document.get("parameters", {}))
+        src_plane, xy = _resolve_sketch_point(document.get("features", []), src, datums, val)
+        return [{"curve": _project_point(plane, src_plane.from_local_coords(xy))}]
     if kind in ("edge", "faceBoundary"):
         body = _require_body(bodies, src.get("body"))
         shape = body["shape"]
@@ -19168,19 +19499,9 @@ def _project_source(src, plane, document, bodies, datums):
             edges = list(seen.values())
         if not edges:
             raise ValueError("the source geometry no longer exists on the body")
-        # LOSSY is the flag that means "this resolution took a best-effort or
-        # marginal path" — every diagnostic assertion in the suite keys on it.
-        # Refusing on a merely non-empty `diag` was equivalent once, but it also
-        # swept up advisory entries and turned a perfectly good pick into a hard
-        # failure (see the note in geom_select._nearest_one).
-        lossy = next((d for d in diag if d.get("lossy")), None)
-        if lossy is not None:
-            raise ValueError(
-                "the source selection is ambiguous on this body — "
-                + (lossy.get("reason") or "low-confidence match")
-            )
+        _refuse_lossy(diag)
         return [
-            {"fp": edge_fingerprint(e, shape), "curve": _project_edge_to_plane(e, plane)}
+            {"fp": edge_fingerprint(e, shape), "curve": _project_edge_to_plane(e, plane, smooth)}
             for e in edges
         ]
     if kind == "sketchCurve":
@@ -19188,10 +19509,10 @@ def _project_source(src, plane, document, bodies, datums):
         src_plane, eds = _resolve_sketch_curve(
             document.get("features", []), src, datums, val
         )
-        return [{"curve": _project_edge_to_plane(src_plane * ed, plane)} for ed in eds]
+        return [{"curve": _project_edge_to_plane(src_plane * ed, plane, smooth)} for ed in eds]
     if kind == "silhouette":
         body = _require_body(bodies, src.get("body"))
-        curves = _project_silhouette(body["shape"], plane)
+        curves = _project_silhouette(body["shape"], plane, smooth)
         if not curves:
             raise ValueError("the body has no visible silhouette on this plane")
         # whole-body source: no per-curve fingerprints (refresh re-runs HLR and

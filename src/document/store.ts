@@ -4,8 +4,8 @@
 // listeners (viewport, timeline, tree).
 
 import { isDriven, TRIMMED_AWAY } from "../types";
-import type { CadDocument, DimField, Feature, ParamTarget, PlaneDef, PlaneSpec, ProjectedSource, ProjectionUpdate, RebuildReply, RebuildResult, Selector, SketchConstraint, SketchEntity, ViewCubeSide, ViewOverride } from "../types";
-import type { GeometryBackend, ProjectionResult, QueryResult } from "../geometry/client";
+import type { CadDocument, DimField, Feature, ParamTarget, PlaneDef, PlaneSpec, ProjectionUpdate, RebuildReply, RebuildResult, Selector, SketchConstraint, SketchEntity, ViewCubeSide, ViewOverride } from "../types";
+import type { GeometryBackend, ProjectionRequest, ProjectionResult, QueryResult } from "../geometry/client";
 import { featureErrorText } from "../geometry/featureErrorText";
 import { migrateDocument, savedVersion } from "./migrate";
 import { applyDrivingDimsDirect, dimBindingFor, planDimEdit, upsertDrivingDim, type DimBinding } from "../sketch/directDims";
@@ -2253,7 +2253,7 @@ export class DocumentStore {
    *  an existing sketch (sources must live strictly before it), null for a new
    *  sketch (which lands at the rollback marker, so everything up to it counts).
    *  Transport failure resolves to []. */
-  projectGeometry(plane: PlaneSpec, sources: ProjectedSource[], editingId: string | null): Promise<ProjectionResult[]> {
+  projectGeometry(plane: PlaneSpec, sources: ProjectionRequest[], editingId: string | null): Promise<ProjectionResult[]> {
     const doc: CadDocument = {
       parameters: this.doc.parameters,
       features: prefixFeatures(this.doc.features, this.rollbackIndex, this.suppressed, editingId),

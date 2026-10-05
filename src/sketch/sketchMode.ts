@@ -6,6 +6,8 @@ import * as THREE from "three";
 import type { Viewport } from "../viewport/viewport";
 import type { DocumentStore } from "../document/store";
 import type { EdgeFingerprint, ExtrudeRef, Feature, ParamTarget, PlaceOffset, PlaneSpec, ProjectedSource, ProjectionUpdate, Selector, SketchConstraint, SketchEntity, SketchPattern } from "../types";
+import type { ProjectionRequest } from "../geometry/client";
+import type { EdgeRef } from "../viewport/edgeLines";
 import { applyProjectionUpdate, dimPlaceOf, isBadgeEntity, isDriven, isPlacedDim } from "../types";
 import { SketchPlane } from "./plane";
 import { SketchOverlay, curveObjects, dimensionLineObjects, pointHighlight, polyline, dashedPolyline, CURVE_COLOR, ENDPOINT_COLOR, PREVIEW_COLOR, SELECT_COLOR } from "./overlay";
@@ -239,6 +241,25 @@ function fpClose(a: EdgeFingerprint, b: EdgeFingerprint): boolean {
   if (dot < 1 - 1e-6) return false;
   if (a.length != null && b.length != null && Math.abs(a.length - b.length) > 1e-3) return false;
   return true;
+}
+
+// How near the cursor (screen px) a body corner or another sketch's point must
+// be for the Project tool's Points filter to take it: the Extrude panel's
+// start/stop point pick uses the same reach.
+const PROJECT_POINT_PX = 8;
+
+/** The selector a Project pick sends for a body edge: by:"nearest" at the
+ *  middle of its middle drawn segment. NOT the picker's own selector: its
+ *  nearest point is the line's mid VERTEX, which for a 2-point straight edge is
+ *  an ENDPOINT, a corner shared by three edges that "nearest" (centre distance)
+ *  then resolves to the wrong one. The middle segment's midpoint is on (or
+ *  near) the curve and never a corner. Pick time only: what is kept is the
+ *  by:"match" fingerprint the sidecar answers with. */
+function edgePickSelector(edge: EdgeRef): Selector {
+  const pts = edge.points;
+  const k = Math.max(0, Math.ceil(pts.length / 2) - 1);
+  const a = pts[k]!, b = pts[Math.min(pts.length - 1, k + 1)]!;
+  return { kind: "edge", by: "nearest", point: [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2] };
 }
 
 // Sentinel id for the in-progress text tool's live-preview entity: it lives on the
@@ -629,6 +650,7 @@ export class SketchMode {
     this.projectPanel.onChange = () => {
       this.viewport.hoverEntity(null);
       this.overlay.setPreview([]);
+      this.overlay.setSnap(null);
       this.viewport.requestRender();
     };
   }
@@ -881,6 +903,7 @@ export class SketchMode {
     // dimension tool with geometry already selected dimensions that geometry
     // (Fusion: pick the line, then press D).
     const preselected = t === "dimension" ? [...this.selected] : [];
+    const leavingProject = this.tool === "project" && t !== "project";
     this.tool = t;
     this.base = null;
     this.chainStart = null;
@@ -912,6 +935,7 @@ export class SketchMode {
     else {
       this.projectPanel.hide();
       this.viewport.hoverEntity(null);
+      if (leavingProject) this.overlay.setSnap(null); // the Points filter's ring
     }
     // drop any uncommitted text preview left on the active list when switching tools
     if (this.dropTextPreview()) this.refreshActive();
@@ -6263,6 +6287,16 @@ export class SketchMode {
    *  silhouette pick hovers the face/edge that will resolve to its body); a
    *  committed curve highlight via the preview layer in Sketch curves mode. */
   private projectHover(e: PointerEvent) {
+    if (this.projectPanel.filter === "points") {
+      // the snap ring on the corner or point a click would project
+      this.overlay.setPreview([]);
+      this.viewport.hoverEntity(null);
+      const at = this.projectPointAt(e.clientX, e.clientY);
+      this.overlay.setSnap(at?.world ?? null, "endpoint", this.viewport.camera);
+      if (at) this.overlay.setSnapScale(this.viewport.pixelWorldSize(at.world) * 6);
+      this.viewport.requestRender();
+      return;
+    }
     if (this.projectPanel.filter !== "sketchCurves") {
       this.overlay.setPreview([]);
       this.viewport.hoverEntity(this.viewport.pickEntity(e.clientX, e.clientY));
@@ -6289,13 +6323,85 @@ export class SketchMode {
     });
   }
 
+  /** The point the Project tool's Points filter would take at this pixel: a
+   *  committed sketch's point (an end, a centre, a corner or a sketch point,
+   *  numbered as dimRefPoints numbers it) or a body corner, whichever is
+   *  nearer the cursor, as the Extrude panel's point pick decides it. Points
+   *  hidden behind a body here are not candidates; the open sketch's own are
+   *  never (overlay.update leaves it out). */
+  private projectPointAt(
+    cx: number,
+    cy: number,
+  ):
+    | { kind: "sketchPoint"; sketchId: string; entityId: string; point: number; world: THREE.Vector3 }
+    | { kind: "vertex"; edge: EdgeRef; world: THREE.Vector3 }
+    | null {
+    const project = (w: THREE.Vector3) => this.viewport.projectToScreen(w);
+    const px = (w: THREE.Vector3) => {
+      const s = project(w);
+      return Math.hypot(s.x - cx, s.y - cy);
+    };
+    const hidden = this.viewport.behindSurfaceAt(cx, cy);
+    const sp = this.overlay.committedPointAt(cx, cy, project, PROJECT_POINT_PX, undefined, hidden);
+    const vx = this.viewport.pickVertexAt(cx, cy, PROJECT_POINT_PX, hidden);
+    if (sp && (!vx || px(sp.world) <= px(vx.point))) return { kind: "sketchPoint", ...sp };
+    const edge = vx?.edges.find((x) => x.body !== undefined);
+    return vx && edge ? { kind: "vertex", edge, world: vx.point } : null;
+  }
+
+  /** The request for point `pointIndex` of a committed sketch's entity, or
+   *  null (with the toast) when this sketch already has it projected. */
+  private sketchPointRequest(sketch: string, entity: string, pointIndex: number): ProjectionRequest | null {
+    const dup = this.entities.some(
+      (x) =>
+        x.type === "projected" &&
+        x.source.kind === "sketchPoint" &&
+        x.source.sketch === sketch &&
+        x.source.entity === entity &&
+        x.source.pointIndex === pointIndex,
+    );
+    if (dup) {
+      toast(t("sketch.project.pointDup"));
+      return null;
+    }
+    return { kind: "sketchPoint", sketch, entity, pointIndex };
+  }
+
+  /** is this body corner (the `end` of the edge `fp` names) already projected? */
+  private hasProjectedCorner(fp: EdgeFingerprint, end: 0 | 1): boolean {
+    return this.entities.some((x) => {
+      if (x.type !== "projected" || x.source.kind !== "vertex") return false;
+      const s = x.source;
+      return s.end === end && s.sel.kind === "edge" && s.sel.by === "match" && fpClose(s.sel.fp, fp);
+    });
+  }
+
   /** One Project pick: resolve what's under the cursor into a ProjectedSource,
    *  run the op, land the returned curves as projected entities. Await-guarded
    *  by projectBusy so double-clicks can't race two calls. */
   private async projectClick(e: PointerEvent) {
     if (this.projectBusy || !this.store) return;
-    let source: ProjectedSource | null = null;
-    if (this.projectPanel.filter === "sketchCurves") {
+    // Every curve link made here carries `smooth` (decision A7): what the
+    // sidecar has to sample comes back to build as one spline. A point has no
+    // curve, so its link carries nothing of the kind.
+    let source: ProjectionRequest | null = null;
+    if (this.projectPanel.filter === "points") {
+      const at = this.projectPointAt(e.clientX, e.clientY);
+      if (!at) return;
+      if (at.kind === "sketchPoint") {
+        if (!this.committedSource(at.sketchId, at.entityId)) {
+          toast(t("sketch.project.patternCopy"));
+          return;
+        }
+        source = this.sketchPointRequest(at.sketchId, at.entityId, at.point);
+        if (!source) return;
+      } else {
+        // the corner as the END of the edge it was found on; the sidecar
+        // answers with that edge's fingerprint and which end it is
+        const w = at.world;
+        source = { kind: "vertex", body: at.edge.body!, sel: edgePickSelector(at.edge), point: [w.x, w.y, w.z] };
+      }
+    } else if (this.projectPanel.filter === "sketchCurves") {
       const hit = this.overlay.committedCurveAt(e.clientX, e.clientY, (w) => this.viewport.projectToScreen(w));
       if (!hit) {
         // nothing committed under the cursor — the ACTIVE sketch's own entities
@@ -6305,22 +6411,31 @@ export class SketchMode {
         if (p && pickEntity(this.entities, p, this.pickTol()) >= 0) toast(t("sketch.project.ownCurves"));
         return;
       }
-      if (!this.committedSource(hit.sketchId, hit.entityId)) {
+      const committed = this.committedSource(hit.sketchId, hit.entityId);
+      if (!committed) {
         toast(t("sketch.project.patternCopy"));
         return;
       }
-      const dup = this.entities.some(
-        (x) =>
-          x.type === "projected" &&
-          x.source.kind === "sketchCurve" &&
-          x.source.sketch === hit.sketchId &&
-          x.source.entity === hit.entityId,
-      );
-      if (dup) {
-        toast(t("sketch.project.curveDup"));
-        return;
+      const ent = committed.entity;
+      if (ent.type === "point" || (ent.type === "projected" && ent.curve.kind === "point")) {
+        // a point has no curve to project: it comes in as a point, as the
+        // Points filter takes it, rather than as a refusal
+        source = this.sketchPointRequest(hit.sketchId, hit.entityId, 0);
+        if (!source) return;
+      } else {
+        const dup = this.entities.some(
+          (x) =>
+            x.type === "projected" &&
+            x.source.kind === "sketchCurve" &&
+            x.source.sketch === hit.sketchId &&
+            x.source.entity === hit.entityId,
+        );
+        if (dup) {
+          toast(t("sketch.project.curveDup"));
+          return;
+        }
+        source = { kind: "sketchCurve", sketch: hit.sketchId, entity: hit.entityId, smooth: true };
       }
-      source = { kind: "sketchCurve", sketch: hit.sketchId, entity: hit.entityId };
     } else {
       const hit = this.viewport.pickEntity(e.clientX, e.clientY);
       if (!hit) return;
@@ -6338,20 +6453,9 @@ export class SketchMode {
           toast(t("sketch.project.silhouetteDup"));
           return;
         }
-        source = { kind: "silhouette", body };
+        source = { kind: "silhouette", body, smooth: true };
       } else if (hit.kind === "edge") {
-        // NOT hit.selector: the picker's nearest point is the line's mid VERTEX,
-        // which for a 2-point straight edge is an ENDPOINT — a corner shared by
-        // three edges that "nearest" (center-distance) then resolves to the
-        // wrong one. The middle segment's midpoint is on (or near) the curve
-        // and never a corner.
-        const pts = hit.edge.points;
-        const k = Math.max(0, Math.ceil(pts.length / 2) - 1);
-        const a = pts[k]!, b = pts[Math.min(pts.length - 1, k + 1)]!;
-        source = {
-          kind: "edge", body,
-          sel: { kind: "edge", by: "nearest", point: [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2] },
-        };
+        source = { kind: "edge", body, sel: edgePickSelector(hit.edge), smooth: true };
       } else {
         // the raycast hit point re-finds exactly the clicked face: it lies ON
         // the face's material, so by:"nearest" distance is 0 there and > 0 for
@@ -6359,7 +6463,7 @@ export class SketchMode {
         // material — a washer's annular face — and tie with another face), and
         // NOT the picker's own selector (may be a by:"normal" GROUP hit, too
         // broad for one face's boundary).
-        source = { kind: "faceBoundary", body, sel: { kind: "face", by: "nearest", point: hit.point } };
+        source = { kind: "faceBoundary", body, sel: { kind: "face", by: "nearest", point: hit.point }, smooth: true };
       }
     }
 
@@ -6386,9 +6490,24 @@ export class SketchMode {
       toast(r.error ?? t("sketch.project.failed")); // sidecar message verbatim ("created after this sketch"…)
       return;
     }
+    // A corner is a duplicate when the same END of the same edge is already
+    // projected: the sidecar keeps a corner by ONE of the edges that end there
+    // (builder._corner_edge), so that is the same corner from whichever side
+    // it was clicked. The sketch-point case was pre-checked above, by id.
+    if (source.kind === "vertex") {
+      const { fp, end } = r.curves[0] ?? {};
+      if (!fp || end === undefined) {
+        toast(t("sketch.project.failed"));
+        return;
+      }
+      if (this.hasProjectedCorner(fp, end)) {
+        toast(t("sketch.project.pointDup"));
+        return;
+      }
+    }
     // body-edge duplicates are detected against the returned fingerprints (the
     // sketch-curve case was pre-checked above — its ids are stable)
-    const fresh = r.curves.filter(({ fp }) => !(fp && this.hasProjectedFp(fp)));
+    const fresh = source.kind === "vertex" ? r.curves : r.curves.filter(({ fp }) => !(fp && this.hasProjectedFp(fp)));
     const skipped = r.curves.length - fresh.length;
     if (skipped) toast(skipped === r.curves.length ? t("sketch.project.edgeDup") : t("sketch.project.edgesSkipped", { count: skipped }));
     if (!fresh.length) return;
@@ -6397,22 +6516,33 @@ export class SketchMode {
     // entity ids are birth-stamped and survive edits)
     const ids = fresh.map(() => newEntityId());
     const group = ids.length > 1 ? { group: ids[0]! } : {};
-    fresh.forEach(({ fp, curve }, i) => {
-      // NOTE (plan step 4): a faceBoundary source persists with a per-edge
-      // by:"match" sel — the rebuild refresh handler must resolve it via
-      // resolve_edges (not resolve_faces) when it lands.
-      const src: ProjectedSource =
-        source.kind === "sketchCurve"
-          ? // `index: i` is sound because sketch-curve results carry no fps, so
-            // the dedup filter above never drops any — i IS the edge index in
-            // the sidecar's deterministic _entity_edges order (the refresh
-            // handler's authoritative sibling correspondence).
-            { kind: "sketchCurve", sketch: source.sketch, entity: source.entity, ...group, ...(fresh.length > 1 ? { index: i } : {}) }
-          : source.kind === "silhouette"
-            ? // whole-body source: no selector; the refresh re-runs HLR and
-              // re-matches the sibling curves (see _recompute_projections)
-              { kind: "silhouette", body: source.body, ...group }
-            : { kind: source.kind, body: source.body, sel: fp ? { kind: "edge", by: "match", fp } : source.sel, ...group };
+    // What each landed entity keeps as its link (the request was pick-time).
+    const persisted = (fp: EdgeFingerprint | undefined, end: 0 | 1 | undefined, i: number): ProjectedSource => {
+      switch (source.kind) {
+        case "sketchPoint":
+          return source;
+        case "vertex":
+          // never the picked position: the edge's fingerprint and the end
+          return { kind: "vertex", body: source.body, sel: { kind: "edge", by: "match", fp: fp! }, end: end! };
+        case "sketchCurve":
+          // `index: i` is sound because sketch-curve results carry no fps, so
+          // the dedup filter above never drops any — i IS the edge index in
+          // the sidecar's deterministic _entity_edges order (the refresh
+          // handler's authoritative sibling correspondence).
+          return { kind: "sketchCurve", sketch: source.sketch, entity: source.entity, ...group, ...(fresh.length > 1 ? { index: i } : {}), smooth: true };
+        case "silhouette":
+          // whole-body source: no selector; the refresh re-runs HLR and
+          // re-matches the sibling curves (see _recompute_projections)
+          return { kind: "silhouette", body: source.body, ...group, smooth: true };
+        default:
+          // NOTE (plan step 4): a faceBoundary source persists with a per-edge
+          // by:"match" sel — the rebuild refresh handler must resolve it via
+          // resolve_edges (not resolve_faces) when it lands.
+          return { kind: source.kind, body: source.body, sel: fp ? { kind: "edge", by: "match", fp } : source.sel, ...group, smooth: true };
+      }
+    };
+    fresh.forEach(({ fp, end, curve }, i) => {
+      const src = persisted(fp, end, i);
       // Construction mode applies here as it does at every other creation
       // site. This was the one that ignored it, so a projected edge always
       // joined the profile and could never be pure reference, which is what a

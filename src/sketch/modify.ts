@@ -266,6 +266,8 @@ export function breakLink(ents: ResolvedEntity[], ids: ReadonlySet<string>): Res
       case "poly":
         // a spline made now builds as it is drawn (types.ts asDrawn)
         return { type: "spline", ...base, points: cv.pts.map(([x, y]) => ({ x, y })), asDrawn: true };
+      case "point":
+        return { type: "point", ...base, x: cv.x, y: cv.y };
     }
   });
 }
@@ -418,6 +420,9 @@ export function pointBeatsCurve(curve: ResolvedEntity | undefined, pos: THREE.Ve
 
 function distToEntity(e: ResolvedEntity, p: THREE.Vector2): number {
   if (e.type === "circle") return Math.abs(v(e.x, e.y).distanceTo(p) - e.radius);
+  // A projected point has no segment to be near. It is still picked like
+  // projected geometry (to select, delete or Break Link it), never dragged.
+  if (e.type === "projected" && e.curve.kind === "point") return v(e.curve.x, e.curve.y).distanceTo(p);
   // line/rect/arc/spline: nearest of the shared tessellated segments
   let d = Infinity;
   for (const [a, b] of entitySegments(e)) d = Math.min(d, distToSeg(a, b, p));

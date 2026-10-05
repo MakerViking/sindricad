@@ -54,9 +54,19 @@ export interface TextOutlines {
 export interface ProjectionResult {
   source_index: number;
   ok: boolean;
-  curves: { fp?: EdgeFingerprint; curve: ProjectedCurve }[];
+  // `fp` for a body edge or corner (the by:"match" fingerprint to persist),
+  // `end` for a corner only (which end of that edge it is)
+  curves: { fp?: EdgeFingerprint; end?: 0 | 1; curve: ProjectedCurve }[];
   error?: string;
 }
+
+/** What a Project pick sends: a source as it is persisted, or a body corner as
+ *  the pick names it, an edge it ends and where the corner is. The sidecar
+ *  answers a corner with the edge's fingerprint and `end`, which is what the
+ *  sketch persists (ProjectedSource "vertex"); the position never is. */
+export type ProjectionRequest =
+  | ProjectedSource
+  | { kind: "vertex"; body: string; sel: Selector; point: [number, number, number] };
 
 /** One answer of the `query` op (sidecar builder.query_geometry): the entities a
  *  selector resolved to, each as a STORABLE by:"match" reference on its body.
@@ -93,9 +103,10 @@ export interface GeometryBackend {
    *  caller truncates). Sources are the persisted ProjectedSource shapes:
    *  pick-time edge/face sources use a by:"nearest" selector, refresh-time
    *  ones the stored by:"match" fingerprint selector, and silhouette sources
-   *  carry just the body id (the whole-body HLR outline needs no selector).
+   *  carry just the body id (the whole-body HLR outline needs no selector). A
+   *  body corner is asked for as an edge and a position (ProjectionRequest).
    *  Strict per-source resolution; whole-call transport failure returns []. */
-  projectGeometry(doc: CadDocument, plane: PlaneSpec, sources: ProjectedSource[]): Promise<ProjectionResult[]>;
+  projectGeometry(doc: CadDocument, plane: PlaneSpec, sources: ProjectionRequest[]): Promise<ProjectionResult[]>;
   /** System font family names for the text tool's font picker. */
   listFonts(): Promise<string[]>;
   /** Turn picks into storable references: each item `{kind, body, sel}` comes
@@ -1216,7 +1227,7 @@ export class Geometry implements GeometryBackend {
     return { faces: [], error: { message: msg.error?.message ?? "", ...(code ? { code } : {}) } };
   }
 
-  async projectGeometry(doc: CadDocument, plane: PlaneSpec, sources: ProjectedSource[]): Promise<ProjectionResult[]> {
+  async projectGeometry(doc: CadDocument, plane: PlaneSpec, sources: ProjectionRequest[]): Promise<ProjectionResult[]> {
     const msg = await this.call<{ results: ProjectionResult[] }>("projectGeometry", {
       document: doc,
       plane,

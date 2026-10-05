@@ -450,6 +450,102 @@ def test_cut_placed_by_a_lost_projection_says_so():
     assert errs["f6"].get("code") == "cutLostProjection", errs["f6"]
     assert "code" not in errs["f7"], errs["f7"]
     print(PASS, "a Cut placed by a lost projection says so; one beside it does not")
+def test_vertex_point_follows_its_corner():
+    """A projected body corner (the edge's by:"match" fingerprint + end, what
+    the pick site persists) follows the corner when the body changes, and is
+    quiet at steady state. The box is 40 x 30 centred at (20, 15): the front top
+    edge runs x 0..40 at y 0, z 10."""
+    prefix = {"parameters": {}, "features": _base_features()}
+    r = project_geometry(prefix, TOP, [
+        {"kind": "vertex", "body": "body1",
+         "sel": {"kind": "edge", "by": "nearest", "point": [20, 0, 10]},
+         "point": [40, 0, 10]}])["results"][0]
+    assert r["ok"], r
+    entry = r["curves"][0]
+    src = {"kind": "vertex", "body": "body1",
+           "sel": {"kind": "edge", "by": "match", "fp": entry["fp"]}, "end": entry["end"]}
+    # TOP's origin is (20, 15, 10): the corner (40, 0) is local (20, -15)
+    assert entry["curve"] == {"kind": "point", "x": 20.0, "y": -15.0}, entry
+    p = []
+    rebuild(_doc(entry["curve"], src), projections=p)
+    assert p == [], f"steady state must emit nothing, got {p}"
+    # widen to 60 (centre stays at x 20): the corner moves to x 50, local 30
+    p = []
+    _part, err, _bodies = rebuild(_doc(entry["curve"], src, w=60), projections=p)
+    assert not err, err
+    assert len(p) == 1 and p[0]["stale"] is False, p
+    assert p[0]["curve"] == {"kind": "point", "x": 30.0, "y": -15.0}, p[0]
+    # the body gone: stale once, last point kept
+    doc = _doc(entry["curve"], src)
+    doc["features"] = [f for f in doc["features"] if f["id"] != "f2"]
+    p = []
+    rebuild(doc, projections=p)
+    assert p == [{"sketch": "f3", "entity": "p1", "stale": True}], p
+    print(PASS, "projected corner follows a widened body, stale when the body goes")
+
+
+def test_sketch_point_follows_its_point():
+    """A projected sketch point (id + dimRefPoints index) follows the point when
+    its sketch changes, and goes stale when the point is deleted."""
+    def sk_doc(pts, cached):
+        return {"parameters": {}, "features": [
+            {"id": "f1", "type": "sketch", "plane": "XY", "entities": pts},
+            {"id": "f3", "type": "sketch", "plane": TOP, "entities": [
+                {"id": "q1", "type": "projected",
+                 "source": {"kind": "sketchPoint", "sketch": "f1", "entity": "l1", "pointIndex": 1},
+                 "curve": cached}]},
+        ]}
+    line = [{"id": "l1", "type": "line", "x1": 0, "y1": 0, "x2": 25, "y2": 20}]
+    here = {"kind": "point", "x": 5.0, "y": 5.0}  # (25, 20) less TOP's origin (20, 15)
+    p = []
+    rebuild(sk_doc(line, here), projections=p)
+    assert p == [], p
+    moved = [{**line[0], "x2": 30}]
+    p = []
+    rebuild(sk_doc(moved, here), projections=p)
+    assert p == [{"sketch": "f3", "entity": "q1", "curve": {"kind": "point", "x": 10.0, "y": 5.0},
+                  "stale": False}], p
+    p = []
+    rebuild(sk_doc([], here), projections=p)
+    assert p == [{"sketch": "f3", "entity": "q1", "stale": True}], p
+    print(PASS, "projected sketch point follows its point, stale when it is deleted")
+
+
+def test_smooth_link_keeps_its_flag_through_a_refresh():
+    """A link made since smooth projection (source.smooth) keeps marking its
+    refreshed polys smooth, including after a stretch as a CIRCLE (seen square
+    on, exact) when the source tilts back; a link made before it refreshes to
+    exactly the flagless poly it always did."""
+    def doc(src_plane, smooth, cached):
+        src = {"kind": "sketchCurve", "sketch": "f1", "entity": "c1"}
+        if smooth:
+            src["smooth"] = True
+        return {"parameters": {}, "features": [
+            {"id": "f1", "type": "sketch", "plane": src_plane,
+             "entities": [{"id": "c1", "type": "circle", "radius": 6, "x": 0, "y": 0}]},
+            {"id": "f3", "type": "sketch", "plane": "XY", "entities": [
+                {"id": "q1", "type": "projected", "source": src, "curve": cached}]},
+        ]}
+    tilted = {"origin": [0, 0, 0], "xdir": [1, 0, 0], "normal": [0, 0.5, 0.8660254037844386]}
+    for smooth in (True, False):
+        p = []
+        rebuild(doc(tilted, smooth, dict(WRONG)), projections=p)
+        (u,) = p
+        assert u["curve"]["kind"] == "poly", u
+        assert u["curve"].get("smooth") is (True if smooth else None), u["curve"].keys()
+        p2 = []
+        rebuild(doc(tilted, smooth, u["curve"]), projections=p2)
+        assert p2 == [], f"steady state must emit nothing, got {p2}"
+        # square on: an exact circle; then tilted again: smooth again (or not)
+        p3 = []
+        rebuild(doc("XY", smooth, u["curve"]), projections=p3)
+        (c,) = p3
+        assert c["curve"] == {"kind": "circle", "x": 0.0, "y": 0.0, "r": 6.0}, c
+        p4 = []
+        rebuild(doc(tilted, smooth, c["curve"]), projections=p4)
+        (back,) = p4
+        assert back["curve"] == u["curve"], "the flag (or its absence) survives the circle"
+    print(PASS, "smooth flag rides the link through refreshes; old links stay faceted")
 
 
 def test_resume_cap_ram_tier():
@@ -586,6 +682,9 @@ def main():
     test_plate_edge_follows_a_shrink_past_a_joined_cylinder()
     test_refresh_never_turns_a_line_round()
     test_cut_placed_by_a_lost_projection_says_so()
+    test_vertex_point_follows_its_corner()
+    test_sketch_point_follows_its_point()
+    test_smooth_link_keeps_its_flag_through_a_refresh()
     test_resume_cap_ram_tier()
     test_resume_cap_disk_tier()
     test_quiet_proof_deep_resume()

@@ -334,6 +334,31 @@ This file starts on 2026-08-03. For anything before that, see the
   sketch is open, the panel lists that sketch's dimensions as you work,
   including the ones you have just added.
 
+- **Project a point.** The Project tool in a sketch has a Points filter: click
+  a corner of a body, or a point of an earlier sketch (a sketch point, an end
+  of a line or an arc, a centre, a corner of a rectangle or a polygon), and it
+  comes in as a fixed point. A sketch point clicked with the Sketch curves
+  filter comes in the same way. It snaps, a line drawn from it is joined to
+  it, Coincident joins a point to it and Dimension measures from it. Like a
+  projected edge, it follows when the body or that sketch changes, and Break
+  Link turns it into an ordinary sketch point. An older beta cannot show a
+  projected point, so it warns that a file holding one was made by a newer
+  version.
+
+- **Projected curves come in smooth.** A circle tilted to the sketch, an
+  ellipse or a spline edge used to come in as a chain of short straight
+  pieces, so extruding it made a side of over a hundred flat faces and an area
+  slightly short of the real one. What you project now builds as one smooth
+  curve: a projected ellipse extrudes with a single curved side, and its area
+  is within a hundredth of a percent of the true one. Edges projected before
+  this keep building exactly as they did, so a model you already have does not
+  change; project the edge again to make it smooth. An edge with a sharp corner
+  partway along stays in straight pieces, so the corner is kept. So does a
+  curve a line was trimmed or extended to, so the areas split exactly where
+  the sketch shows them. A body's silhouette builds smooth when you pick its
+  areas; used as a whole sketch, with no area picked, it keeps its straight
+  pieces.
+
 - **Insert > Part from File.** Copies the visible bodies of another SindriCAD
   document into the one you have open, so a screw, standoff or insert you
   modelled once can be checked for fit in every project that uses it. Several

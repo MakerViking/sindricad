@@ -59,6 +59,7 @@ export function entityInBox(e: ResolvedEntity, b: SelBox): boolean {
     // deliberately left out rather than guessed at from a bounding box that
     // would grab it from across the sketch.
     if (e.type === "point") return inside(e, b);
+    if (e.type === "projected" && e.curve.kind === "point") return inside(e.curve, b);
     return false;
   }
   if (b.mode === "window") {

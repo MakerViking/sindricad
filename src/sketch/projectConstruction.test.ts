@@ -41,7 +41,7 @@ function projecting(constructionMode: boolean) {
     projectPanel: { filter: "sketchCurves" },
     overlay: { committedCurveAt: () => ({ sketchId: "f1", entityId: "e1" }) },
     viewport: { projectToScreen: () => ({ x: 0, y: 0 }) },
-    committedSource: () => ({}),
+    committedSource: () => ({ entity: { type: "line", id: "e1", x1: 0, y1: 0, x2: 10, y2: 0 } }),
     store: {
       projectGeometry: async () => [
         { ok: true, curves: [{ curve: { kind: "line", points: [[0, 0], [10, 0]] } }] },

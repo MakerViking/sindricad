@@ -730,7 +730,7 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
     return sk.entities.some((e) =>
       !e.construction &&
       (e.type === "line" || e.type === "arc" || e.type === "spline" || e.type === "polygon" || e.type === "slot" ||
-        (e.type === "projected" && e.curve.kind !== "circle")));
+        (e.type === "projected" && e.curve.kind !== "circle" && e.curve.kind !== "point")));
   }
 
   // How many points of a profile's boundary the helix guesses probe, at most.

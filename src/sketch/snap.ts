@@ -281,6 +281,8 @@ export function candidatesFromEntities(
           const isEnd = i === 0 || i === pts.length - 1;
           add(x, y, "endpoint", isEnd ? 100 : 60);
         });
+      } else if (cv.kind === "point") {
+        add(cv.x, cv.y, "endpoint", 110); // as strong as a placed point
       }
     }
   }

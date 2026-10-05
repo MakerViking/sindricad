@@ -569,6 +569,24 @@ describe("pickVertex", () => {
     expect(new Picker().pickVertex(s.x, s.y, RECT, faceCam(), viewOf(back), 8), "precondition: b's corner alone is picked").not.toBeNull();
     expect(new Picker().pickVertex(s.x, s.y, RECT, faceCam(), viewOf(squareBody("a", 400, 0), back), 8)).toBeNull();
   });
+
+  it("takes the corner in front of two on one pixel, not the nearer by a fraction", () => {
+    // A prism seen square on, as a sketch on its top face sees it: its bottom
+    // corner (20 mm further away) lands on its top corner's pixel. Here it is
+    // a fifth of a pixel nearer the cursor, which used to win. The cursor is
+    // outside both squares, so nothing hides either corner.
+    const front = squareBody("a", 200, 0);
+    const back = squareBody("b", (200.3 * (FACE_DIST + 20)) / FACE_DIST, -20);
+    const top = front.edges.refs.find((e) => e.id === "aT")!.points[1]!; // top-right
+    const below = onScreen(back.edges.refs.find((e) => e.id === "bT")!.points[1]!);
+    const s = onScreen(top);
+    expect(Math.hypot(below.x - s.x, below.y - s.y), "precondition: the two corners share a pixel").toBeLessThan(0.5);
+    for (const view of [viewOf(front, back), viewOf(back, front)]) {
+      const hit = new Picker().pickVertex(s.x + 3, s.y - 3, RECT, faceCam(), view, 8);
+      expect(hit?.point.z, "the hidden corner below was taken").toBe(0);
+      expect(hit!.edges.map((e) => e.id).sort()).toEqual(["aR", "aT"]);
+    }
+  });
 });
 
 describe("occluderAt", () => {

@@ -5,15 +5,18 @@
 
 import { setText } from "../i18n";
 
-export type ProjectFilter = "edges" | "sketchCurves" | "silhouette";
+export type ProjectFilter = "edges" | "sketchCurves" | "silhouette" | "points";
 
 /** The filters the tool offers (labels are i18n keys), exported so a test can
  *  assert the Project tool still reaches solid edges and an earlier sketch's
- *  curves. */
+ *  curves. `points` takes a body corner or a point of an earlier sketch, as a
+ *  fixed point (decision A7): its own chip, so a click near the end of an edge
+ *  in "Edges & faces" still projects the edge it always did. */
 export const PROJECT_FILTERS: { key: ProjectFilter; label: string }[] = [
   { key: "edges", label: "sketch.project.edges" },
   { key: "sketchCurves", label: "sketch.project.sketchCurves" },
   { key: "silhouette", label: "sketch.project.silhouette" },
+  { key: "points", label: "sketch.project.points" },
 ];
 
 export class ProjectPanel {

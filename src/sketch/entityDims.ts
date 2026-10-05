@@ -312,7 +312,7 @@ export function dimensionSegments(ents: ResolvedEntity[]): [V, V][] {
  *  SketchMode's pruneConstraints and the constraint click flows share this rule. */
 export const curveKind = (e: ResolvedEntity): "line" | "circle" | "arc" | undefined => {
   if (e.type === "line" || e.type === "circle" || e.type === "arc") return e.type;
-  if (e.type === "projected" && e.curve.kind !== "poly") return e.curve.kind;
+  if (e.type === "projected" && e.curve.kind !== "poly" && e.curve.kind !== "point") return e.curve.kind;
   return undefined;
 };
 
@@ -742,10 +742,11 @@ export function dimRefPoints(e: ResolvedEntity): { p: number; pos: V }[] {
   if (e.type === "projected") {
     // fixed reference points user dims/constraints can target — same indices
     // the solver registers (sketchSolve projected branch): line/arc endpoints
-    // 0/1, arc center 2, circle center 0, poly first/last samples 0/1
+    // 0/1, arc center 2, circle center 0, a projected point 0, poly first/last
+    // samples 0/1
     const cv = e.curve;
     if (cv.kind === "line") return [{ p: 0, pos: v(cv.x1, cv.y1) }, { p: 1, pos: v(cv.x2, cv.y2) }];
-    if (cv.kind === "circle") return [{ p: 0, pos: v(cv.x, cv.y) }];
+    if (cv.kind === "circle" || cv.kind === "point") return [{ p: 0, pos: v(cv.x, cv.y) }];
     if (cv.kind === "arc") {
       const out = [{ p: 0, pos: v(cv.x1, cv.y1) }, { p: 1, pos: v(cv.x2, cv.y2) }];
       const cc = asRound(e); // the one circumcenter-for-projected-arc rule
