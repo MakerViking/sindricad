@@ -336,6 +336,61 @@ def test_a_twenty_turn_thread_cuts_within_the_heartbeat():
           f"(heartbeat {STALL_TIMEOUT:.0f} s), removed {removed:.4f} of {want:.4f}")
 
 
+def _slab_volume(body, z0, z1):
+    """How much of `body` lies between heights z0 and z1."""
+    from build123d import Box, Pos
+
+    got = body.intersect(Pos(0, 0, (z0 + z1) / 2) * Box(20, 20, z1 - z0))
+    return sum(s.volume for s in got) if isinstance(got, list) else got.volume
+
+
+def test_a_thread_cut_from_the_face_runs_out_of_both_ends():
+    """A thread drawn the obvious way: the profile centred on the block's own
+    face, the circle in a sketch on that face, turns = depth / pitch, and the
+    feature exactly as the Sweep starter commits it (a Cut runs into the
+    material, so it is flipped against the face's outward normal). From the top
+    face and from the bottom one, so the run-out is checked running down the
+    axis and up it.
+
+    A helix Cut runs one turn past both ends, so the groove runs fully out of
+    both faces: every pitch-tall slab of the block, the end ones included, has
+    lost exactly one pitch of thread. RED without that: the end slabs each lost
+    3.7158 of 3.9651 mm3, a 0.249 mm3 ledge in the screw's path at the entry and
+    another at the far side, and the whole thread came to -1.26%."""
+    height = 10.0
+    turns = height / M6_PITCH
+    bored = (12 * 12 - math.pi * M6_MINOR ** 2) * height
+    want = _analytic_thread(height)
+    per_pitch = _analytic_thread(M6_PITCH)
+    ring = (12 * 12 - math.pi * M6_MINOR ** 2) * M6_PITCH
+    for face_z, normal in ((height, 1), (0.0, -1)):
+        doc = _threaded_block_doc(height, turns, z0=face_z)
+        for f in doc["features"]:
+            if f["id"] == "hx":
+                f["plane"] = {"origin": [0, 0, face_z], "xdir": [1, 0, 0],
+                              "normal": [0, 0, normal]}
+            if f["id"] == "sw":
+                f.update(flip=True, joinTouchingOnly=True, hiddenBodies=[])
+        part, err, bodies = rebuild(doc)
+        assert not err, err
+        assert len(bodies) == 1, f"expected the one threaded block, got {len(bodies)} bodies"
+        body = bodies[0]["shape"]
+        assert body.is_valid and len(body.solids()) == 1, (
+            f"the block threaded from z={face_z} is not one valid solid")
+        rel = (bored - body.volume) / want - 1
+        assert abs(rel) < 1e-4, (
+            f"from z={face_z} the thread removed {bored - body.volume:.4f} mm3, the "
+            f"analytic M6x1 thread is {want:.4f} mm3 ({rel:+.2%})")
+        for z0 in (0.0, height - M6_PITCH):
+            lost = ring - _slab_volume(body, z0, z0 + M6_PITCH)
+            assert abs(lost / per_pitch - 1) < 1e-4, (
+                f"from z={face_z}, the slab at z {z0:g}..{z0 + M6_PITCH:g} lost "
+                f"{lost:.4f} mm3 to the thread, a full pitch is {per_pitch:.4f}: "
+                f"a ledge of {per_pitch - lost:.4f} mm3 is left at that end")
+        print(f"{PASS} a thread cut from the face at z={face_z:g} runs out of both "
+              f"ends: removed {bored - body.volume:.4f} of {want:.4f} mm3 ({rel:+.1e})")
+
+
 def _coil_doc(turns, **extra):
     """The thread profile swept on its own into a New Body: a coil."""
     return {"parameters": {}, "features": [
@@ -431,6 +486,45 @@ def test_a_helix_cut_that_runs_away_from_the_part_points_at_flip():
     print(f"{PASS} a helix cut that misses points at Flip direction")
 
 
+def test_the_run_out_does_not_hide_a_helix_that_runs_away():
+    """A Cut runs a turn past each end, so the turn added before a profile drawn
+    just outside the face reaches back into the part. Whether the Cut misses is
+    still decided on the turns as typed: running away from the face, it says to
+    tick Flip direction and cuts nothing. Running into it, it threads as before.
+
+    RED with the miss decided on the extended sweep: drawn 0.5, 0.7 and 1.0 mm
+    above the face and unflipped, the Cut took 1.98, 1.19 and 0.25 mm3 off the
+    top face and said nothing (all three said to flip before the run-out)."""
+    height = 10.0
+    bored = (12 * 12 - math.pi * M6_MINOR ** 2) * height
+    for gap in (0.5, 0.7, 1.0):
+        for flip in (False, True):
+            doc = _threaded_block_doc(height, height / M6_PITCH, z0=height + gap)
+            for f in doc["features"]:
+                if f["id"] == "hx":
+                    f["plane"] = {"origin": [0, 0, height], "xdir": [1, 0, 0],
+                                  "normal": [0, 0, 1]}
+                if f["id"] == "sw":
+                    f.update(joinTouchingOnly=True, hiddenBodies=[])
+                    if flip:
+                        f["flip"] = True
+            part, err, bodies = rebuild(doc)
+            removed = bored - sum(b["shape"].volume for b in bodies)
+            if flip:
+                assert not err and removed > 35, (
+                    f"drawn {gap} mm above the face and running into it, the thread "
+                    f"removed {removed:.4f} mm3 with errors {err}")
+                continue
+            sweep_err = [e for e in err if e.get("feature_id") == "sw"]
+            assert sweep_err and "Flip direction" in sweep_err[0]["message"], (
+                f"drawn {gap} mm above the face and running away from it, the Cut "
+                f"removed {removed:.4f} mm3 and said {err}")
+            assert abs(removed) < 1e-6, (
+                f"a Cut that says it removed nothing took {removed:.4f} mm3 off")
+    print(f"{PASS} a helix running away from a face it is drawn just outside of "
+          "still says to flip it")
+
+
 def test_a_helix_whose_circle_is_gone_says_so():
     """The circle was deleted from the sketch after the sweep was made."""
     doc = _coil_doc(3)
@@ -448,10 +542,12 @@ if __name__ == "__main__":
     test_a_sweep_that_builds_nothing_refuses_loudly()
     test_a_helix_cuts_an_m6_thread_to_its_analytic_volume()
     test_a_twenty_turn_thread_cuts_within_the_heartbeat()
+    test_a_thread_cut_from_the_face_runs_out_of_both_ends()
     test_a_helix_carries_the_profile_without_rolling_it()
     test_flip_runs_the_helix_the_other_way_along_its_axis()
     test_a_helix_around_a_projected_circle()
     test_overlapping_turns_refuse_instead_of_cutting_garbage()
     test_a_helix_cut_that_runs_away_from_the_part_points_at_flip()
+    test_the_run_out_does_not_hide_a_helix_that_runs_away()
     test_a_helix_whose_circle_is_gone_says_so()
     print("\nall sweep-path tests passed")

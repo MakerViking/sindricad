@@ -6970,6 +6970,22 @@ _HELIX_MIN_TAIL = 1e-3
 # nothing new, since every turn is the same screw motion as the first.
 _HELIX_CHECK_TURNS = 1.25
 
+# How far a helix Cut runs past each end of the turns asked for, in turns. A
+# thread that starts where its profile is drawn starts as a partial groove, so
+# a profile drawn on a part's top face left a ledge across the entry, and with
+# turns = depth / pitch a second one at the far side. MEASURED on a 10 mm M6x1
+# block: 0.249 mm3 at each end, in the screw's path, -1.26% of the thread. One
+# turn either way is the least that runs the groove fully out of both faces.
+_HELIX_CUT_RUN_OUT = 1
+
+# What a helix Cut that misses says. A helix that misses is almost always one
+# running the wrong way along its axis: out of the part's face instead of into
+# it. There is nothing to drag; the fix is the Flip direction toggle.
+_HELIX_CUT_MISSED = (
+    "Cut removed nothing: the helix does not reach any body. It may run "
+    "away from the part; tick Flip direction in the Inspector."
+)
+
 
 def _helix_circle(f, ctx):
     """The circle a helix sweep winds around, as (centre, axis, radius) in world
@@ -7061,13 +7077,25 @@ def _sweep_helix(prof, f, ctx):
     to a solid OCCT still calls valid at the right-looking volume, and a cut
     with it left a body of NEGATIVE volume that the Cut guard counted as
     material removed. The self-interference check on `_HELIX_CHECK_TURNS` turns
-    is what catches both (about 0.4 s on the M6 profile)."""
+    is what catches both (about 0.4 s on the M6 profile).
+
+    A Cut runs `_HELIX_CUT_RUN_OUT` turns past both ends, so a thread cut from
+    the face it is drawn on has no ledge at the entry or the far side. The
+    profile is moved back rather than the helix started early: one whole turn
+    of the screw motion is a plain move of one pitch along the axis, and the
+    helix has to start beside the profile (see `_helix_path`). Whether the Cut
+    misses the part is still decided on the turns as typed (`_helix_reaches`)."""
     from OCP.BRepAlgoAPI import BRepAlgoAPI_Check
 
     pitch, turns = ctx.val(f["pitch"]), ctx.val(f["turns"])
     centre, axis, radius = _helix_circle(f, ctx)
     _require_positive("Sweep", pitch=pitch, turns=turns, **{"helix radius": radius})
     lefthand = bool(f.get("leftHand"))
+    typed = None
+    if f.get("operation") == "cut":
+        typed = (prof, turns)
+        prof = prof.translate(axis * (-_HELIX_CUT_RUN_OUT * pitch))
+        turns += 2 * _HELIX_CUT_RUN_OUT
     start = prof.center()
 
     def swept(n):
@@ -7095,7 +7123,65 @@ def _sweep_helix(prof, f, ctx):
             "axis. Make the pitch larger than the profile is tall along the axis, or "
             "move the profile off the axis."
         )
+    if typed is not None:
+        # The Cut guard's threshold, for the sweep as typed: every turn of a
+        # screw motion sweeps the same volume.
+        eps = _noop_eps((_try_vol(solid) or 0.0) * typed[1] / turns)
+        if not _helix_reaches(*typed, centre, axis, pitch, ctx.bodies, eps):
+            raise ValueError(_HELIX_CUT_MISSED)
     return solid
+
+
+def _helix_reaches(prof, turns, centre, axis, pitch, bodies, eps):
+    """Would `prof`, swept `turns` turns along the helix from where it is drawn
+    (no run-out), cut at least `eps` out of the bodies?
+
+    Asked so a Cut's run-out cannot hide a helix that runs the wrong way. The
+    turn added before the profile reaches back towards the part, so a profile
+    drawn less than about a pitch outside the face, running away from it, took
+    a sliver off the face and said nothing, where it used to say to tick Flip
+    direction. MEASURED, M6x1 drawn 0.7 mm above a block, unflipped: 1.19 mm3
+    off the top and no message.
+
+    Answered on the cylinder about the axis that holds every turn as typed, not
+    on a second sweep: the screw motion keeps each point of the profile at its
+    distance from the axis and moves it `pitch` along it per turn, so a body
+    that cylinder cuts nothing from is a body the sweep misses. It can only say
+    yes when unsure, so it never refuses a Cut the guard let through before the
+    run-out. Hidden bodies count: a sweep that reaches only those is the Cut
+    guard's own case (`_cut_only_hidden`)."""
+    bb = prof.bounding_box()
+    along, out = [], []
+    # The box holds the profile, and its corners are the furthest it reaches
+    # both along the axis and out from it.
+    for x in (bb.min.X, bb.max.X):
+        for y in (bb.min.Y, bb.max.Y):
+            for z in (bb.min.Z, bb.max.Z):
+                d = Vector(x, y, z) - centre
+                a = d.dot(axis)
+                along.append(a)
+                out.append((d - axis * a).length)
+    lo, hi = min(along), max(along) + turns * pitch
+    try:
+        tube = Solid.make_cylinder(max(out), hi - lo, Plane(centre + axis * lo, z_dir=axis))
+    except Exception:
+        return True
+    removed = 0.0
+    for b in bodies:
+        progress_tick()
+        if b.get("shape") is None or not _bbox_overlap(b["shape"], tube):
+            continue
+        try:
+            before = _try_vol(b["shape"])
+            after = _try_vol(_serial_bool(_as_compound(b["shape"]), tube, "cut"))
+        except Exception:
+            return True
+        if before is None or after is None:
+            return True
+        removed += max(0.0, before - after)
+        if removed >= eps:
+            return True
+    return False
 
 
 def _sweep_path(f, ctx):
@@ -7136,13 +7222,7 @@ def _handle_sweep(f, ctx):
     cut_noop_msg = None
     if f.get("helixCircle"):
         solid = _sweep_helix(_clean_section(prof), f, ctx)
-        # A helix that misses is almost always one running the wrong way along
-        # its axis: out of the part's face instead of into it. There is nothing
-        # to drag; the fix is the Flip direction toggle.
-        cut_noop_msg = (
-            "Cut removed nothing: the helix does not reach any body. It may run "
-            "away from the part; tick Flip direction in the Inspector."
-        )
+        cut_noop_msg = _HELIX_CUT_MISSED
     else:
         path = _sweep_path(f, ctx)
         solid = _sweep_solid(_clean_section(prof), path)

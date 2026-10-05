@@ -294,17 +294,19 @@ This file starts on 2026-08-03. For anything before that, see the
   part, so a circle drawn on a top face still cuts down into it. A coil made as
   a New Body or a Join grows away from the part instead. Pitch, Turns,
   Left-hand and Flip direction are in the Inspector afterwards, and a Cut that
-  misses the part says to flip it. For a thread a screw can enter cleanly, draw
-  the profile a pitch outside the part and let the turns run a pitch past the
-  far side too (12 turns for a 10 mm deep M6 hole): a thread that starts on the
-  face leaves a thin ledge where it begins. Drawn that way, an M6x1 thread cut
-  into a block removes the textbook thread volume to within ten parts in a
-  million, and a 20-turn thread took about a second and a half to build on my
-  machine. A profile taller than the pitch, whose turns would overlap, is
-  refused with a message instead of leaving a broken body. If the path sketch
-  also has lines or arcs, Sweep asks whether to follow them or wind a helix.
-  Selecting the hole's edge itself before Sweep still sweeps along that edge,
-  as before; it does not wind a helix.
+  misses the part says to flip it. A Cut runs one turn further than you type at
+  each end, so a thread drawn on a part's face runs cleanly out of that face and
+  out of the far side, with no ledge where a screw has to enter: 10 turns from
+  the top face thread a 10 mm deep M6 hole all the way through. In a blind hole
+  that also means the thread goes one turn deeper than you typed, so type one
+  turn fewer there. An M6x1 thread cut into a block that way removes the
+  textbook thread volume to within ten parts in a million, and a 20-turn thread
+  took about a second and a half to build on my machine. A profile taller than
+  the pitch, whose turns would overlap, is refused with a message instead of
+  leaving a broken body. If the path sketch also has lines or arcs, Sweep asks
+  whether to follow them or wind a helix. Selecting the hole's edge itself
+  before Sweep still sweeps along that edge, as before; it does not wind a
+  helix.
 
 - **An Extrude panel, so every extrude value can be typed while you make it.**
   Extrude now opens a panel on the right with Start (on the sketch, or an offset

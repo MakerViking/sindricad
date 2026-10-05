@@ -675,9 +675,11 @@ export type Feature =
   // circle's axis instead of following the sketch's curves. The thread starts
   // where the profile is drawn and climbs `pitch` mm per turn for `turns` turns
   // (the driving value; fractional is fine) along the sketch's normal, or
-  // against it with `flip`. Right-handed unless `leftHand`. Both flags are
-  // omitted when false, and every field here is absent on a sweep that is not a
-  // helix, so older sweeps rebuild exactly as they did.
+  // against it with `flip`. Right-handed unless `leftHand`. A Cut also runs one
+  // turn past both ends (the sidecar adds them; `turns` stays what was typed),
+  // so a thread cut from the face its profile sits on has no ledge at either
+  // end. Both flags are omitted when false, and every field here is absent on a
+  // sweep that is not a helix, so older sweeps rebuild exactly as they did.
   | {
       id: string;
       type: "sweep";
