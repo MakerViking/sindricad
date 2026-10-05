@@ -180,6 +180,18 @@ def _cancelled_result():
     tell 'you stopped it' apart from 'it broke'."""
     return {"cancelled": True,
             "error": {"message": "cancelled", "code": errors_mod.CANCELLED}}
+
+
+def _stopped_by_other_result():
+    """The result shape for an op whose worker was killed for ANOTHER op's
+    cancel, stall reap or timeout (another connection's: each serializes its
+    own). Nothing went wrong with this op, so it neither blames the kernel nor
+    poses as a cancel the user asked for: it is not `cancelled`, so the app
+    shows it, and the same op run again will build."""
+    return {"error": {"message": "stopped because another operation was cancelled, try again",
+                      "code": errors_mod.STOPPED_BY_OTHER}}
+
+
 # Rebuilds are supervised by PROGRESS, not wall clock: the worker bumps a shared
 # heartbeat once per feature (and per tessellated body), and the supervisor kills
 # only when no progress is made for STALL_TIMEOUT — a legitimately long resumed
@@ -2360,8 +2372,15 @@ def _on_broken(gen):
     This is the split the whole change exists for: a worker that never started
     is a broken installation and must say so, while a worker that died mid-op is
     the pre-existing per-operation crash and keeps its message (and its feature
-    naming, via _crash_feature)."""
+    naming, via _crash_feature).
+
+    A generation _kill_pool reaped did not die at all: a cancel, stall reap or
+    timeout of ANOTHER op killed it, and broke this op's future with it. That
+    says so instead of "crashed", which sent the user after a fault in a model
+    that was fine. The kill already brought up the fresh pool."""
     global _pool
+    if gen in _reaped_gens:
+        return _stopped_by_other_result()
     if _worker_came_up(gen):
         _pool = _new_pool()
         return {"error": {"message": "the geometry kernel crashed on this operation"}}
@@ -2411,7 +2430,16 @@ def _on_worker_died(gen, fn, line):
 
 def _kill_pool(pool):
     """Forcibly terminate a pool's worker process(es) — used to stop a worker that's
-    spinning on a runaway OCCT call, since shutdown() alone would wait for it."""
+    spinning on a runaway OCCT call, since shutdown() alone would wait for it.
+
+    Every op still queued on the pool is failed with BrokenProcessPool, which
+    _on_broken answers as stopped by another op. Not cancelled: with
+    `cancel_futures=True` an op waiting past the two slots of the executor's
+    call queue (the third queued behind a running op, or sooner while a cold
+    pool's worker is still starting) came back CANCELLED instead, and that
+    escaped _run/_run_stall as asyncio's CancelledError. Its connection got no
+    reply at all, and a rebuild waiting on one never finished. Killed, the pool
+    fails every pending op itself."""
     _reaped_gens.add(_pool_gen)  # a deliberate kill is not a failed bring-up
     try:
         for p in list(getattr(pool, "_processes", {}).values()):
@@ -2421,7 +2449,7 @@ def _kill_pool(pool):
                 pass
     finally:
         try:
-            pool.shutdown(wait=False, cancel_futures=True)
+            pool.shutdown(wait=False, cancel_futures=False)
         except Exception:
             pass
 
@@ -2680,10 +2708,13 @@ async def _run_stall(loop, fn, *args, stall=STALL_TIMEOUT, on_progress=None):
                 f"WORKER DIED while running {getattr(fn, '__name__', fn)!r} "
                 f"(feature/phase index {idx}); recycling the worker pool"))
             # feature_index only means anything for a real op crash; on an
-            # environment failure there is no culprit feature to name, and
-            # _crash_feature would rewrite the message into "your shape is
-            # degenerate" — the exact misattribution this change removes.
-            if res.get("error", {}).get("message") != _INIT_FAIL_MSG:
+            # environment failure there is no culprit feature to name, and when
+            # another op's kill broke this one the index is not this op's fault
+            # (nor, if this op was still queued, even its feature). _crash_feature
+            # would rewrite either into "your shape is degenerate", the exact
+            # misattribution this change removes.
+            if res["error"].get("code") not in (errors_mod.ENGINE_UNAVAILABLE,
+                                                errors_mod.STOPPED_BY_OTHER):
                 res["error"]["feature_index"] = idx
             return res
 

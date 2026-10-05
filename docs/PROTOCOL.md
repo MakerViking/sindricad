@@ -64,6 +64,7 @@ and on `ResolveDiag` entries.
 | `timedOut` | a hard wall-clock job timeout |
 | `stalled` | no worker heartbeat; the kernel was restarted |
 | `kernelCrashed` | the geometry worker died |
+| `stoppedByOther` | another op's cancel, stall or timeout killed the worker this op was running or queued on (another connection's: each serializes its own); nothing is wrong with this op, so it is not `cancelled` and names no feature, and running it again builds |
 | `engineUnavailable` | the worker pool could not be started |
 | `replyTooLarge` / `bodyTooLarge` | the whole reply, or one body, exceeded the frame cap |
 | `unknownOp` | no such op — this is the capability-probe answer |
@@ -226,6 +227,9 @@ Reply `result` is one of:
   progress): the sidecar kills and respawns the geometry worker and returns
   `{ "error": { "message": "one operation stalled for over N s - the geometry kernel was restarted; progress up to the last checkpoint is kept" } }`.
 - **Crashed worker**: `{ "error": { "message": "the geometry kernel crashed on this operation" } }`.
+- **Stopped by another operation** - the worker was killed for another connection's
+  cancel, stall or timeout while this op ran or waited behind it:
+  `{ "error": { "message": "stopped because another operation was cancelled, try again", "code": "stoppedByOther" } }`.
 
 #### Per-body payload (protocol v2)
 

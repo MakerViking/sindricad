@@ -325,6 +325,7 @@
       "splitSeparated": "Nothing solid was cut through on {body}: the plane only separated the parts on each side of it.",
       "splitSeparatedKept": "Nothing solid was cut through on {body}: I kept the parts on the side you chose and removed the ones on the other side.",
       "stalled": "the geometry engine stopped responding",
+      "stoppedByOther": "stopped because another operation was cancelled, try again",
       "timedOut": "operation timed out — geometry too complex or degenerate",
       "tooLarge": "This model is too large for the geometry engine: {size} MiB, and the limit is {limit} MiB. Remove or simplify the imported body, then try again.",
       "tooLargeRefused": "That model is too large for the geometry engine to accept. Remove or simplify the imported body, then try again.",

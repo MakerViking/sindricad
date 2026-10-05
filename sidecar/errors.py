@@ -32,6 +32,7 @@ CANCELLED = "cancelled"                     # the user pressed Cancel
 TIMED_OUT = "timedOut"                      # a hard wall-clock job timeout
 STALLED = "stalled"                         # no worker heartbeat; the pool was restarted
 KERNEL_CRASHED = "kernelCrashed"            # the geometry worker died
+STOPPED_BY_OTHER = "stoppedByOther"         # another op's cancel, stall or timeout killed the worker this op was on
 ENGINE_UNAVAILABLE = "engineUnavailable"    # the worker pool could not be started
 REPLY_TOO_LARGE = "replyTooLarge"           # the whole reply exceeded the frame cap
 BODY_TOO_LARGE = "bodyTooLarge"             # one body exceeded the frame cap
@@ -89,7 +90,7 @@ JOIN_PIECES_APART = "joinPiecesApart"  # `count` pieces of a `joinTouchingOnly` 
 
 ALL = frozenset({
     AMBIGUOUS_REFERENCE, REFERENCE_NOT_FOUND, CANCELLED, TIMED_OUT, STALLED,
-    KERNEL_CRASHED, ENGINE_UNAVAILABLE, REPLY_TOO_LARGE, BODY_TOO_LARGE,
+    KERNEL_CRASHED, STOPPED_BY_OTHER, ENGINE_UNAVAILABLE, REPLY_TOO_LARGE, BODY_TOO_LARGE,
     UNKNOWN_OP, BAD_REQUEST, EXPECT_FAILED, BUDGET_EXHAUSTED, MATCH_IMPLAUSIBLE,
     PLANE_TILTED, SEALED_VOID, CLEAN_UP_FITTED, FONT_MISSING_GLYPHS,
     FONT_UNUSABLE, SPLIT_MISSED, SPLIT_ON_FACE, SPLIT_DAMAGED, SPLIT_MISSED_ALL,

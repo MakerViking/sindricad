@@ -26,9 +26,9 @@
 // Sketch. `textFailure` hands the reason to whoever can show it, and
 // `textPlaceholder` gives the text a frame in its place, so there is something
 // to see, click, drag and double-click to fix. A failure that carries no verdict
-// on the text itself (the connection dropped, the engine was down) is asked
-// again after RETRY_MS; any other is kept for that exact text, and changing the
-// text or the font asks again.
+// on the text itself (the connection dropped, the engine was down, another
+// operation's cancel stopped it) is asked again after RETRY_MS; any other is kept
+// for that exact text, and changing the text or the font asks again.
 
 import type { GeometryBackend, TextFace } from "../geometry/client";
 import type { GeomErrorCode } from "../types";
@@ -201,9 +201,10 @@ export function fetchFonts(): Promise<string[]> {
   return backend ? backend.geom.listFonts() : Promise.resolve([]);
 }
 
-/** A failure that says nothing about the text: the request never got an answer. */
+/** A failure that says nothing about the text: the request never got an answer,
+ *  or another operation's cancel, stall or timeout stopped it on its way. */
 function noVerdict(code: GeomErrorCode | undefined): boolean {
-  return code === undefined || code === "engineUnavailable" || code === "cancelled";
+  return code === undefined || code === "engineUnavailable" || code === "cancelled" || code === "stoppedByOther";
 }
 
 /** Is this failure about the text itself (the font, the string), rather than the

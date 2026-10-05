@@ -609,6 +609,47 @@ def test_the_death_line_can_never_cost_the_recycle():
     print(f"{PASS} the line survives a failed rebuild, and a failed print cannot skip one")
 
 
+def _killed_for_another_op(hb):
+    """Publishes feature index 2, then its worker is killed for ANOTHER op's
+    cancel, stall reap or timeout: _kill_pool marks the generation reaped (it is
+    stubbed here, so the job does that part itself) and this future breaks."""
+    from concurrent.futures.process import BrokenProcessPool
+
+    import server
+    server._HB_IDX.value = 2
+    hb.value += 1
+    server._reaped_gens.add(server._pool_gen)
+    raise BrokenProcessPool("A process in the process pool was terminated abruptly")
+
+
+def test_a_worker_killed_for_another_op_blames_no_feature():
+    """The heartbeat index is the RUNNING job's, and when another op's kill broke
+    this one it is not this op's feature (if this op was still queued, it is not
+    even its document's). Attached anyway, _crash_feature turned it into "<that
+    feature> crashed the geometry kernel, this shape is degenerate", on a model
+    that was fine, and chipped that feature red. The reply says it was stopped
+    by another op instead, names no feature, and builds no second pool: the kill
+    already brought one up."""
+    import copy
+
+    import server
+
+    saved = set(server._reaped_gens)
+    try:
+        res, _ = _drive_run_stall(_killed_for_another_op, stall=5.0, warm=_came_up(),
+                                  stdout=_utf8_out())
+    finally:
+        server._reaped_gens = saved
+    err = (res or {}).get("error") or {}
+    assert err.get("code") == "stoppedByOther", res
+    assert "feature_index" not in err, f"another op's index was pinned on this one: {res}"
+    doc = {"features": [{"id": f"f{i}", "type": "extrude"} for i in range(4)]}
+    named = server._crash_feature(copy.deepcopy(res), doc)["error"]
+    assert "feature_id" not in named and named["message"] == err["message"], named
+    assert _RECYCLES == [], f"a pool the kill already replaced was replaced again: {_RECYCLES}"
+    print(f"{PASS} a worker killed for another op names no feature: {err['message']}")
+
+
 def test_every_path_that_meets_a_dead_worker_logs_it():
     """_run (fonts, text, geometry migration) meets a dead worker too, and so does
     a job submitted to a pool that broke while idle. _run's line carries no index:
@@ -1712,6 +1753,7 @@ if __name__ == "__main__":
     test_a_worker_that_dies_mid_job_says_so_in_the_log()
     test_a_cancel_that_kills_the_worker_is_not_logged_as_a_death()
     test_the_death_line_can_never_cost_the_recycle()
+    test_a_worker_killed_for_another_op_blames_no_feature()
     test_every_path_that_meets_a_dead_worker_logs_it()
     test_server_relaxes_its_own_stdio_error_handler()
     test_the_long_mesh_passes_tick_from_inside_their_loops()

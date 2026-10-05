@@ -1037,6 +1037,7 @@ export type GeomErrorCode =
   | "timedOut"
   | "stalled"
   | "kernelCrashed"
+  | "stoppedByOther"
   | "engineUnavailable"
   | "replyTooLarge"
   | "bodyTooLarge"

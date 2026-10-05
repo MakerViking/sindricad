@@ -540,6 +540,37 @@ describe("a text the font cannot draw says why instead of showing nothing", () =
     await wait(500);
     expect(live.outline(text!.id).length).toBeGreaterThan(0);
   });
+
+  it("asks again when another operation's cancel stopped it", async () => {
+    // Another window or tool on the same engine cancelled its own operation,
+    // and the engine restart that took stopped this text's request with it.
+    // That says nothing about the text, so it is not kept as a refusal: the
+    // sidecar's coded reply used to be, which left an empty frame until the
+    // text was edited and told the user to edit it or pick another font.
+    const live = sketchWithText();
+    let stopped = true;
+    live.sidecar.answer = (e) =>
+      stopped
+        ? { ok: false, message: "stopped because another operation was cancelled, try again", code: "stoppedByOther" }
+        : { ok: true, faces: glyphs(e) };
+    live.clickText(0, 160);
+    live.type("Til pappa");
+    await wait(500);
+    expect(live.panelSays()).toBe(
+      t("sketch.text.notDrawnRetry", { reason: t("engine.error.stoppedByOther") }),
+    );
+    live.add();
+    await wait(500);
+    expect(toast).not.toHaveBeenCalled();
+    const [text] = live.committed().filter((e) => e.text === "Til pappa");
+
+    stopped = false;
+    await wait(6000);
+    live.s.redraw();
+    await wait(500);
+    expect(live.outline(text!.id).length).toBeGreaterThan(0);
+    expect(live.frame(text!.id)).toEqual([]);
+  });
 });
 
 /** The default font has no 🎉; Noto Sans does. */

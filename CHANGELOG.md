@@ -42,6 +42,17 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ### Fixed
 
+- **An operation stopped by another one no longer says the kernel crashed.**
+  When more than one window or tool is connected to the geometry engine,
+  cancelling an operation in one of them, or one that stalls or runs out of
+  time, restarts the engine and stops whatever the others were running or
+  waiting on. Those said "the geometry kernel crashed on this operation", as if
+  something was wrong with the model, and a rebuild could blame one of its
+  features for it. They now say they were stopped because another operation
+  was cancelled, and to try again. One further back in the queue got no answer
+  at all, so the app waited on it until it was closed; it now gets the same
+  answer.
+
 - **Opening a STEP or mesh file no longer asks you to save first.** File > Open
   adds those to the document you have open, so it now asks "Save your changes
   before opening another document?" only when you pick a SindriCAD document,
