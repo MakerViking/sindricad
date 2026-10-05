@@ -131,6 +131,17 @@ This file starts on 2026-08-03. For anything before that, see the
   a long way moves the geometry dimensioned to it along with it, instead of to
   the far side.
 
+- **A projected edge that lost its source says how to fix it.** The warning
+  named the sketch by an internal code you could not find anywhere, and was
+  gone in three and a half seconds. It now names the sketch the way the Browser
+  lists it, stays up long enough to read (so do the other warnings about a
+  document, like a dimension expression I had to drop), and says what to do:
+  edit that sketch, delete the amber edge, pick the edge again with Project and
+  put back any dimension that was on it. A Cut whose profile is placed by such
+  an edge, like a hole dimensioned from it that stayed off the part, now says
+  so and names the sketch every time the file opens, instead of only telling
+  you the extrude doesn't reach any body and to drag the other way.
+
 - **A Combine of many small pieces no longer makes the engine look stopped.**
   Checking each piece against the body could run for a minute and a half without
   a sign of life, so the engine was restarted as if it had hung, on every retry.

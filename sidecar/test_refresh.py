@@ -339,6 +339,84 @@ def test_refresh_never_turns_a_line_round():
     print(PASS, "a refresh never turns a projected line round (or back); circle -> arc follows")
 
 
+def test_cut_placed_by_a_lost_projection_says_so():
+    """Field report 66d7eb71's SAVED file: the plate's left edge was cached as
+    the rim of the cylinder on top, under a straight-edge source, so it goes
+    stale on open (test_refresh_never_turns_a_line_round) and the hole
+    dimensioned 10 mm from it stays off the plate. Its Cut said "the extrude
+    doesn't reach any body. Drag the other way, or use Join", which sent the
+    user the wrong way. It now names the lost projection (cutLostProjection):
+    on the first build, when the stale transition is only in this rebuild's
+    `projections`, and once the app has landed the flag in the document.
+
+    A second hole, also off the plate, hangs only off the plate's good bottom
+    edge, which the first hole is dimensioned to as well. Its Cut keeps the
+    plain message: the walk does not go on through a projected edge."""
+    face = {"origin": [0, 0, 1], "normal": [0, 0, 1], "xdir": [1, 0, 0]}
+
+    def plate(w):
+        return [
+            {"id": "f1", "type": "sketch", "plane": "XY", "entities": [
+                {"id": "r", "type": "rectangle", "width": w, "height": 50, "x": 0, "y": 0}]},
+            {"id": "f2", "type": "extrude", "sketch": "f1", "distance": 1, "operation": "new"},
+            {"id": "f3", "type": "sketch", "plane": face, "entities": [
+                {"id": "c", "type": "circle", "x": -12, "y": 0, "radius": 8}]},
+            {"id": "f4", "type": "extrude", "sketch": "f3", "distance": 10, "operation": "join"},
+        ]
+
+    _p, err, bodies = rebuild({"parameters": {}, "features": plate(30)})
+    assert not err and len(bodies) == 1, err
+    body = bodies[0]["id"]  # the join's, not the plate's
+
+    def pick(w, point):
+        r = project_geometry({"parameters": {}, "features": plate(w)}, face, [
+            {"kind": "edge", "body": body,
+             "sel": {"kind": "edge", "by": "nearest", "point": point}}])["results"][0]
+        assert r["ok"], r
+        src = {"kind": "faceBoundary", "body": body, "group": "g",
+               "sel": {"kind": "edge", "by": "match", "fp": r["curves"][0]["fp"]}}
+        return src, r["curves"][0]["curve"]
+
+    left, _line = pick(60, [-30, 0, 1])  # picked while the plate was wide
+    bottom, bottom_curve = pick(30, [0, -25, 1])
+    rim = {"kind": "circle", "x": -12.0, "y": 0.0, "r": 8.0}  # what the saved file holds
+    sketch = {"id": "f5", "type": "sketch", "plane": face, "entities": [
+        {"id": "left", "type": "projected", "source": left, "curve": rim},
+        {"id": "bottom", "type": "projected", "source": bottom, "curve": bottom_curve},
+        {"id": "h1", "type": "circle", "x": -27, "y": 10, "radius": 4},
+        {"id": "h2", "type": "circle", "x": -27, "y": -10, "radius": 4},
+    ], "constraints": [
+        {"id": "c1", "type": "p2lDistance", "e": "h1", "p": 0, "line": "left", "value": 10},
+        {"id": "c2", "type": "p2lDistance", "e": "h1", "p": 0, "line": "bottom", "value": 35},
+        {"id": "c3", "type": "p2lDistance", "e": "h2", "p": 0, "line": "bottom", "value": 15},
+    ]}
+
+    def cut(fid, hole, y):
+        return {"id": fid, "type": "extrude", "sketch": "f5", "distance": -5,
+                "operation": "cut", "regions": [[-27, y, 1]], "regionEntities": [[hole]]}
+
+    doc = {"parameters": {}, "features": plate(30) + [sketch, cut("f6", "h1", 10), cut("f7", "h2", -10)]}
+    p = []
+    _part, err, _bodies = rebuild(doc, projections=p)
+    assert p == [{"sketch": "f5", "entity": "left", "stale": True}], p
+    errs = {e["feature_id"]: e for e in err}
+    assert set(errs) == {"f6", "f7"}, err
+    assert errs["f6"].get("code") == "cutLostProjection", errs["f6"]
+    assert "projected edge" in errs["f6"]["message"], errs["f6"]
+    # reached is not proof, so the plain advice stays as the last sentence
+    assert errs["f6"]["message"].endswith("drag the other way, or use Join."), errs["f6"]
+    assert "code" not in errs["f7"] and "doesn't reach any body" in errs["f7"]["message"], errs["f7"]
+
+    # the app lands the flag; the next build reads it from the document
+    landed = copy.deepcopy(doc)
+    landed["features"][4]["entities"][0]["stale"] = True
+    _part, err, _bodies = rebuild(landed)
+    errs = {e["feature_id"]: e for e in err}
+    assert errs["f6"].get("code") == "cutLostProjection", errs["f6"]
+    assert "code" not in errs["f7"], errs["f7"]
+    print(PASS, "a Cut placed by a lost projection says so; one beside it does not")
+
+
 def test_resume_cap_ram_tier():
     """Warm rebuild_cached, then edit a feature DOWNSTREAM of the projected
     sketch. Without the cap the resume would start past the sketch and swallow
@@ -471,6 +549,7 @@ def main():
     test_chain_projection_of_projected_curve()
     test_plate_edge_follows_a_shrink_past_a_joined_cylinder()
     test_refresh_never_turns_a_line_round()
+    test_cut_placed_by_a_lost_projection_says_so()
     test_resume_cap_ram_tier()
     test_resume_cap_disk_tier()
     test_quiet_proof_deep_resume()

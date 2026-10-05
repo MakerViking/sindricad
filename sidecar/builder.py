@@ -5639,12 +5639,99 @@ def _handle_extrude(f, ctx):
         if "hiddenBodies" in f
         else ctx.hidden_bodies
     )
+    op = f.get("operation", "new")
     _boolean_into_bodies(
-        ctx.bodies, solid, f.get("operation", "new"), ctx.new_body, hid,
+        ctx.bodies, solid, op, ctx.new_body, hid,
         split_disjoint=bool(f.get("separateBodies")),
         diag=ctx.diagnostics, feature_id=f.get("id"),
         touching_only=bool(f.get("joinTouchingOnly")),
+        cut_noop_error=_lost_projection_cut(f, ctx) if op == "cut" else None,
     )
+
+
+def _lost_projection_cut(f, ctx):
+    """The error an extrude Cut that removed nothing raises when its profile is
+    placed by a projected edge that lost its source, or None.
+
+    Field report 66d7eb71: the plate edge a hole was dimensioned 10 mm from
+    went stale (its saved copy had already turned into the rim of a cylinder),
+    so the hole stayed where it was when the plate got narrower, off the plate,
+    and the Cut said the extrude "doesn't reach any body. Drag the other way, or
+    use Join." True, and neither is the fix: the lost projection is. Nothing
+    heals it by itself, so the message says how.
+
+    "Placed by" = the stale entity bounds one of the cut's areas, or is reached
+    from one through the sketch's constraints. The walk does not go on THROUGH
+    a projected entity, which the solve holds fixed, so a hole dimensioned to a
+    good projected edge is not blamed on another hole's lost one. A feature
+    with no stored area entities (an older one) walks from every entity.
+
+    Reached is not proof: a link that fixes no position (an equal radius), or a
+    profile that is where it was meant and only points away from the body, is
+    reached too. So the message keeps the plain advice as its last sentence,
+    rather than this walk telling a position link from a shape one.
+
+    Stale = flagged in the document, or gone stale in this rebuild (the refresh
+    it emits into ctx.projections, which the app has not landed yet on the
+    first build after opening), and not resolved again in it."""
+    sid = f.get("sketch")
+    sf = next((x for x in ctx.features or ()
+               if x.get("type") == "sketch" and x.get("id") == sid), None)
+    if sf is None:
+        return None
+
+    def listed(v):  # a field the document may carry malformed: never raise here
+        return v if isinstance(v, list) else ()
+
+    ents = {e["id"]: e for e in listed(sf.get("entities"))
+            if isinstance(e, dict) and isinstance(e.get("id"), str)}
+    projected = {i for i, e in ents.items() if e.get("type") == "projected"}
+    stale = {i for i in projected if ents[i].get("stale")}
+    for u in ctx.projections or ():
+        if u.get("sketch") == sid and u.get("entity") in projected:
+            if u.get("stale"):
+                stale.add(u["entity"])
+            else:
+                stale.discard(u["entity"])
+    if not stale:
+        return None
+    # Who names whom: every string a constraint carries that is an entity id,
+    # a side (`P~k`) counting as its shape, and an offset's pairs; the same
+    # reading as constraintEntityIds in src/sketch/entityDims.ts.
+    near = {}
+    for c in listed(sf.get("constraints")):
+        if not isinstance(c, dict):
+            continue
+        if c.get("type") == "offset":
+            refs = [v for pr in listed(c.get("pairs")) if isinstance(pr, dict)
+                    for v in (pr.get("src"), pr.get("cpy"))]
+        else:
+            refs = [v for k, v in c.items() if k not in ("type", "id")]
+        ids = {v.split("~", 1)[0] for v in refs if isinstance(v, str)} & ents.keys()
+        for i in ids:
+            near.setdefault(i, set()).update(ids - {i})
+    start = {i for k in ("regionEntities", "regionHoleEntities") for g in listed(f.get(k))
+             for i in listed(g) if isinstance(i, str)} & ents.keys()
+    todo = list(start or ents)
+    seen = set(todo)
+    while todo:
+        i = todo.pop()
+        if i in stale:
+            return GeomError(
+                "Cut removed nothing: its profile is placed by a projected edge in its "
+                "sketch that lost the edge it was projected from (drawn amber), so the "
+                "profile may not be where you meant it. Edit its sketch, delete the amber "
+                "edge, pick the edge again with Project, then move the profile back where "
+                "you want it and dimension it to the new edge. If the profile is already "
+                "where you meant it, drag the other way, or use Join.",
+                errors_mod.CUT_LOST_PROJECTION)
+        if i in projected:
+            continue
+        for j in near.get(i, ()):
+            if j not in seen:
+                seen.add(j)
+                todo.append(j)
+    return None
 
 
 def _extrude_maybe_tapered(f, ctx, target, prof_faces, amount):
@@ -11285,7 +11372,7 @@ def _imprint(solid, tools):
 
 def _boolean_into_bodies(bodies, solid, op, new_body, hidden=frozenset(), split_disjoint=False,
                          diag=None, feature_id=None, kind="extrude", cut_noop_msg=None,
-                         touching_only=False):
+                         touching_only=False, cut_noop_error=None):
     """MCAD-style extrude operation: New Body adds a separate body; Join / Cut /
     Intersect boolean the new solid against EVERY VISIBLE body it overlaps — so an
     extrude that bridges two bodies merges both. Join with nothing to act on just
@@ -11312,6 +11399,8 @@ def _boolean_into_bodies(bodies, solid, op, new_body, hidden=frozenset(), split_
     fall through to the old behavior (never raise a misleading no-op error).
     `cut_noop_msg` replaces the Cut no-op's text for a feature with no drag to
     reverse (a helix sweep); every other caller gets the wording for its `kind`.
+    `cut_noop_error`, when given, is raised instead of either: an extrude whose
+    profile is placed by a lost projection (`_lost_projection_cut`).
 
     A Cut that SEALS a void (a solid gains a second shell) is the one wrong-looking result
     that isn't wrong enough to refuse — a deliberate hollow is legal — so it pushes
@@ -11454,6 +11543,8 @@ def _boolean_into_bodies(bodies, solid, op, new_body, hidden=frozenset(), split_
         if not hits and _cut_only_hidden(bodies, solid, hidden, eps(prism_vol), diag, feature_id):
             return
         if not hits or (measured and removed < eps(prism_vol)):
+            if cut_noop_error is not None:
+                raise cut_noop_error
             if cut_noop_msg:
                 raise ValueError(cut_noop_msg)
             if kind == "extrude":

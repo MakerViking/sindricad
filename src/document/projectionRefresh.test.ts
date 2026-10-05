@@ -16,6 +16,7 @@ import { DocumentStore } from "./store";
 import type { CadDocument, Feature, ProjectedCurve, ProjectionUpdate, RebuildReply, RebuildResult, SketchConstraint, SketchEntity } from "../types";
 import type { GeometryBackend } from "../geometry/client";
 import { solveSketchFeature } from "../sketch/headlessSolve";
+import { featureErrorMessages } from "../geometry/featureErrorText";
 
 const CURVE0: ProjectedCurve = { kind: "line", x1: 0, y1: 0, x2: 10, y2: 0 };
 const CURVE1: ProjectedCurve = { kind: "line", x1: 5, y1: 0, x2: 15, y2: 0 };
@@ -138,9 +139,57 @@ describe("projection refresh (derived commit loop)", () => {
     const p1 = p1Of(store);
     expect(p1?.stale).toBe(true);
     expect(p1?.curve).toEqual(CURVE0); // last shape kept
-    expect(warnings.filter((w) => w.includes("lost its source"))).toEqual([
-      "Projected geometry in Sketch1 lost its source — keeping last shape",
+    expect(warnings.filter((w) => w.includes("lost the edge"))).toEqual([
+      "A projected edge in Sketch1 lost the edge it was projected from, so I kept its last shape and drew it amber, " +
+        "and whatever is dimensioned to it stopped following the model. To fix it, edit Sketch1, delete the amber edge, " +
+        "pick the edge again with Project and put back any dimension that was on it.",
     ]);
+  });
+
+  // Field report 66d7eb71's saved file: the warning named the sketch by its
+  // internal id ("f5"), which the user cannot find anywhere. It names an
+  // unnamed sketch the way the Browser lists it, by its place among the
+  // sketches, and counts the edges.
+  it("names an unnamed sketch as the Browser does, and counts its lost edges", async () => {
+    const doc = pdoc();
+    const sk = doc.features[0] as Extract<Feature, { type: "sketch" }>;
+    delete sk.name;
+    const p2 = { ...(sk.entities[0] as Extract<SketchEntity, { type: "projected" }>), id: "p2" };
+    sk.entities.push(p2);
+    doc.features.unshift({ id: "s0", type: "sketch", plane: "XY", entities: [] } as Feature);
+    const store = makeStore((n) => (n === 1 ? [UPD_STALE, { sketch: "s1", entity: "p2", stale: true }] : undefined), doc);
+    edit(store);
+    await settle();
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatch(/^2 projected edges in Sketch2 lost the edges they were projected from/);
+    expect(warnings[0]).toContain("edit Sketch2, delete the amber edges");
+  });
+
+  // The same file once its stale flag is saved: the sidecar reports only the
+  // not-stale -> stale transition, so reopening it warns about nothing, and
+  // the Cut's error is the one message left. It names the sketch too, in the
+  // status line and wherever the timeline and Inspector show it.
+  it("a Cut placed by a lost projection names its sketch when the file is opened again", async () => {
+    const doc = pdoc({ stale: true });
+    delete (doc.features[0] as Extract<Feature, { type: "sketch" }>).name;
+    doc.features.unshift({ id: "s0", type: "sketch", plane: "XY", entities: [] } as Feature);
+    doc.features.push({ id: "x1", type: "extrude", sketch: "s1", distance: -5, operation: "cut" } as Feature);
+    const fe = { feature_id: "x1", code: "cutLostProjection", message: "Cut removed nothing: ... Edit its sketch, ..." };
+    const reply = async (d: CadDocument): Promise<RebuildReply> => {
+      calls.push(d);
+      const ok = okReply() as Extract<RebuildReply, { ok: true }>;
+      return { ...ok, result: { ...ok.result, featureError: fe, featureErrors: [fe] } };
+    };
+    const backend = { ...scriptedBackend(() => undefined, calls), rebuild: reply, computeAll: reply } as GeometryBackend;
+    const store = new DocumentStore(backend, pdoc());
+    store.onWarning = (m) => void warnings.push(m);
+    store.load(JSON.stringify(doc));
+    await settle();
+    expect(warnings).toEqual([]);
+    const said = store.buildState.errorMessage ?? "";
+    expect(said).toMatch(/^Cut removed nothing: its profile is placed by a projected edge in Sketch2 that lost/);
+    expect(said).toContain("Edit Sketch2, delete the amber edge");
+    expect(featureErrorMessages(store.buildState, undefined, store.document.features).get("x1")).toBe(said);
   });
 
   it("clears stale (key deleted, not set false) when the source resolves again", async () => {

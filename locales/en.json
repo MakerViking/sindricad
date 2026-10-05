@@ -149,6 +149,7 @@
     "flip": "Flip",
     "height": "Height",
     "hide": "Hide",
+    "itsSketch": "its sketch",
     "later": "Later",
     "length": "Length",
     "maximize": "Maximize",
@@ -242,6 +243,7 @@
       "budgetExhausted": "this operation ran out of its time budget",
       "cancelled": "cancelled",
       "connectionLost": "geometry engine connection lost",
+      "cutLostProjection": "Cut removed nothing: its profile is placed by a projected edge in {sketch} that lost the edge it was projected from (drawn amber), so the profile may not be where you meant it. Edit {sketch}, delete the amber edge, pick the edge again with Project, then move the profile back where you want it and dimension it to the new edge. If the profile is already where you meant it, drag the other way, or use Join.",
       "cutOnlyHidden": {
         "one": "This cut removed nothing: the only body it reaches is {body}, which was hidden when you made the cut, so I left it alone. To cut it, delete this cut, show {body} and make the cut again.",
         "other": "This cut removed nothing: the only bodies it reaches, {body} and others ({count} in all), were hidden when you made the cut, so I left them alone. To cut them, delete this cut, show them and make the cut again."
@@ -1779,7 +1781,10 @@
       "sketchCurves": "Sketch curves"
     },
     "projection": {
-      "lostSource": "Projected geometry in {name} lost its source — keeping last shape",
+      "lostSource": {
+        "one": "A projected edge in {name} lost the edge it was projected from, so I kept its last shape and drew it amber, and whatever is dimensioned to it stopped following the model. To fix it, edit {name}, delete the amber edge, pick the edge again with Project and put back any dimension that was on it.",
+        "other": "{count} projected edges in {name} lost the edges they were projected from, so I kept their last shapes and drew them amber, and whatever is dimensioned to them stopped following the model. To fix them, edit {name}, delete the amber edges, pick the edges again with Project and put back any dimensions that were on them."
+      },
       "refreshFailed": "Projected geometry failed to refresh — see the console for details.",
       "valveClosed": "Projected geometry keeps changing on every rebuild — paused automatic refresh (edit the model or Compute All to retry)."
     },

@@ -20,7 +20,7 @@
  * jsdom, so the modal in files.ts and publish.ts is not under test; this is.
  */
 
-import { featureErrorText, type NamedBody } from "../geometry/featureErrorText";
+import { featureErrorText, type NamedBody, type SketchedFeature } from "../geometry/featureErrorText";
 import { t } from "../i18n";
 import type { FeatureError } from "../types";
 import { FEATURE_META } from "../ui/featureMeta";
@@ -29,11 +29,9 @@ import { FEATURE_META } from "../ui/featureMeta";
  *  "NOT in the upload" for a failed feature. */
 export type ReportTarget = "export" | "upload";
 
-/** Just enough of a feature to find it on the timeline. */
-export interface TimelineFeature {
-  id: string;
-  type: string;
-}
+/** Just enough of a feature to find it on the timeline, and to name the
+ *  sketch a failed one draws from (featureErrorText's `{sketch}`). */
+export type TimelineFeature = SketchedFeature;
 
 /**
  * Did this entry come from a feature that failed?
@@ -85,7 +83,7 @@ export function exportReport(
   for (const w of warnings ?? []) {
     // featureErrorText for both kinds: it translates a coded failure and fills
     // a `{body}` slot, and leaves a plain note's sentence exactly as sent.
-    const text = featureErrorText(w, bodies);
+    const text = featureErrorText(w, bodies, features);
     if (isFailedFeature(w)) {
       failed++;
       lines.push(t(missingKey, { feature: featureTimelineLabel(features, w.feature_id), reason: text }));

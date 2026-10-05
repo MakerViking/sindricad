@@ -130,3 +130,36 @@ describe("featureErrorText on a coded split message", () => {
     expect(missing).toEqual([]);
   });
 });
+
+// Field report 66d7eb71: once a lost projection's stale flag is saved, the
+// Cut's error is the one message a reopened file shows, and it sends the user
+// to a sketch. It names that sketch the way the Browser lists it.
+describe("featureErrorText on a Cut placed by a lost projection", () => {
+  const FEATURES = [
+    { id: "f1", type: "sketch" },
+    { id: "f2", type: "extrude", sketch: "f1" },
+    { id: "f5", type: "sketch" },
+    { id: "f6", type: "extrude", sketch: "f5" },
+    { id: "f7", type: "sketch", name: "Holes" },
+    { id: "f8", type: "extrude", sketch: "f7" },
+  ];
+  const cut = (feature_id: string) => ({ message: "x", code: "cutLostProjection", feature_id });
+
+  it("names the failing feature's sketch as the Browser does", () => {
+    const text = featureErrorText(cut("f6"), BODIES, FEATURES);
+    expect(text).toMatch(/^Cut removed nothing: its profile is placed by a projected edge in Sketch2 that lost/);
+    expect(text).toContain("Edit Sketch2, delete the amber edge, pick the edge again with Project");
+    expect(text).toMatch(/If the profile is already where you meant it, drag the other way, or use Join\.$/);
+    expect(featureErrorText(cut("f8"), BODIES, FEATURES)).toContain("Edit Holes, delete");
+  });
+
+  it("says 'its sketch' when it cannot tell which", () => {
+    expect(featureErrorText(cut("f6"), BODIES)).toContain("in its sketch that lost");
+    expect(featureErrorText(cut("gone"), BODIES, FEATURES)).toContain("Edit its sketch, delete");
+  });
+
+  it("reads a name holding the other slot's token as data", () => {
+    const features = [{ id: "s", type: "sketch", name: `${BODY_SLOT} $&` }, { id: "x", type: "extrude", sketch: "s" }];
+    expect(featureErrorText(cut("x"), BODIES, features)).toContain(`Edit ${BODY_SLOT} $&, delete`);
+  });
+});

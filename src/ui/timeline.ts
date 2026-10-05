@@ -239,7 +239,7 @@ export class Timeline {
    *  `{body}` slot is filled from the bodies in the same reply — see
    *  featureErrorText. */
   private errorMap(): Map<string, string> {
-    return featureErrorMessages(this.store.buildState, this.namedBodies());
+    return featureErrorMessages(this.store.buildState, this.namedBodies(), this.store.document.features);
   }
 
   /** every feature that BUILT but reported something worth saying: id -> reason.

@@ -163,7 +163,9 @@ if ("__TAURI_INTERNALS__" in window) {
 // New" was the first thing most people did. Recovery still restores real work
 // (checkRecovery below), so the only thing lost is the sample.
 const store = new DocumentStore(geometry, EMPTY_DOCUMENT);
-store.onWarning = (msg) => toast(msg);
+// A warning, not info: info is a 3.5 s glance, and these are sentences to read
+// (a projected edge that lost its source says how to repair it, 66d7eb71).
+store.onWarning = (msg) => toast(msg, { kind: "warning" });
 
 // THE VIEWPORT IS BUILT HERE, NOT AT THE TOP, and the reason is a field report:
 // on a machine with no WebGL2 this line throws, module evaluation of main.ts
@@ -1263,7 +1265,7 @@ store.onBuild((s) => {
         failureToasts.get(id)?.();
         failureToasts.set(
           id,
-          toast(t("feature.failed", { name: label, reason: featureErrorText(e, store.namedBodies(s.result.bodies)) }), {
+          toast(t("feature.failed", { name: label, reason: featureErrorText(e, store.namedBodies(s.result.bodies), store.document.features) }), {
             kind: "error",
             action,
             // sticky (0) only for the user's own commit; the rest get toastTimeout's

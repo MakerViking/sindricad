@@ -348,7 +348,7 @@ export class Inspector {
     const build = this.store.buildState;
     const f = this.store.document.features.find((x) => x.id === this.selectedId);
     const bodies = build?.result?.bodies;
-    const reason = f && build ? featureErrorMessages(build, this.store.namedBodies?.(bodies) ?? bodies).get(f.id) : undefined;
+    const reason = f && build ? featureErrorMessages(build, this.store.namedBodies?.(bodies) ?? bodies, this.store.document.features).get(f.id) : undefined;
     if (!f || !reason) {
       el.textContent = "";
       el.classList.add("hidden");

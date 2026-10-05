@@ -1953,7 +1953,7 @@ export class ExtrudeTool {
     // the model with a taken-back preview gone): the guess can be read again.
     this.awaitingBuild = false;
     if (!this.sentPreview) this.refreshGuess();
-    const msg = this.sentPreview ? (featureErrorMessages(b, undefined).get(this.previewId) ?? null) : null;
+    const msg = this.sentPreview ? (featureErrorMessages(b, undefined, this.store.document.features).get(this.previewId) ?? null) : null;
     if (msg === this.previewError) return;
     this.previewError = msg;
     this.syncPanel();

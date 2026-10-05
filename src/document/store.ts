@@ -16,6 +16,7 @@ import type { FieldKind } from "./numFields";
 import { DEFAULT_EXTRUDE_DISTANCE, boundShapeFields, hasUpToTarget, writeTarget } from "./numFields";
 import { p2lSideFlipped, paramStep, paramSteps, refreshStep, refreshSteps } from "./projectionWalk";
 import { applyPointCarry, type PointCarry } from "./pointCarry";
+import { sketchLabel } from "./sketchLabel";
 import { copySketch, moveSketchPlane, ownDatumOf, type SketchPlaneMove, type SketchTarget } from "./sketchPlaneEdits";
 import { t } from "../i18n";
 
@@ -343,7 +344,7 @@ export class DocumentStore {
 
   /** surfaced when the store hits something worth telling the user without
    *  failing (newer-version file on load, a dropped sketch binding, a param
-   *  commit that failed mid-cascade). Wired to a toast in main.ts. */
+   *  commit that failed mid-cascade). Wired to a warning toast in main.ts. */
   onWarning?: (msg: string) => void;
 
   constructor(
@@ -823,10 +824,16 @@ export class DocumentStore {
     if (!valid.length) return;
 
     // stale transitions warn once per sketch (the sidecar only emits stale:true
-    // on the not-stale -> stale transition, so every entry here is news)
-    for (const sid of new Set(valid.filter((u) => u.stale).map((u) => u.sketch))) {
+    // on the not-stale -> stale transition, so every entry here is news). The
+    // warning names the sketch as the Browser does and says how to repair it:
+    // nothing heals a lost source by itself (field report 66d7eb71's saved
+    // plate edge had already been cached as a circle), so the user re-picks it.
+    const staleCount = new Map<string, number>();
+    for (const u of valid) if (u.stale) staleCount.set(u.sketch, (staleCount.get(u.sketch) ?? 0) + 1);
+    const sketches = [...sketchOf.values()];
+    for (const [sid, count] of staleCount) {
       const f = sketchOf.get(sid)!;
-      this.onWarning?.(t("sketch.projection.lostSource", { name: f.name ?? sid }));
+      this.onWarning?.(t("sketch.projection.lostSource", { name: sketchLabel(f, sketches.indexOf(f)), count }));
     }
 
     const open = this.openSketchId?.() ?? null;
@@ -2013,7 +2020,7 @@ export class DocumentStore {
         // The bodies of the LAST good build: a fatal reply carries none of its
         // own, and a failure is usually about a body that was there a moment
         // ago. `subject` covers the case where it wasn't.
-        errorMessage: featureErrorText(reply.error, this.namedBodies(this.build.result?.bodies)),
+        errorMessage: featureErrorText(reply.error, this.namedBodies(this.build.result?.bodies), this.doc.features),
       };
     }
     const fe = reply.result.featureError;
@@ -2021,7 +2028,7 @@ export class DocumentStore {
       ...done,
       result: reply.result,
       errorFeatureId: fe?.feature_id ?? null,
-      errorMessage: fe ? featureErrorText(fe, this.namedBodies(reply.result.bodies)) : null,
+      errorMessage: fe ? featureErrorText(fe, this.namedBodies(reply.result.bodies), this.doc.features) : null,
     };
   }
 

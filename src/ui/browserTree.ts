@@ -5,6 +5,7 @@
 // (extrude/fillet/...) live in the bottom Timeline, as in mainstream MCAD.
 
 import type { DocumentStore } from "../document/store";
+import { sketchLabel } from "../document/sketchLabel";
 import type { Plane3 } from "../types";
 import { contextMenu, type CtxItem } from "./menu";
 import { icon, type IconName } from "./icons";
@@ -353,7 +354,6 @@ export class BrowserTree {
     // resolve display labels once (rename overrides) — reused by the signature
     // (so a rename forces a re-render) and the rows below.
     const bodyLabel = (b: { id: string; name: string }) => this.store.bodyName(b.id) ?? b.name;
-    const sketchLabel = (f: { name?: string }, i: number) => f.name || `Sketch${i + 1}`;
     const planeLabel = (f: { name?: string }, i: number) => f.name || `Plane${i + 1}`;
 
     // the tree only depends on these — onDocChange + onBuild both fire per edit,
