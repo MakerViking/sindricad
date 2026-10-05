@@ -126,6 +126,67 @@ describe("the palette's Construction switch acts on a selection too (2fc27cf1)",
   });
 });
 
+// Report 9b764625: "In a sketch, I have a construction line, in the Sketch
+// Palette panel the construction check box does not do anything". The box
+// showed the drawing mode, unticked, whatever was selected: with that line
+// selected, ticking it asked for what the line already was, and nothing
+// changed. The box now shows what it would act on, the selection, by the same
+// majority rule that names the right-click item.
+describe("the palette's Construction box shows the selection (9b764625)", () => {
+  it("ticked for a selected construction line, and unticking it makes the line normal", async () => {
+    const live = liveSketch([line("a", 0, 0, 10, 0, true)]);
+    expect(live.s.constructionShown(), "nothing selected: the drawing mode").toEqual({ on: false, mixed: false });
+    live.click(5, 0);
+    expect(live.s.constructionShown()).toEqual({ on: true, mixed: false });
+    live.s.setConstruction(false); // the untick
+    await live.settle();
+    expect(live.ent("a")?.construction).toBeUndefined();
+    expect(live.s.constructionShown()).toEqual({ on: false, mixed: false });
+  });
+
+  it("with nothing selected it shows the drawing mode, whatever is in the sketch", () => {
+    const live = liveSketch([line("a", 0, 0, 10, 0, true)]);
+    live.s.setConstruction(true);
+    expect(live.s.constructionShown()).toEqual({ on: true, mixed: false });
+    live.s.setConstruction(false);
+    expect(live.s.constructionShown()).toEqual({ on: false, mixed: false });
+  });
+
+  it("a part-construction selection shows as mixed, over the way the right-click item would go", async () => {
+    const live = liveSketch([
+      line("a", 0, 0, 10, 0, true),
+      line("b", 0, 10, 10, 10, true),
+      line("c", 0, 20, 10, 20),
+    ]);
+    live.click(5, 0);
+    live.click(5, 10, true);
+    live.click(5, 20, true);
+    const shown = live.s.constructionShown();
+    expect(shown).toEqual({ on: true, mixed: true });
+    expect(item(menuAt(live, 5, 20), "Make normal"), "the right-click item goes the other way").toBeDefined();
+    // a click on an indeterminate box flips what is underneath it
+    live.s.setConstruction(!shown.on);
+    await live.settle();
+    for (const id of ["a", "b", "c"]) expect(live.ent(id)?.construction, id).toBeUndefined();
+    expect(live.s.constructionShown()).toEqual({ on: false, mixed: false });
+  });
+
+  it("a tie shows unticked and mixed, so a click makes it all construction, like the right-click", () => {
+    const live = liveSketch([line("a", 0, 0, 10, 0, true), line("b", 0, 10, 10, 10)]);
+    live.click(5, 0);
+    live.click(5, 10, true);
+    expect(live.s.constructionShown()).toEqual({ on: false, mixed: true });
+    expect(item(menuAt(live, 5, 10), "Make construction")).toBeDefined();
+  });
+
+  it("the origin in a selection does not count: it is construction and cannot change", () => {
+    const live = liveSketch([line("a", 10, 10, 20, 10)]);
+    live.click(15, 10);
+    live.s.selected.add("__originX__");
+    expect(live.s.constructionShown()).toEqual({ on: false, mixed: false });
+  });
+});
+
 describe("a toggle says what it changed, and what that means for the profile (2fc27cf1)", () => {
   // The selection stays after a toggle. When a selected entity drew solid in
   // the selection colour whether it was construction or not (3f16187e), the

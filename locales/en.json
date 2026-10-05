@@ -1163,7 +1163,15 @@
       "snap": "Snap"
     },
     "toggleTitle": {
-      "autoConstrain": "Constrain what you draw: Horizontal, Vertical, Perpendicular or Tangent when a line or arc is within 3° of one"
+      "autoConstrain": "Constrain what you draw: Horizontal, Vertical, Perpendicular or Tangent when a line or arc is within 3° of one",
+      "constraints": "Show or hide the constraint symbols on the geometry, such as H, V and T",
+      "construction": "Draw new geometry as construction: dashed lines that guide the design and never form a profile. With geometry selected, the box shows whether it is construction, and ticking or unticking it switches the selection and sets what you draw next the same way",
+      "dimensions": "Show or hide the dimension values and their dimension lines",
+      "grid": "Show or hide the grid on the sketch plane",
+      "lockView": "Keep the view square to the sketch plane: orbiting is off while this is ticked",
+      "profile": "Shade the closed areas (profiles) you can extrude or revolve",
+      "reference": "Make new dimensions reference dimensions: they show a measurement in parentheses and never move the geometry",
+      "snap": "Snap to the grid while drawing. Endpoints and centres still snap with this off; hold Ctrl to place freely"
     }
   },
   "params": {

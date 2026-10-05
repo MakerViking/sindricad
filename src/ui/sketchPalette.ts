@@ -1,6 +1,8 @@
 // The Sketch Palette (mainstream MCAD's right-docked panel shown while sketching).
 // Toggles control drawing/display options; "Look At" re-squares the camera; the
-// constraint tools sit in an icon grid below them.
+// constraint tools sit in an icon grid below them. Every row carries a tooltip
+// saying what it does: "I don't know what a 'reference dim' or 'show profile'
+// do, tooltip text may help" (report 9b764625).
 
 import { t, setText, setTitle } from "../i18n";
 import { esc } from "./escape";
@@ -13,9 +15,9 @@ export type PaletteToggle =
 interface ToggleDef {
   key: PaletteToggle;
   label: string;
-  default: boolean;
   /** locale key of the row's tooltip */
-  title?: string;
+  title: string;
+  default: boolean;
 }
 const TOGGLES: ToggleDef[] = [
   // Off by default, and SketchMode.viewLocked agrees. Entering a sketch always
@@ -26,19 +28,19 @@ const TOGGLES: ToggleDef[] = [
   // result, it is impossible to select geometry located behind the sketch
   // support face in order to project it onto the sketch" (field report
   // 9e3da3c7). The lock stays available for anyone who wants it.
-  { key: "lockView", label: t("palette.toggle.lockView"), default: false },
-  { key: "construction", label: t("palette.toggle.construction"), default: false },
-  { key: "reference", label: t("palette.toggle.reference"), default: false },
-  { key: "grid", label: t("palette.toggle.grid"), default: true },
-  { key: "snap", label: t("palette.toggle.snap"), default: true },
+  { key: "lockView", label: t("palette.toggle.lockView"), title: "palette.toggleTitle.lockView", default: false },
+  { key: "construction", label: t("palette.toggle.construction"), title: "palette.toggleTitle.construction", default: false },
+  { key: "reference", label: t("palette.toggle.reference"), title: "palette.toggleTitle.reference", default: false },
+  { key: "grid", label: t("palette.toggle.grid"), title: "palette.toggleTitle.grid", default: true },
+  { key: "snap", label: t("palette.toggle.snap"), title: "palette.toggleTitle.snap", default: true },
   // On by default, and SketchMode.autoConstrainOff agrees (the same two-places
   // rule as lockView above). Off draws exactly what the cursor placed: no
   // Horizontal, Vertical, Perpendicular or Tangent. Snapped and chained joins
   // stay, since a join is where the user put the point, not a guess.
   { key: "autoConstrain", label: t("palette.toggle.autoConstrain"), default: true, title: "palette.toggleTitle.autoConstrain" },
-  { key: "profile", label: t("palette.toggle.profile"), default: true },
-  { key: "dimensions", label: t("palette.toggle.dimensions"), default: true },
-  { key: "constraints", label: t("palette.toggle.constraints"), default: true },
+  { key: "profile", label: t("palette.toggle.profile"), title: "palette.toggleTitle.profile", default: true },
+  { key: "dimensions", label: t("palette.toggle.dimensions"), title: "palette.toggleTitle.dimensions", default: true },
+  { key: "constraints", label: t("palette.toggle.constraints"), title: "palette.toggleTitle.constraints", default: true },
 ];
 
 /** The constraint tools, exactly as the ribbon's Constrain button lists them,
@@ -67,6 +69,7 @@ export class SketchPalette {
   private state: Record<PaletteToggle, boolean>;
   /** the constraint grid's buttons, in CONSTRAINT_TOOLS order */
   private tools: HTMLButtonElement[] = [];
+  private switches = new Map<PaletteToggle, HTMLInputElement>();
   onToggle: ((key: PaletteToggle, value: boolean) => void) | null = null;
   onLookAt: (() => void) | null = null;
   /** A constraint tool picked in the grid: the ribbon's action name, for the
@@ -99,6 +102,27 @@ export class SketchPalette {
     for (const t of TOGGLES) this.onToggle?.(t.key, this.state[t.key]);
   }
 
+  /** The sketch changed an option itself (the Dimension tool's right-click
+   *  menu has its own Reference switch). Remember it, so emitAll does not hand
+   *  the next sketch the old value, and show it. Never calls onToggle back. */
+  set(key: PaletteToggle, on: boolean) {
+    this.state[key] = on;
+    this.show(key, on);
+  }
+
+  /** Draw `on` in a box without changing what the switch holds. The
+   *  Construction box shows the SELECTION while geometry is selected (report
+   *  9b764625: with a construction line selected the box read unticked, so
+   *  ticking it changed nothing), and `mixed` draws a part-construction
+   *  selection as neither. Clicking a mixed box applies the opposite of `on`,
+   *  so pass the majority: that is the way the right-click item goes. */
+  show(key: PaletteToggle, on: boolean, mixed = false) {
+    const sw = this.switches.get(key);
+    if (!sw) return;
+    sw.checked = on;
+    sw.indeterminate = mixed;
+  }
+
   private render() {
     this.el.innerHTML = `<div class="palette-title" data-i18n="palette.title">${esc(t("palette.title"))}</div><div class="palette-section" data-i18n="palette.options">${esc(t("palette.options"))}</div>`;
 
@@ -112,19 +136,31 @@ export class SketchPalette {
     for (const t of TOGGLES) {
       const row = document.createElement("label");
       row.className = "palette-row";
-      if (t.title) setTitle(row, t.title);
+      setTitle(row, t.title);
       const span = document.createElement("span");
       span.textContent = t.label;
       const sw = document.createElement("input");
       sw.type = "checkbox";
       sw.className = "palette-switch";
       sw.checked = this.state[t.key];
+      // A click left keyboard focus on the box, and every sketch key skips a
+      // focused input (isEditableTarget), so after converting a line with the
+      // Construction box, Escape, Delete and Ctrl+Z did nothing until the
+      // canvas was clicked. A box clicked with the pointer hands focus back; one
+      // toggled from the keyboard (Tab, Space) keeps it, so the palette can
+      // still be walked with Tab.
+      let pressed = false;
+      row.addEventListener("pointerdown", () => { pressed = true; });
+      sw.addEventListener("keydown", () => { pressed = false; });
       sw.addEventListener("change", () => {
         this.state[t.key] = sw.checked;
         this.onToggle?.(t.key, sw.checked);
+        if (pressed) sw.blur();
+        pressed = false;
       });
       row.append(span, sw);
       this.el.appendChild(row);
+      this.switches.set(t.key, sw);
     }
 
     const section = document.createElement("div");

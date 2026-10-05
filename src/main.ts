@@ -1390,6 +1390,9 @@ let sketchWasActive = false;
 sketch.onState = () => {
   if (sketch.active && !sketchWasActive) palette.emitAll(); // apply palette opts
   sketchWasActive = sketch.active;
+  // The Dimension tool's right-click menu has its own Reference switch; without
+  // this the palette's box kept the old value, and handed it to the next sketch.
+  if (sketch.active) palette.set("reference", sketch.referenceDim);
   // The undo/redo buttons live and die with the sketch history while a sketch is
   // open, and `store.onDocChange` cannot see that — the document does not change
   // when you draw a line. onState is where every in-sketch undo checkpoint lands
@@ -1432,6 +1435,7 @@ palette.onToggle = (key, value) => {
 };
 palette.onLookAt = () => sketch.lookAt();
 palette.onAction = handleAction; // the constraint grid: the ribbon's own dispatch
+sketch.onConstructionShown = (on, mixed) => palette.show("construction", on, mixed);
 
 // The ribbon's ⋯ overflow list and its split-button ▾ dropdowns drop into the
 // band the Sketch Palette is docked in, at z-index 3000 against the palette's

@@ -880,6 +880,30 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ### Fixed
 
+- **The Sketch Palette's switches do what they say.** Sketch Grid and Show
+  Profile change the screen as soon as you click them: the grid used to stay
+  until the mouse next moved over the canvas, and Show Profile never hid the
+  shading of the sketch you were editing. While it is off, the hidden areas
+  cannot be picked either. The Construction box now shows the geometry you
+  have selected: select a construction line and the box is ticked, untick it
+  and the line becomes normal, the same as right-click > Make normal. A
+  selection that is only partly construction shows a dash. The same click also
+  sets what you draw next, and with nothing selected the box shows that. After
+  a click on any box, Escape, Delete and Ctrl+Z work straight away; they used
+  to do nothing until you clicked the canvas. Reference Dim now follows the
+  Dimension tool's own right-click menu, and every item in the palette has a
+  tooltip saying what it does.
+
+- **A dimensioned line keeps its dimension when you make it construction.**
+  Locked or not, its value and its dimension and extension lines stay, as they
+  do on any other line. Before, only the number was left.
+
+- **The tangent symbol sits where the curves touch.** Between an arc and a line
+  or between two arcs, the T is drawn at the point of tangency instead of
+  somewhere between the two curves. Two symbols on the same spot, like a
+  tangent and a coincident where an arc leaves a line, sit side by side instead
+  of one on top of the other.
+
 - **Break keeps the constraints of the curve it splits.** A Coincident at either
   end, and Horizontal or Vertical, now carry over to the two halves instead of
   disappearing. Length and Equal no longer apply to a half, so those are removed,

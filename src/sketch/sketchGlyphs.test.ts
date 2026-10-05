@@ -249,3 +249,44 @@ describe("every geometric constraint is deletable with geometry under its badge"
     expect(cons).toHaveLength(0);
   });
 });
+
+// A tangent's badge now sits where the curves touch (34bede7e). For an arc
+// drawn off a line's end that is the shared end, the very spot the coincident's
+// ⊙ marks. Two badges on one spot used to be drawn one exactly over the other,
+// so the lower one could be neither read nor right-clicked away.
+describe("badges on the same spot sit side by side", () => {
+  const s2 = Math.SQRT1_2;
+  const ents: ResolvedEntity[] = [
+    { type: "line", id: "l", x1: 0, y1: 0, x2: 100, y2: 0 },
+    { type: "arc", id: "a", x1: 100, y1: 0, x2: 120, y2: 20, mx: 100 + 20 * s2, my: 20 - 20 * s2 },
+  ];
+  const cons: SketchConstraint[] = [
+    { type: "coincident", e1: "l", p1: 1, e2: "a", p2: 0 },
+    { type: "tangent2", a: "l", b: "a" },
+    { type: "horizontal", line: "l" },
+  ];
+  /** screen px of a plane point: 3 px per mm, y up, origin at (100, 400) */
+  const projecting = {
+    camera: new THREE.PerspectiveCamera(),
+    projectToOverlay: (w: THREE.Vector3) => ({ x: 100 + w.x * 3, y: 400 - w.y * 3, width: 900, height: 700 }),
+  } as unknown as Viewport;
+  const drawnAt = (el: FakeEl) => {
+    const m = /translate\(([-\d.]+)px, ([-\d.]+)px\)/.exec(el.style.transform ?? "");
+    return m ? { x: Number(m[1]), y: Number(m[2]) } : null;
+  };
+
+  it("the tangent beside the coincident on the joint, the H on its own spot untouched", () => {
+    body().innerHTML = "";
+    const glyphs = new SketchGlyphs(projecting);
+    glyphs.show(constraintGlyphs(ents, cons), plane, new Set(), new Set());
+    (glyphs as unknown as { loop: () => void }).loop();
+    const [coinc, tan, h] = byClass(body(), "sketch-glyph");
+    expect([coinc?.textContent, tan?.textContent, h?.textContent]).toEqual(["⊙", "T", "H"]);
+    const near = (x: number, y: number) => ({ x: expect.closeTo(x, 6), y: expect.closeTo(y, 6) });
+    const joint = { x: 100 + 100 * 3, y: 400 };
+    expect(drawnAt(coinc!)).toEqual(near(joint.x, joint.y));
+    // beside it, not on it: a badge is at least 16 px across
+    expect(drawnAt(tan!)).toEqual(near(joint.x + 20, joint.y));
+    expect(drawnAt(h!)).toEqual(near(100 + 50 * 3, 400));
+  });
+});

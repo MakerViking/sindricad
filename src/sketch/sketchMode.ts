@@ -271,6 +271,10 @@ export class SketchMode {
   active = false;
   tool: SketchTool = "select";
   onState: (() => void) | null = null; // notify UI (tool/active changed)
+  /** What the palette's Construction box should show changed: see
+   *  constructionShown(). Fired from refreshActive, which every selection change
+   *  and every edit ends in (it is what paints the selection). */
+  onConstructionShown: ((on: boolean, mixed: boolean) => void) | null = null;
 
   private plane = new SketchPlane("XY");
   private entities: ResolvedEntity[] = [];
@@ -973,6 +977,7 @@ export class SketchMode {
     else this.dims.hide();
     this.redrawGlyphs();
     this.sayTextFailures();
+    this.showConstruction();
     // On-demand renderer: a keyboard-driven repaint (e.g. async text glyphs landing
     // via redraw()) fires no pointer event, so force a frame or it won't draw until
     // the next mouse move.
@@ -1027,6 +1032,10 @@ export class SketchMode {
   setGridVisible(on: boolean) {
     this.gridVisible = on;
     if (this.grid) this.grid.visible = on;
+    // The viewport draws on demand and a palette click moves nothing on the
+    // canvas, so the grid only went away at the next mouse move over it (report
+    // 9b764625: "the Sketch grid tickbox does not appear to do anything").
+    this.viewport.requestRender();
   }
   setGridSnap(on: boolean) {
     this.gridSnap = on;
@@ -1036,8 +1045,29 @@ export class SketchMode {
     // With geometry selected the switch converts it as well, the way the
     // Construction toggle does in mainstream MCAD (report 2fc27cf1: "I cannot
     // see how to switch a line from construction to line"). It still sets the
-    // mode too, so the box never disagrees with what the next line will be.
+    // mode too, so once the selection is gone and the box shows the mode again
+    // (constructionShown), it never disagrees with what the next line will be.
     if (this.active && this.selected.size) this.setSelectedConstruction(on);
+    this.showConstruction();
+  }
+
+  /** What the palette's Construction box shows: the SELECTION while geometry
+   *  that can change is selected, else the drawing mode. Report 9b764625: "I
+   *  have a construction line, the construction check box does not do
+   *  anything". The box showed the mode, unticked, so ticking it with that
+   *  line selected asked for what it already was. Now selecting it ticks the
+   *  box, and unticking makes it normal, the same thing right-click > Make
+   *  normal does. `on` is the selection's majority, the rule that names the
+   *  right-click item, and `mixed` says the selection is part construction. */
+  constructionShown(): { on: boolean; mixed: boolean } {
+    const sel = this.constructionTargets();
+    if (!sel.length) return { on: this.constructionMode, mixed: false };
+    const n = sel.filter((e) => e.construction).length;
+    return { on: this.selectionMostlyConstruction(), mixed: n > 0 && n < sel.length };
+  }
+  private showConstruction() {
+    const { on, mixed } = this.constructionShown();
+    this.onConstructionShown?.(on, mixed);
   }
 
   /** Make the selection construction geometry, or make it normal again. The
@@ -1096,6 +1126,11 @@ export class SketchMode {
   }
   setReferenceDim(on: boolean) {
     this.referenceMode = on;
+  }
+  /** The palette's Reference Dim switch, read back: the Dimension tool's
+   *  right-click menu flips it too (openDimensionMenu). */
+  get referenceDim(): boolean {
+    return this.referenceMode;
   }
   /** place a dimension, stamping it driven (reference, measured-only) when the
    *  Reference palette toggle is on — or when the plan says every operand is

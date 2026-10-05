@@ -145,3 +145,74 @@ describe("constraintGlyphs — the rectangle EDGE spelling of a corner", () => {
     ])).toHaveLength(0);
   });
 });
+
+// Report 34bede7e: "When I create a tangent between an arc and a line the
+// tangent constraint icon is a long way from the point of tangency". The badge
+// sat halfway between the two curves' MIDPOINTS: an arc drawn off the end of a
+// 100 mm line put it 18 mm from where they meet.
+describe("a tangent's badge sits where the two curves touch (34bede7e)", () => {
+  const at = (ents: ResolvedEntity[], c: SketchConstraint) => {
+    const g = constraintGlyphs(ents, [c]);
+    expect(g, "a tangent with no badge cannot be deleted").toHaveLength(1);
+    expect(g[0]!.label).toBe("T");
+    return g[0]!.pos;
+  };
+  const expectAt = (p: { x: number; y: number }, x: number, y: number) => {
+    expect(Math.hypot(p.x - x, p.y - y), `badge at (${p.x}, ${p.y}), touching point (${x}, ${y})`).toBeLessThan(1e-9);
+  };
+  const s2 = Math.SQRT1_2;
+
+  it("an arc drawn off the end of a line: on the shared end, either operand order", () => {
+    // centre (100, 20), r 20, from (100, 0) a quarter turn up to (120, 20)
+    const ents: ResolvedEntity[] = [
+      { type: "line", id: "l", x1: 0, y1: 0, x2: 100, y2: 0 },
+      { type: "arc", id: "a", x1: 100, y1: 0, x2: 120, y2: 20, mx: 100 + 20 * s2, my: 20 - 20 * s2 },
+    ];
+    expectAt(at(ents, { type: "tangent2", a: "l", b: "a" }), 100, 0);
+    expectAt(at(ents, { type: "tangent2", a: "a", b: "l" }), 100, 0);
+  });
+
+  it("a circle on a line, the older { line, circle } spelling: the foot of its centre", () => {
+    const ents: ResolvedEntity[] = [
+      { type: "line", id: "l", x1: 0, y1: 0, x2: 100, y2: 0 },
+      { type: "circle", id: "c", x: 30, y: 10, radius: 10 },
+    ];
+    expectAt(at(ents, { type: "tangent", line: "l", circle: "c" }), 30, 0);
+  });
+
+  it("two arcs touching from outside: on the line through their centres", () => {
+    const ents: ResolvedEntity[] = [
+      // centre (0, 0), r 10, from (0, 10) round to (10, 0)
+      { type: "arc", id: "a", x1: 0, y1: 10, x2: 10, y2: 0, mx: 10 * s2, my: 10 * s2 },
+      // centre (25, 0), r 15, from (10, 0) round to (25, 15)
+      { type: "arc", id: "b", x1: 10, y1: 0, x2: 25, y2: 15, mx: 25 - 15 * s2, my: 15 * s2 },
+    ];
+    expectAt(at(ents, { type: "tangent2", a: "a", b: "b" }), 10, 0);
+    expectAt(at(ents, { type: "tangent2", a: "b", b: "a" }), 10, 0);
+  });
+
+  it("a circle touching the inside of a bigger one, either operand order", () => {
+    const ents: ResolvedEntity[] = [
+      { type: "circle", id: "big", x: 0, y: 0, radius: 20 },
+      { type: "circle", id: "small", x: 12, y: 0, radius: 8 },
+    ];
+    expectAt(at(ents, { type: "tangent2", a: "small", b: "big" }), 20, 0);
+    expectAt(at(ents, { type: "tangent2", a: "big", b: "small" }), 20, 0);
+  });
+
+  it("a rectangle EDGE operand", () => {
+    const ents: ResolvedEntity[] = [
+      { type: "rectangle", id: "R", x: 0, y: 0, width: 40, height: 20 },
+      { type: "circle", id: "c", x: 5, y: -20, radius: 10 },
+    ];
+    expectAt(at(ents, { type: "tangent2", a: "R~0", b: "c" } as SketchConstraint), 5, -10);
+  });
+
+  it("still draws a badge when there is no single touching point, so it can be deleted", () => {
+    const ents: ResolvedEntity[] = [
+      { type: "circle", id: "c1", x: 0, y: 0, radius: 10 },
+      { type: "circle", id: "c2", x: 0, y: 0, radius: 10 },
+    ];
+    expectAt(at(ents, { type: "tangent2", a: "c1", b: "c2" }), 0, 0);
+  });
+});

@@ -52,6 +52,9 @@ export class SketchGlyphs {
   private lastPress = { t: 0, x: 0, y: 0, cIndex: -1 };
   private static readonly DBL_MS = 500;
   private static readonly DBL_PX = 5;
+  /** How far apart two badges on one spot are drawn: a badge is 16 px across
+   *  at its narrowest (styles.css .sketch-glyph), plus a gap. */
+  private static readonly SIDE_BY_SIDE_PX = 20;
 
   /** is this press the second half of a double-click on the same badge? */
   private isDoublePress(cIndex: number, e: PointerEvent): boolean {
@@ -175,6 +178,12 @@ export class SketchGlyphs {
     const hash = camHash(cam);
     if (hash === this.lastCamHash) return;
     this.lastCamHash = hash;
+    // Badges anchored on the same spot sit side by side, in constraint order,
+    // instead of one on top of the other. A tangent's badge sits where the two
+    // curves touch, which for an arc drawn off a line's end is the very point
+    // the coincident's badge marks; stacked, the one underneath could be
+    // neither read nor right-clicked away. A fix on a joined end is the same.
+    const taken = new Map<string, number>();
     for (const g of this.items) {
       this.plane.to3D(g.pos.x, g.pos.y, this.scratch);
       const p = this.viewport.projectToOverlay(this.scratch);
@@ -185,8 +194,11 @@ export class SketchGlyphs {
         g.el.style.visibility = "hidden";
         continue;
       }
+      const at = `${Math.round(p.x)},${Math.round(p.y)}`;
+      const n = taken.get(at) ?? 0;
+      taken.set(at, n + 1);
       g.el.style.visibility = "";
-      g.el.style.transform = `translate(${p.x}px, ${p.y}px) translate(-50%, -50%)`;
+      g.el.style.transform = `translate(${p.x + n * SketchGlyphs.SIDE_BY_SIDE_PX}px, ${p.y}px) translate(-50%, -50%)`;
     }
   };
 }

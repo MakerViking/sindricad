@@ -56,6 +56,7 @@ export interface SketchInternals {
   setTool(t: SketchTool): void;
   setConstruction(on: boolean): void;
   setSelectedConstruction(on?: boolean): boolean;
+  constructionShown(): { on: boolean; mixed: boolean };
   lockDimensionCommand(): void;
 }
 

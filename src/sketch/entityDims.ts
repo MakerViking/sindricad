@@ -12,6 +12,7 @@ import { isDriven, dimPlaceOf, projEndSamples } from "../types";
 import { circumcenter, arcCenterRadius } from "./arc";
 import { polygonPoints, rectCorners } from "./region";
 import { paramOnSeg, distToSeg, signedAngleDeg } from "./geom2d";
+import { isOriginGeometry } from "./origin";
 
 export type { DimField };
 type V = THREE.Vector2;
@@ -167,7 +168,8 @@ export function staggeredDefaults(ents: ResolvedEntity[]): Map<string, DimPlace>
   const tol = Math.max(dimOffset(0), 1e-9);
   const groups: ResolvedEntity[][] = [];
   for (const e of ents) {
-    if (e.type !== "circle" || e.construction) continue;
+    // construction circles too: their badges are drawn like any other
+    if (e.type !== "circle") continue;
     const g = groups.find((q) => {
       const h = q[0];
       return h && h.type === "circle" && Math.hypot(h.x - e.x, h.y - e.y) <= tol;
@@ -281,12 +283,20 @@ export function entityDims(e: ResolvedEntity, defaults?: DimPlace): EntityDim[] 
   ];
 }
 
-/** every dimension's annotation segments for a set of entities (skips construction) */
+/** every dimension's annotation segments for a set of entities.
+ *
+ *  Construction geometry keeps its lines. It used to skip it, while the badge
+ *  itself stayed (SketchDimensions labels every entity but the origin), so a
+ *  dimensioned line turned construction lost its dimension and extension
+ *  lines and kept a bare number floating beside it (report 1bf12403: "the
+ *  dimension box shows but not the dimension marker lines"). The origin is
+ *  what that filter was really for: its axes are construction lines 20 m long,
+ *  and they carry no dimension. */
 export function dimensionSegments(ents: ResolvedEntity[]): [V, V][] {
   const out: [V, V][] = [];
   const defaults = staggeredDefaults(ents); // labels and their lines must agree
   for (const e of ents) {
-    if (e.construction) continue;
+    if (isOriginGeometry(e.id)) continue;
     for (const d of entityDims(e, defaults.get(e.id))) out.push(...d.lines);
   }
   return out;

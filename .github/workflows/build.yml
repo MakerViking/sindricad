@@ -1009,6 +1009,18 @@ jobs:
         env:
           SC_CHROME: /usr/bin/google-chrome
         run: node e2e/palette_overflow_e2e.cjs
+      # Reports 9b764625, 1bf12403 and 34bede7e: Sketch Grid and Show Profile
+      # changed state without changing the screen, the Construction box ignored
+      # the selection (and a clicked box kept the keyboard from the sketch), a
+      # dimensioned line made construction lost its dimension lines, and the
+      # tangent symbol sat far from the tangency. The viewport draws on demand,
+      # so the grid and profile checks read the PIXELS of a real screenshot
+      # after a real click, with the mouse kept off the canvas. No SC_TOKEN: the
+      # documents are sketches only.
+      - name: Sketch Palette end-to-end
+        env:
+          SC_CHROME: /usr/bin/google-chrome
+        run: node e2e/sketch_palette_e2e.cjs
       # Field report 04191fb5: an extrude with a Start offset took the ground
       # grid up with the body and "the origin is left hanging in space". The
       # number comes off a rebuilt model's bounding box, travels through the

@@ -571,8 +571,12 @@ export class SketchOverlay {
     this.hovered = wr;
     this.recolorFills();
   }
-  /** active-sketch region whose material contains the 2D sketch point (sketch mode) */
+  /** active-sketch region whose material contains the 2D sketch point (sketch
+   *  mode). None while Show Profile is off: an area you cannot see is not one
+   *  you can pick, or a click inside it would select something invisible and
+   *  carry it to Extrude. The press falls through to the marquee instead. */
   activeRegionAt(p: THREE.Vector2): WorldRegion | null {
+    if (!this.activeFills.visible) return null;
     for (const wr of this.activeRegions) {
       if (pointInRegion(p, wr.region)) return wr;
     }
@@ -785,9 +789,16 @@ export class SketchOverlay {
     return this.pendingMarkers.filter((m) => m.visible).length;
   }
 
-  /** Show/hide the translucent profile region fills (Sketch Palette toggle). */
+  /** Show/hide the translucent profile region fills (Sketch Palette toggle).
+   *  The switch is only ever reached from inside a sketch, so it has to cover
+   *  the fills of the sketch being edited too: it used to hide only the OTHER
+   *  sketches', and in a document with one sketch it did nothing at all (report
+   *  9b764625: "I don't know what ... show profile do"). And it asks for the
+   *  frame itself, since a palette click moves nothing on the canvas. */
   setFillsVisible(on: boolean) {
     this.fills.visible = on;
+    this.activeFills.visible = on;
+    this.onRepaintNeeded();
   }
 
   /** geometry is per-object (dispose); materials are module-shared (keep). */

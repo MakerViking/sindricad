@@ -212,8 +212,8 @@ describe("the origin is visible reference, not clutter or a dead click", () => {
   it("carries no dimension labels", () => {
     // The axes are conceptually infinite; the 20 m length is an implementation
     // stand-in. Labelling it put two "20000 mm" badges over the origin of every
-    // sketch. dimensionSegments already skipped them via its construction
-    // filter — this is the other half of the same rule.
+    // sketch. dimensionSegments skips the same three for their lines; this
+    // is the other half of the same rule.
     // entityLabels is the one list both show() and follow() lay badges out from
     const at = sketchDimsSrc.indexOf("function entityLabels(entities: ResolvedEntity[]");
     expect(at, "sketchDimensions' entityLabels moved").toBeGreaterThan(-1);

@@ -6,7 +6,7 @@
 import * as THREE from "three";
 import type { ResolvedEntity } from "./snap";
 import type { SketchConstraint } from "../types";
-import { lineOperand, operandPoint } from "./entityDims";
+import { asRound, lineOperand, operandPoint } from "./entityDims";
 
 const V = (x: number, y: number) => new THREE.Vector2(x, y);
 
@@ -56,6 +56,40 @@ function entCenter(e: ResolvedEntity): THREE.Vector2 {
   }
 }
 
+/** Where two tangent curves touch, or null when that is not one point.
+ *
+ *  Report 34bede7e: "the tangent constraint icon is a long way from the point
+ *  of tangency". The badge sat halfway between the line's MIDPOINT and the
+ *  arc's, which on a long line or a big arc is nowhere near where they meet.
+ *  A line and a round touch at the foot of the round's centre on the line
+ *  (taken as infinite, as the solver takes it). Two rounds touch on the line
+ *  through their centres: `a`'s radius out from its centre towards `b`, or
+ *  away from `b` when `a` sits inside it (internal tangency, `b` the larger).
+ *  Read off the geometry as it is, so mid-solve it is merely near the point. */
+function tangencyPoint(byId: Map<string, ResolvedEntity>, a: string, b: string): THREE.Vector2 | null {
+  const round = (id: string) => {
+    const e = byId.get(id);
+    return e ? asRound(e) : null;
+  };
+  const ra = round(a), rb = round(b);
+  const line = !ra ? lineOperand(byId, a) : !rb ? lineOperand(byId, b) : null;
+  const r = ra ?? rb;
+  if (line && r) {
+    const dx = line.x2 - line.x1, dy = line.y2 - line.y1;
+    const len2 = dx * dx + dy * dy;
+    if (len2 < 1e-18) return null;
+    const t = ((r.x - line.x1) * dx + (r.y - line.y1) * dy) / len2;
+    return V(line.x1 + dx * t, line.y1 + dy * t);
+  }
+  if (!ra || !rb) return null;
+  const d = Math.hypot(rb.x - ra.x, rb.y - ra.y);
+  if (d < 1e-9) return null; // concentric: they touch everywhere or nowhere
+  const ux = (rb.x - ra.x) / d, uy = (rb.y - ra.y) / d;
+  const inside = Math.abs(d - Math.abs(ra.r - rb.r)) < Math.abs(d - (ra.r + rb.r)) && ra.r < rb.r;
+  const k = inside ? -ra.r : ra.r;
+  return V(ra.x + ux * k, ra.y + uy * k);
+}
+
 export function constraintGlyphs(ents: ResolvedEntity[], constraints: SketchConstraint[]): ConstraintGlyph[] {
   const byId = new Map(ents.map((e) => [e.id, e]));
   const out: ConstraintGlyph[] = [];
@@ -90,8 +124,10 @@ export function constraintGlyphs(ents: ResolvedEntity[], constraints: SketchCons
       case "collinear": push(i, "—", mid2(center(c.l1), center(c.l2))); break;
       case "equal": push(i, "=", center(c.l1)); break;
       case "equalRadius": push(i, "=", center(c.a)); break;
-      case "tangent": push(i, "T", mid2(center(c.line), center(c.circle))); break;
-      case "tangent2": push(i, "T", mid2(center(c.a), center(c.b))); break;
+      // At the touching point; the old halfway spot only when there is none
+      // to find (an operand that does not resolve, two concentric rounds).
+      case "tangent": push(i, "T", tangencyPoint(byId, c.line, c.circle) ?? mid2(center(c.line), center(c.circle))); break;
+      case "tangent2": push(i, "T", tangencyPoint(byId, c.a, c.b) ?? mid2(center(c.a), center(c.b))); break;
       case "coincident": push(i, "⊙", refPos(c.e1, c.p1)); break;
       case "concentric": push(i, "◎", center(c.c1)); break;
       case "midpoint": push(i, "M", center(c.line)); break;

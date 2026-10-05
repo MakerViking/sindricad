@@ -8,6 +8,7 @@ import {
 import type { ResolvedEntity } from "./snap";
 import type { SketchConstraint } from "../types";
 import { isPlacedDim } from "../types";
+import { originGeometry } from "./origin";
 
 describe("entityDims", () => {
   it("gives width + height for a rectangle, writable in place", () => {
@@ -44,13 +45,27 @@ describe("entityDims", () => {
 });
 
 describe("dimensionSegments", () => {
-  it("collects annotation segments and skips construction geometry", () => {
+  it("collects annotation segments", () => {
     const real: ResolvedEntity = { type: "rectangle", id: "r", width: 20, height: 10, x: 0, y: 0 };
-    const constr: ResolvedEntity = { type: "circle", id: "c", radius: 5, x: 0, y: 0, construction: true };
-    const segs = dimensionSegments([real, constr]);
-    expect(segs.length).toBeGreaterThan(0);
-    // construction circle contributes nothing
-    expect(dimensionSegments([constr])).toEqual([]);
+    expect(dimensionSegments([real]).length).toBeGreaterThan(0);
+  });
+
+  // Report 1bf12403: "A line with a dimension value... turn it into
+  // construction and the dimension disappears, if the dimension is first
+  // locked then the dimension box shows but not the dimension marker lines".
+  // The badge is drawn for construction geometry; its lines were skipped.
+  it("draws a construction entity's dimension lines exactly as it would a normal one's (1bf12403)", () => {
+    const line: ResolvedEntity = { type: "line", id: "l", x1: 0, y1: 0, x2: 40, y2: 10 };
+    const circle: ResolvedEntity = { type: "circle", id: "c", radius: 5, x: 60, y: 0 };
+    for (const e of [line, circle]) {
+      const normal = dimensionSegments([e]);
+      expect(normal.length, e.type).toBeGreaterThan(0);
+      expect(dimensionSegments([{ ...e, construction: true }]), e.type).toEqual(normal);
+    }
+  });
+
+  it("draws none for the origin, whose axes are construction lines 20 m long", () => {
+    expect(dimensionSegments(originGeometry())).toEqual([]);
   });
 });
 
@@ -454,6 +469,19 @@ describe("badge label placement", () => {
     for (const d of [o!, i!]) {
       for (const r of [17, 30]) expect(Math.abs(d.labelPos.length() - r)).toBeGreaterThan(2);
     }
+  });
+
+  it("a construction circle fans out with the circle it shares a centre with", () => {
+    // its badge and lines are drawn like any other circle's, so it must not
+    // stack on its neighbour's either (an exploded polygon leaves two of them)
+    const ents: ResolvedEntity[] = [
+      { type: "circle", id: "outer", radius: 30, x: 0, y: 0 },
+      { type: "circle", id: "inner", radius: 17, x: 0, y: 0, construction: true },
+    ];
+    const defs = staggeredDefaults(ents);
+    const [o] = entityDims(ents[0]!, defs.get("outer"));
+    const [i] = entityDims(ents[1]!, defs.get("inner"));
+    expect(o!.labelPos.distanceTo(i!.labelPos)).toBeGreaterThan(10);
   });
 
   it("a lone circle is not staggered, and a user placement beats the default", () => {

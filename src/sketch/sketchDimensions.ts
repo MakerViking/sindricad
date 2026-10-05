@@ -115,8 +115,8 @@ function entityLabels(entities: ResolvedEntity[]): { i: number; d: EntityDim }[]
     // The origin carries no dimensions. Its axes are conceptually INFINITE and
     // their 20 m length is an implementation stand-in, so labelling it put two
     // "20000 mm" badges over the origin of every sketch. dimensionSegments
-    // already skips these (via its construction filter); this is the other
-    // half of the same rule.
+    // skips the same three for their lines; this is the other half of the same
+    // rule. Construction geometry is labelled, and lined, like any other.
     if (isOriginGeometry(e.id)) return;
     for (const d of entityDims(e, defaults.get(e.id))) out.push({ i, d });
   });
