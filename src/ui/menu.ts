@@ -21,6 +21,12 @@ export interface MenuDef {
 export class Menubar {
   private openPopup: HTMLDivElement | null = null;
 
+  /** A dropdown is open. Its Esc closes it and does not stop the key, so
+   *  main.ts asks this to leave that Esc alone. */
+  get isOpen(): boolean {
+    return this.openPopup !== null;
+  }
+
   constructor(
     private root: HTMLElement,
     menus: MenuDef[],

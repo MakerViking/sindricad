@@ -489,6 +489,11 @@ export class ViewCube {
 
   // ---- right-click context menu -------------------------------------------
 
+  /** The menu is open: the next Esc closes it (Viewport.cubeOwnsEscape). */
+  get menuOpen(): boolean {
+    return this.menu !== null;
+  }
+
   private openMenu(clientX: number, clientY: number, side: ViewCubeSide) {
     this.closeMenu();
     const menu = document.createElement("div");

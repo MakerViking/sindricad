@@ -187,7 +187,7 @@ textured faces in a different palette color than the rest of the body.
 </p>
 
 A section plane cuts the model live, so a shelled or hollow part can be checked from the
-inside before it prints. Drag the arrow along the axis, or type an exact offset.
+inside before it prints. Drag the arrow along the axis, or type exactly where the cut goes.
 
 <p align="center">
   <img src="assets/readme/measure.png" alt="Measuring between two edges of a plate: the readout shows distance, axis deltas, centre distance and angle" width="780">

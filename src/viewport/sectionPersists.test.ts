@@ -112,8 +112,10 @@ describe("the wiring that makes the cut survive", () => {
   });
 
   // Without this the cut becomes unremovable once the gizmo is down, which is a
-  // worse bug than the one being fixed.
+  // worse bug than the one being fixed. Through the tool, so the kept cut's
+  // chip goes with it (sectionTool.test.ts drives clear() itself).
   it("toggling Section clears a cut whose gizmo is already down", () => {
-    expect(mainSrc).toMatch(/if \(viewport\.clipped\) \{\s*viewport\.setClipPlane\(null\);/);
+    expect(mainSrc).toMatch(/if \(section\.kept\) \{\s*section\.clear\(\);/);
+    expect(sectionSrc).toMatch(/clear\(\) \{[\s\S]*?this\.viewport\.setClipPlane\(null\);/);
   });
 });

@@ -1043,6 +1043,16 @@ jobs:
           SC_TOKEN: citoken
           SC_CHROME: /usr/bin/google-chrome
         run: node e2e/bug_button_cancel_e2e.cjs
+      # Field reports 1a28cd21 and 983f5f56: Section's check looked like it did
+      # nothing, and its box counted from the model's middle. What Esc does to
+      # a kept cut is decided in main.ts's key handlers, which a unit test can
+      # only read; the first version took the cut along with an Esc that closed
+      # Measure, and only a running app showed it.
+      - name: Section chip and position end-to-end
+        env:
+          SC_TOKEN: citoken
+          SC_CHROME: /usr/bin/google-chrome
+        run: node e2e/section_chip_e2e.cjs
 
       - name: Sidecar log on failure
         if: failure()

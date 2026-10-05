@@ -1113,6 +1113,62 @@ body {
   z-index: 15;
 }
 
+/* A kept section cut, viewport top-left: "Section X 12 mm" and the × that takes
+   the cut away (features/sectionTool.ts). The same pill as the view controls,
+   so it reads as view chrome rather than a tool. */
+.section-chip {
+  position: absolute;
+  left: var(--s-4);
+  top: var(--s-4);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  padding: 3px 4px 3px 10px;
+  font-size: 11.5px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+  background: rgba(22, 24, 29, 0.78);
+  -webkit-backdrop-filter: blur(12px) saturate(1.2);
+          backdrop-filter: blur(12px) saturate(1.2);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-pill);
+  box-shadow: var(--shadow-pill);
+  z-index: 15;
+}
+.section-chip-icon {
+  display: inline-flex;
+  color: var(--accent-hot);
+}
+.section-chip-icon svg {
+  width: 14px;
+  height: 14px;
+  display: block;
+}
+.section-chip-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--r-pill);
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.section-chip-remove:hover {
+  background: var(--raised);
+  border-color: transparent;
+  color: var(--text);
+}
+.section-chip-remove svg {
+  width: 14px;
+  height: 14px;
+  display: block;
+}
+
 #viewcontrols button {
   border: 1px solid transparent;
   color: var(--text-dim);

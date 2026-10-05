@@ -617,6 +617,21 @@ This file starts on 2026-08-03. For anything before that, see the
   and offers that axis first, so one Enter puts the cut back where it was. A new
   or reopened document starts fresh.
 
+- **Section's check button does something you can see.** The check, or Enter,
+  puts the arrow away and keeps the cut on screen so you can sketch and work
+  inside it. Before, it left everything as it was and looked like it did
+  nothing. A kept cut now shows a chip at the top left of the view, such as
+  "Section Z 12 mm", and the cross on it takes the cut away. Esc does the same
+  once nothing is selected and no panel or menu is open, and so does Section
+  again. The first time a cut stays on, I say so.
+
+- **Section's number is where the cut is, not how far it moved.** The box
+  used to call the middle of the model 0 and count from there. It now shows the
+  cut's distance from the origin plane across the chosen axis, which is its X,
+  Y or Z position, and labels the box with that axis. Dragging the arrow moves
+  that number in round steps, and typing a number puts the cut there, below the
+  origin too.
+
 - **Error messages stay up long enough to read.** An error or a warning now
   stays up longer the longer it is, up to 30 seconds, and any message stays
   while your pointer is on it. When a feature you just made fails, its message

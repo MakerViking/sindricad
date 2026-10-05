@@ -65,7 +65,7 @@ import { createFeatureStarters, TOOL_BUSY_MESSAGE } from "./features/featureStar
 import { repairableDiagFor } from "./features/repickReference";
 import { planeOf, activeDatumPlanes, datumPlaneDef as datumPlaneDefOf } from "./document/planeOf";
 import { createContextMenus } from "./ui/contextMenus";
-import { createPanels } from "./ui/panels";
+import { createPanels, FloatingPanel } from "./ui/panels";
 import { openParamsDialog } from "./ui/paramsDialog";
 import { solveSketchFeature } from "./sketch/headlessSolve";
 import { setPrompt } from "./ui/prompt";
@@ -476,7 +476,7 @@ const welcome = new WelcomeScreen({
 applyDocumentLang();
 onLocaleChange(() => applyDocumentLang());
 trackHoveredKey();
-new Menubar(document.getElementById("menubar")!, [
+const menubar = new Menubar(document.getElementById("menubar")!, [
   {
     label: t("menu.file.title"),
     items: [
@@ -904,6 +904,49 @@ viewport.regionPickAt = (x, y, additive) => {
   setPrompt(n ? t("status.regionsSelected", { count: n }) : null);
   return true;
 };
+// Esc with nothing else to let go of takes a kept section cut away, the
+// keyboard's way to the chip's ×: one Esc clears a selection or closes a panel,
+// the next one the cut. DECIDED in the capture phase, before a tool's own Esc
+// handler can close the tool (Esc that cancels a Fillet must not take the cut
+// too) and before the handlers below clear the selection; ACTED on in the
+// bubble phase, so an Esc that something stopped on the way, a context menu
+// closing, never gets here. Never inside a sketch (sketching inside a kept cut
+// is what keeping it is for, #17), and never from a field, where Esc is the
+// field's.
+let escForCut = false;
+/** Something on screen that this Esc closes, whose listener does not stop the
+ *  key, so the capture-phase decision has to ask: a floating panel (Properties,
+ *  Change Parameters, Interference, the printer camera), a menubar dropdown,
+ *  the ViewCube's menu or its face pick, a dialog (the print mapping one is not
+ *  counted by isChoiceOpen). Missing these took the cut with an Esc that only
+ *  closed Properties. */
+function escClosesSomethingElse(): boolean {
+  return (
+    FloatingPanel.anyClosesOnEsc ||
+    menubar.isOpen ||
+    viewport.cubeOwnsEscape ||
+    document.querySelector(".choice-backdrop") !== null
+  );
+}
+window.addEventListener("keydown", (e) => {
+  escForCut =
+    e.key === "Escape" &&
+    !isImeComposing(e) &&
+    !isEditableTarget(e.target) &&
+    section.kept &&
+    !toolBusy() &&
+    !sketch.active &&
+    !escClosesSomethingElse() &&
+    overlay.selectedRegions().length === 0 &&
+    viewport.getSelectedBodies().length === 0 &&
+    viewport.getSelectedFaceIds().length === 0 &&
+    viewport.selectedEdgeSelectors().length === 0 &&
+    selectedFeature == null;
+}, true);
+window.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && escForCut) section.clear();
+  escForCut = false;
+});
 // Esc clears a pre-selected profile-area selection (when not in a tool/sketch)
 window.addEventListener("keydown", (e) => {
   // Escape is how an IME CANCELS a conversion; while one is running the key
@@ -1840,10 +1883,11 @@ function handleAction(action: string) {
         section.stop();
         break;
       }
-      // The gizmo is down but the cut is still on screen (it outlived a tool or
-      // a rebuild). Toggling Section is how you put the model back together.
-      if (viewport.clipped) {
-        viewport.setClipPlane(null);
+      // The gizmo is down but the cut is still on screen (kept with the check,
+      // or it outlived a tool or a rebuild). Toggling Section is how you put
+      // the model back together, as the chip's × does.
+      if (section.kept) {
+        section.clear();
         break;
       }
       if (!hasBody()) {

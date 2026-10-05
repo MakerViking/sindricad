@@ -2483,6 +2483,13 @@ export class Viewport {
 
   // ---- ViewCube side application + redefinition ----------------------------
 
+  /** The ViewCube's right-click menu is open, or it waits for a face to
+   *  redefine a side: the next Esc is the cube's. Neither listener stops the
+   *  key, so main.ts asks this before an Esc takes a kept section cut away. */
+  get cubeOwnsEscape(): boolean {
+    return this.setOverrideSide !== null || this.cube.menuOpen;
+  }
+
   /** Apply a cube side: a user override if one exists, else the default view. */
   private applyCubeSide(side: ViewCubeSide) {
     this.requestRender();

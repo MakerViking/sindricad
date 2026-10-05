@@ -79,7 +79,11 @@ const press = (e: unknown) => {
   for (const fn of [...winKeys]) fn(e);
 };
 
+// Panels a test left open are closed before the next one, so the count behind
+// FloatingPanel.anyClosesOnEsc starts from nothing open.
+const opened: InstanceType<typeof FloatingPanel>[] = [];
 beforeEach(() => {
+  for (const p of opened.splice(0)) p.close();
   winKeys.length = 0;
   body.children.length = 0;
 });
@@ -87,6 +91,7 @@ beforeEach(() => {
 describe("FloatingPanel (Properties / Interference / Overhang) while an IME is composing", () => {
   function open() {
     const panel = new FloatingPanel();
+    opened.push(panel);
     let closed = 0;
     panel.open("<div>props</div>", { closeOnEsc: true, onClose: () => closed++ });
     return { onScreen: () => body.children.length > 0, closed: () => closed };
@@ -112,6 +117,45 @@ describe("FloatingPanel (Properties / Interference / Overhang) while an IME is c
     press(key("Escape"));
     expect(p.onScreen()).toBe(false);
     expect(p.closed()).toBe(1);
+  });
+});
+
+// main.ts leaves an Esc to a panel that will close on it, rather than also
+// taking a kept section cut away: the panel's listener does not stop the key.
+// That reads anyClosesOnEsc, so it must be true exactly while such a panel is
+// up, through every way one closes.
+describe("FloatingPanel says when an Esc is its own", () => {
+  it("while a panel that closes on Esc is open, and not after Esc closes it", () => {
+    expect(FloatingPanel.anyClosesOnEsc).toBe(false);
+    const panel = new FloatingPanel();
+    panel.open("<div>props</div>", { closeOnEsc: true });
+    expect(FloatingPanel.anyClosesOnEsc).toBe(true);
+    press(key("Escape"));
+    expect(FloatingPanel.anyClosesOnEsc).toBe(false);
+  });
+
+  it("not for a panel Esc leaves open (Overhang)", () => {
+    const panel = new FloatingPanel();
+    panel.open("<div>overhang</div>");
+    expect(FloatingPanel.anyClosesOnEsc).toBe(false);
+    panel.close();
+  });
+
+  it("counts reopening as one panel, and its close button as closing it", () => {
+    const props = new FloatingPanel();
+    const params = new FloatingPanel();
+    props.open("<div>a</div>", { closeOnEsc: true });
+    props.open("<div>b</div>", { closeOnEsc: true }); // open() replaces the content
+    params.open("<div>p</div>", { closeOnEsc: true });
+    props.close();
+    expect(FloatingPanel.anyClosesOnEsc, "Parameters is still up").toBe(true);
+    params.close();
+    expect(FloatingPanel.anyClosesOnEsc).toBe(false);
+    params.close(); // a second close is harmless
+    expect(FloatingPanel.anyClosesOnEsc).toBe(false);
+    props.open("<div>c</div>", { closeOnEsc: true });
+    expect(FloatingPanel.anyClosesOnEsc, "a count driven below zero would hide this one").toBe(true);
+    props.close();
   });
 });
 

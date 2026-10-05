@@ -19,6 +19,14 @@ import { printerCameraStart, printerCameraStop, onPrinterCameraFrame, onPrinterC
  *  instance's content is ever shown at a time per panel — open() replaces it.
  *  (Also used by paramsDialog.ts.) */
 export class FloatingPanel {
+  /** Panels on screen that close on Esc. Their listener does not stop the key,
+   *  so main.ts asks this to leave that Esc to them: it must not also take a
+   *  kept section cut away. */
+  private static escOpen = 0;
+  static get anyClosesOnEsc(): boolean {
+    return FloatingPanel.escOpen > 0;
+  }
+
   private el: HTMLDivElement | null = null;
   private onEsc: ((e: KeyboardEvent) => void) | null = null;
   private onClose: (() => void) | null = null;
@@ -42,6 +50,7 @@ export class FloatingPanel {
         if (e.key === "Escape") this.close();
       };
       window.addEventListener("keydown", this.onEsc, true);
+      FloatingPanel.escOpen++;
     }
     return el;
   }
@@ -57,6 +66,7 @@ export class FloatingPanel {
     if (this.onEsc) {
       window.removeEventListener("keydown", this.onEsc, true);
       this.onEsc = null;
+      FloatingPanel.escOpen--;
     }
   }
 }

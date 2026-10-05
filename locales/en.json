@@ -570,8 +570,11 @@
     "rollingBack": "Rolling back to edit… (later features are hidden while editing)",
     "section": {
       "axisTitle": "Section — cut along which axis?",
+      "chip": "Section {axis} {at}",
       "horizontalHint": "horizontal cut",
-      "prompt": "Section: drag the arrow to move the cut · type a value + Enter · F flips the kept side · Esc to close"
+      "keptHint": "The section stays on so you can work inside it. To remove it, click the cross on the Section chip at the top left of the view, or press Esc when nothing is selected or open.",
+      "prompt": "Section: drag the arrow, or type where the cut goes along {axis}, measured from the origin · F flips the kept side · Enter or the check keeps the cut · Esc removes it",
+      "remove": "Remove the section (Esc)"
     },
     "split": {
       "above": "Above",

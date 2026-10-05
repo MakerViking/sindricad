@@ -1,17 +1,24 @@
 // The section TOOL, driven the way the user drives it: start() is what the axis
-// chooser calls, typing goes into the real offset box (input, then Enter), and
-// F and Esc arrive on the window the way the keyboard delivers them. The
-// SectionTool and the DimInput are real; only the viewport is a stub, keeping
-// the plane by reference exactly as the real one does, so a test reads the cut
-// that is on screen rather than a private field.
+// chooser calls, typing goes into the real offset box (input, then the next
+// frame, or Enter), the check and cross are the box's real buttons, the arrow
+// is dragged with pointer events on the canvas, and F and Esc arrive on the
+// window the way the keyboard delivers them. The SectionTool and the DimInput
+// are real; only the viewport is a stub, keeping the plane by reference exactly
+// as the real one does, so a test reads the cut that is on screen rather than a
+// private field.
 //
-// Three field reports from the same tester:
+// Field reports from the same testers:
 //   5effc008 / 724df0f3: "Section view does not remember where it was
 //     positioned after it closes or which view was sectioned", and "the
 //     onscreen dimension and tickboxes cover a lot of detail of the section".
 //   f36c1c7a: "I had an active cross section, hit file, new, abandoned
 //     original file... the cross-section drag arrow was still active in the
 //     new document."
+//   1a28cd21: "I create a section drag it to where I want it... click the
+//     tick... nothing happens, I expected it to close the section."
+//   983f5f56: "it placed the section in the middle of the solid and called the
+//     offset 0... perhaps it should show the distance the section plane is
+//     from the X or Y or Z plane - depending which is selected."
 //
 // What it does NOT cover, stated rather than implied: real projection, layout,
 // the WebGL clip and the repaint itself (only that a frame is asked for). Those
@@ -20,6 +27,8 @@ import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import * as THREE from "three";
 import { FakeEl, installFakeDocument } from "../ui/fakeDom.testkit";
 import { SectionTool, besideModel } from "./sectionTool";
+import { toast } from "../ui/toast";
+import { t } from "../i18n";
 import { DocumentStore } from "../document/store";
 import type { GeometryBackend } from "../geometry/client";
 import type { CadDocument } from "../types";
@@ -29,6 +38,10 @@ import { SectionCaps, CAP_SHADE } from "../viewport/sectionCaps";
 import { BASE_COLOR, buildBodyMesh, type ModelView } from "../viewport/render";
 import { Picker, type Hit } from "../viewport/picking";
 import type { RebuildResult } from "../types";
+
+// The toast stack needs timers on a real window; what matters here is whether
+// the hint was said, and how often.
+vi.mock("../ui/toast", () => ({ toast: vi.fn() }));
 
 installFakeDocument();
 class FakeInput extends FakeEl {}
@@ -72,13 +85,51 @@ function dimRoot(): FakeEl {
   return root;
 }
 
-/** Type into the offset box and press Enter, the way a user does. */
-function typeOffset(mm: number) {
+function dimField(): FakeEl {
   const input = dimRoot().querySelector("input");
   if (!input) throw new Error("the offset box has no field");
+  return input;
+}
+
+/** Type a position into the box, the way a user does: the cut follows on the
+ *  next frame, without Enter. */
+function typeAt(mm: number | string) {
+  const input = dimField();
   input.value = String(mm);
   input.dispatch("input");
-  input.dispatch("keydown", { key: "Enter", preventDefault() {}, stopPropagation() {} });
+  frame();
+}
+
+/** Enter in the box: what the check button says it is. */
+function enter() {
+  dimField().dispatch("keydown", { key: "Enter", preventDefault() {}, stopPropagation() {} });
+}
+
+/** Press one of the box's buttons: "dim-ok" is the check, "dim-no" the cross. */
+function clickBoxButton(kind: "dim-ok" | "dim-no") {
+  const btn = dimRoot().children.find((c) => c.className === `dim-btn ${kind}`);
+  if (!btn) throw new Error(`the offset box has no ${kind} button`);
+  btn.dispatch("pointerdown", { preventDefault() {}, stopPropagation() {} });
+}
+
+/** The kept cut's chip: the newest one mounted (the stub canvas has no parent,
+ *  so it lands on <body>). */
+function chipEl(): FakeEl | undefined {
+  return doc.body.children.filter((c) => c.className === "section-chip").at(-1);
+}
+
+/** What the chip says, or null when no chip is showing. */
+function chipText(): string | null {
+  const chip = chipEl();
+  if (!chip || chip.style.display === "none") return null;
+  return chip.children.find((c) => c.className === "section-chip-label")!.textContent;
+}
+
+/** Click the chip's cross. */
+function clickChipCross() {
+  const cross = chipEl()?.children.find((c) => c.className === "section-chip-remove");
+  if (!cross) throw new Error("no chip cross to click");
+  cross.dispatch("click");
 }
 
 const MODEL = new THREE.Box3(new THREE.Vector3(-10, -20, -5), new THREE.Vector3(30, 20, 15));
@@ -89,8 +140,11 @@ const CANVAS = { left: 0, top: 0, right: 1000, bottom: 700, width: 1000, height:
 function harness(box: THREE.Box3 | null = MODEL, origin = { x: 450, y: 375 }) {
   let clip: THREE.Plane | null = null;
   const scene = new Set<THREE.Object3D>();
+  const canvasListeners: Record<string, ((e: unknown) => void)[]> = {};
   const vp = {
     renders: 0,
+    /** whether the pointer is over the arrow (the stub has no meshes to hit) */
+    onArrow: false,
     modelBox: () => box,
     setClipPlane(p: THREE.Plane | null) {
       clip = p; // by reference, as the real viewport keeps it
@@ -103,38 +157,63 @@ function harness(box: THREE.Box3 | null = MODEL, origin = { x: 450, y: 375 }) {
     },
     projectToScreen: (p: THREE.Vector3) => ({ x: origin.x + p.x * 5, y: origin.y - p.z * 5 }),
     pixelWorldSize: () => 0.2,
+    snapStep: () => 1,
     domElement: {
       style: {} as Record<string, string>,
-      addEventListener() {},
-      removeEventListener() {},
+      addEventListener(type: string, fn: (e: unknown) => void) {
+        (canvasListeners[type] ??= []).push(fn);
+      },
+      removeEventListener(type: string, fn: (e: unknown) => void) {
+        const list = canvasListeners[type] ?? [];
+        if (list.includes(fn)) list.splice(list.indexOf(fn), 1);
+      },
       getBoundingClientRect: () => CANVAS,
     },
     addToScene: (o: THREE.Object3D) => scene.add(o),
     removeFromScene: (o: THREE.Object3D) => scene.delete(o),
-    rayFrom: () => ({ intersectObjects: () => [] }),
+    // the same projection as projectToScreen, run backwards: a ray from the
+    // viewer through the screen point, looking along +Y
+    rayFrom: (x: number, y: number) => ({
+      ray: new THREE.Ray(new THREE.Vector3((x - origin.x) / 5, -100, (origin.y - y) / 5), new THREE.Vector3(0, 1, 0)),
+      intersectObjects: () => (vp.onArrow ? [{}] : []),
+    }),
   };
   const tool = new SectionTool(vp as never);
+  /** a left-button pointer event on the canvas at the screen height of z */
+  const pointer = (type: string, z: number) => {
+    const e = { button: 0, clientX: origin.x, clientY: origin.y - z * 5, preventDefault() {}, stopImmediatePropagation() {} };
+    for (const fn of [...(canvasListeners[type] ?? [])]) fn(e);
+  };
   return {
     tool,
     vp,
     /** the cut on screen: [normal, constant], or null for no cut (-0 read as 0) */
     cut: () => (clip ? { normal: clip.normal.toArray().map((v) => v + 0), constant: clip.constant + 0 } : null),
     arrows: () => scene.size,
+    /** drag a Z cut's arrow from height `from` to height `to`, then let go */
+    drag(from: number, to: number) {
+      vp.onArrow = true;
+      pointer("pointerdown", from);
+      vp.onArrow = false;
+      pointer("pointermove", to);
+      pointer("pointerup", to);
+    },
   };
 }
 
 beforeEach(() => {
   keydown.length = 0;
   frames = [];
+  doc.body.children.length = 0; // every tool's box and chip from earlier tests
+  vi.mocked(toast).mockClear();
 });
 
 describe("reopening Section puts the last cut back (5effc008, 724df0f3)", () => {
-  it("same axis: the typed offset survives Esc and a reopen", () => {
+  it("same axis: the typed position survives Esc and a reopen", () => {
     const { tool, cut } = harness();
     tool.start("X");
-    typeOffset(-7);
+    typeAt(3);
     const before = cut();
-    // model centre x = 10, so -7 puts the cut at x = 3
     expect(before).toEqual({ normal: [1, 0, 0], constant: -3 });
     press("Escape");
     expect(cut(), "Esc still takes the cut away").toBeNull();
@@ -142,8 +221,18 @@ describe("reopening Section puts the last cut back (5effc008, 724df0f3)", () => 
 
     tool.start("X");
     expect(cut()).toEqual(before);
-    // and the box shows it (as |value|, never seeded: see the abs-display trap)
-    expect(dimRoot().querySelector("input")!.value).toBe("7");
+    // and the box shows it (a cursor value, never seeded, so the arrow still moves it)
+    expect(dimField().value).toBe("3");
+  });
+
+  it("a cut below the origin reopens below it, sign and all", () => {
+    const { tool, cut } = harness();
+    tool.start("X");
+    typeAt(-4);
+    press("Escape");
+    tool.start("X");
+    expect(cut()).toEqual({ normal: [1, 0, 0], constant: 4 });
+    expect(dimField().value).toBe("-4");
   });
 
   it("the kept half (F) is remembered with it", () => {
@@ -160,7 +249,7 @@ describe("reopening Section puts the last cut back (5effc008, 724df0f3)", () => 
     const box = MODEL.clone();
     const { tool, cut } = harness(box);
     tool.start("X");
-    typeOffset(-7); // x = 3
+    typeAt(3);
     press("Escape");
     box.max.x = 70; // an edit makes the model longer: its centre moves from 10 to 30
     tool.start("X");
@@ -170,7 +259,7 @@ describe("reopening Section puts the last cut back (5effc008, 724df0f3)", () => 
   it("a different axis starts at the model's centre, as before", () => {
     const { tool, cut } = harness();
     tool.start("X");
-    typeOffset(-7);
+    typeAt(3);
     press("Escape");
     tool.start("Z"); // centre z = 5
     expect(cut()).toEqual({ normal: [0, 0, 1], constant: -5 });
@@ -180,7 +269,7 @@ describe("reopening Section puts the last cut back (5effc008, 724df0f3)", () => 
     // It would cut nothing, or everything, and the model would just vanish.
     const { tool, cut } = harness();
     tool.start("X");
-    typeOffset(100); // x = 110, past the end at 30
+    typeAt(110); // past the end at 30
     press("Escape");
     tool.start("X");
     expect(cut()).toEqual({ normal: [1, 0, 0], constant: -10 });
@@ -190,7 +279,7 @@ describe("reopening Section puts the last cut back (5effc008, 724df0f3)", () => 
     // stop(true) is what starting any other tool does (main.ts handleAction)
     const { tool, cut } = harness();
     tool.start("Y");
-    typeOffset(4);
+    typeAt(4);
     tool.stop(true);
     expect(cut(), "the cut stays while the other tool runs").not.toBeNull();
     tool.start("Y");
@@ -207,6 +296,193 @@ describe("reopening Section puts the last cut back (5effc008, 724df0f3)", () => 
     const at = mainSrc.indexOf('case "section":');
     const arm = mainSrc.slice(at, mainSrc.indexOf("case ", at + 20));
     expect(arm).toContain("section.axisOrder()");
+  });
+});
+
+describe("the check keeps the cut, and shows it can be removed (1a28cd21)", () => {
+  it("the check after a drag puts the arrow away, keeps the cut and shows its chip", () => {
+    const h = harness();
+    h.tool.start("Z");
+    h.drag(5, 12);
+    clickBoxButton("dim-ok");
+    expect(h.tool.active, "the check did nothing: the arrow and the box stayed up").toBe(false);
+    expect(h.arrows()).toBe(0);
+    expect(h.cut(), "the cut stays, so you can sketch inside it (#17)").toEqual({ normal: [0, 0, 1], constant: -12 });
+    expect(h.tool.kept).toBe(true);
+    expect(chipText()).toBe("Section Z 12 mm");
+  });
+
+  it("says once that the cut stays until removed, and how", () => {
+    const h = harness();
+    h.tool.start("Z");
+    clickBoxButton("dim-ok");
+    expect(vi.mocked(toast)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(toast).mock.calls[0]![0]).toBe(t("feature.section.keptHint"));
+    clickChipCross();
+    h.tool.start("X");
+    clickBoxButton("dim-ok");
+    h.tool.clear();
+    h.tool.start("Y");
+    h.tool.stop(true); // another tool started: kept the same way
+    expect(vi.mocked(toast), "said every time instead of once").toHaveBeenCalledTimes(1);
+  });
+
+  it("Enter is the check: a typed position goes in, then the cut is kept", () => {
+    const { tool, cut } = harness();
+    tool.start("X");
+    const input = dimField();
+    input.value = "3";
+    input.dispatch("input");
+    enter(); // no frame in between: Enter itself reads the typed value
+    expect(tool.active).toBe(false);
+    expect(cut()).toEqual({ normal: [1, 0, 0], constant: -3 });
+    expect(chipText()).toBe("Section X 3 mm");
+  });
+
+  it("text that cannot be read keeps the tool open rather than keeping a cut", () => {
+    const { tool, cut } = harness();
+    tool.start("X");
+    const before = cut();
+    typeAt("3+");
+    enter();
+    expect(tool.active).toBe(true);
+    expect(cut()).toEqual(before);
+    expect(dimField().classList.contains("invalid")).toBe(true);
+    expect(chipText()).toBeNull();
+  });
+
+  it("the chip's cross takes the cut away and the chip with it", () => {
+    const { tool, cut } = harness();
+    tool.start("Y");
+    typeAt(4);
+    clickBoxButton("dim-ok");
+    expect(chipText()).toBe("Section Y 4 mm");
+    clickChipCross();
+    expect(cut()).toBeNull();
+    expect(chipText()).toBeNull();
+    expect(tool.kept).toBe(false);
+    // and it is remembered, like any other cut: Section, Enter puts it back
+    tool.start("Y");
+    expect(cut()).toEqual({ normal: [0, 1, 0], constant: -4 });
+  });
+
+  it("Esc or the box's cross while the arrow is up removes the cut, with no chip", () => {
+    const { tool, cut } = harness();
+    tool.start("Z");
+    press("Escape");
+    expect(cut()).toBeNull();
+    expect(chipText()).toBeNull();
+    tool.start("Z");
+    clickBoxButton("dim-no");
+    expect(tool.active).toBe(false);
+    expect(cut()).toBeNull();
+    expect(chipText()).toBeNull();
+  });
+
+  it("a cut another tool left on screen shows the chip too, and reopening takes it down", () => {
+    const { tool } = harness();
+    tool.start("X");
+    typeAt(-4);
+    tool.stop(true); // what main.ts handleAction does when any other tool starts
+    expect(chipText()).toBe("Section X -4 mm");
+    tool.start("X");
+    expect(chipText(), "the box speaks for the cut while the arrow is up").toBeNull();
+  });
+
+  it("main.ts: Section toggled with a kept cut clears it through the tool, so the chip goes too", () => {
+    const at = mainSrc.indexOf('case "section":');
+    const arm = mainSrc.slice(at, mainSrc.indexOf("case ", at + 20));
+    expect(arm).toContain("section.kept");
+    expect(arm).toContain("section.clear()");
+    expect(arm, "clearing the viewport's plane directly would strand the chip").not.toContain("setClipPlane(null)");
+  });
+
+  it("main.ts: Esc with nothing else to let go of clears a kept cut, decided before any tool sees the key", () => {
+    // Decided in the capture phase: a tool's own Esc (also capture, added when
+    // the tool starts, so after this one) closes the tool, and a bubble-phase
+    // check would then see nothing running and take the cut as well. Measured
+    // in the app before the split: Esc to leave Measure removed the cut too.
+    const at = mainSrc.indexOf("escForCut =\n");
+    expect(at, "no idle Esc for a kept cut").toBeGreaterThan(-1);
+    const decide = mainSrc.slice(at, mainSrc.indexOf("}, true);", at) + 9);
+    expect(decide, "decided in the capture phase").toMatch(/\}, true\);$/);
+    expect(decide.length, "the capture listener runs on past the decision").toBeLessThan(800);
+    for (const cond of ["section.kept", "!toolBusy()", "!sketch.active", "!escClosesSomethingElse()", "!isEditableTarget(e.target)", "!isImeComposing(e)"]) {
+      expect(decide).toContain(cond);
+    }
+    for (const sel of ["overlay.selectedRegions()", "viewport.getSelectedBodies()", "viewport.getSelectedFaceIds()", "viewport.selectedEdgeSelectors()", "selectedFeature"]) {
+      expect(decide, `Esc would take the cut while ${sel} still had something to clear`).toContain(sel);
+    }
+    // acted on in the bubble phase, so a context menu that stops its Esc keeps the cut
+    const act = mainSrc.slice(mainSrc.indexOf("}, true);", at) + 9, mainSrc.indexOf("\n});", at) + 4);
+    expect(act).toContain('if (e.key === "Escape" && escForCut) section.clear();');
+    expect(act).not.toContain("}, true);");
+  });
+
+  it("main.ts: Esc that closes a panel, a menu or a dialog leaves a kept cut alone", () => {
+    // None of these stop their Esc, and the panels' and dialog's listeners are
+    // added when they open, so after the decision above: measured in the app,
+    // Esc to close Properties, Change Parameters or the File menu took the cut
+    // with it. What each term reports is tested where it lives (panelIme.test.ts
+    // for the panel); this pins that the decision asks all of them.
+    const at = mainSrc.indexOf("function escClosesSomethingElse()");
+    expect(at, "no check for something else that Esc closes").toBeGreaterThan(-1);
+    const body = mainSrc.slice(at, mainSrc.indexOf("\n}\n", at));
+    for (const term of [
+      "FloatingPanel.anyClosesOnEsc", // Properties, Change Parameters, Interference, printer camera
+      "menubar.isOpen", // File, Edit, View... dropdowns
+      "viewport.cubeOwnsEscape", // the ViewCube's menu and its face pick
+      '".choice-backdrop"', // the print mapping dialog, not counted by isChoiceOpen
+    ]) {
+      expect(body, `Esc that closes what ${term} reports would take the cut too`).toContain(term);
+    }
+    expect(mainSrc).toContain("const menubar = new Menubar(");
+  });
+});
+
+describe("the box reads where the cut is, from the origin (983f5f56)", () => {
+  // MODEL spans z -5..15: its middle is z = 5, where the old box said "0".
+  it("opens through the model's middle, and says where that is", () => {
+    const { tool, cut } = harness();
+    tool.start("Z");
+    expect(cut()).toEqual({ normal: [0, 0, 1], constant: -5 });
+    expect(dimField().value).toBe("5");
+  });
+
+  it("the field is labelled with the axis it measures along", () => {
+    const { tool } = harness();
+    tool.start("X");
+    const label = dimRoot().children.find((c) => c.className === "dim-field")!;
+    expect(label.textContent).toBe("X mm");
+  });
+
+  it("dragging the arrow moves that number, in round steps from the origin", () => {
+    const h = harness(new THREE.Box3(new THREE.Vector3(-10, -20, -4.3), new THREE.Vector3(30, 20, 15)));
+    h.tool.start("Z"); // the middle is z = 5.35
+    expect(dimField().value).toBe("5.35");
+    h.drag(5.35, 12.3); // 6.95 up the axis
+    expect(dimField().value, "steps counted from the model's middle, not the origin").toBe("12");
+    expect(h.cut()).toEqual({ normal: [0, 0, 1], constant: -12 });
+  });
+
+  it("typing a position puts the cut there, below the origin too", () => {
+    const { tool, cut } = harness();
+    tool.start("Z");
+    typeAt(-2);
+    expect(cut()).toEqual({ normal: [0, 0, 1], constant: 2 });
+    expect(dimField().value).toBe("-2");
+  });
+
+  it("a drag after typing moves the box with it, and the cut stays where it is let go", () => {
+    const h = harness();
+    h.tool.start("Z");
+    typeAt(-4);
+    h.drag(-4, -1);
+    expect(dimField().value, "the box stayed frozen at the typed value").toBe("-1");
+    frame();
+    expect(h.cut(), "the cut jumped back to the typed value when the arrow was let go").toEqual({ normal: [0, 0, 1], constant: 1 });
+    clickBoxButton("dim-ok");
+    expect(chipText()).toBe("Section Z -1 mm");
   });
 });
 
@@ -230,7 +506,7 @@ describe("a section belongs to its document (f36c1c7a)", () => {
     const { tool, cut, arrows } = harness();
     const store = storeWith(tool);
     tool.start("X");
-    typeOffset(-7);
+    typeAt(3);
     expect(arrows()).toBe(1);
     store.newDocument();
     expect(tool.active).toBe(false);
@@ -247,8 +523,11 @@ describe("a section belongs to its document (f36c1c7a)", () => {
     tool.start("Z");
     tool.stop(true); // another tool took the arrow down, the cut stayed
     expect(cut()).not.toBeNull();
+    expect(chipText()).not.toBeNull();
     store.load(JSON.stringify({ parameters: {}, features: [] }));
     expect(cut()).toBeNull();
+    expect(chipText(), "the chip named a cut the new document does not have").toBeNull();
+    expect(tool.kept).toBe(false);
   });
 
   it("main.ts wires it to the store's replace event", () => {
@@ -271,11 +550,11 @@ describe("a flip or a typed offset repaints at once", () => {
     expect(vp.renders).toBeGreaterThan(before);
   });
 
-  it("Enter on a typed offset asks for a frame", () => {
+  it("a typed position asks for a frame", () => {
     const { tool, vp } = harness();
     tool.start("Z");
     const before = vp.renders;
-    typeOffset(3);
+    typeAt(3);
     expect(vp.renders).toBeGreaterThan(before);
   });
 });
@@ -380,9 +659,9 @@ describe("the cut is solid, not hollow (5effc008)", () => {
     const { tool, shown } = solidHarness();
     tool.start("Z"); // the model's centre, z = 15: between the boxes, cuts nothing
     expect(shown()).toEqual([]);
-    typeOffset(-15); // z = 0, through the two lower boxes
+    typeAt(0); // through the two lower boxes
     expect(shown()).toEqual([[0, 0], [20, 0]]);
-    typeOffset(15); // z = 30: the arrow's drag moves the plane in place
+    typeAt(30); // the plane moves in place, as under the arrow's drag
     expect(shown()).toEqual([[0, 30]]);
     press("F"); // the other half kept: still cut, still capped
     expect(shown()).toEqual([[0, 30]]);
@@ -391,7 +670,7 @@ describe("the cut is solid, not hollow (5effc008)", () => {
   it("the caps stay on the persistent cut after the arrow is put away, and go with it", () => {
     const { tool, shown } = solidHarness();
     tool.start("Z");
-    typeOffset(-15);
+    typeAt(0);
     tool.stop(true); // another tool started: the arrow goes, the cut stays (#17)
     expect(shown()).toEqual([[0, 0], [20, 0]]);
     tool.start("Z");
@@ -403,7 +682,7 @@ describe("the cut is solid, not hollow (5effc008)", () => {
     const { tool, vp, bodies, caps, shown } = solidHarness();
     (vp as unknown as { setBodyPaint(m: Record<string, string>): void }).setBodyPaint({ [bodies[0]!.id]: "#ff0000" });
     tool.start("Z");
-    typeOffset(-15);
+    typeAt(0);
     shown();
     const colours = caps.root.children
       .filter((o) => o.visible && ((o as THREE.Mesh).material as THREE.Material).colorWrite)
@@ -416,7 +695,7 @@ describe("the cut is solid, not hollow (5effc008)", () => {
   it("a hidden body has no cap, and a model dimmed for sketching keeps the see-through look", () => {
     const { tool, vp, bodies, shown } = solidHarness();
     tool.start("Z");
-    typeOffset(-15);
+    typeAt(0);
     bodies[1]!.mesh.visible = false;
     expect(shown()).toEqual([[0, 0]]);
     (vp as unknown as { setModelDimmed(on: boolean): void }).setModelDimmed(true);
@@ -428,7 +707,7 @@ describe("the cut is solid, not hollow (5effc008)", () => {
   it("without a stencil buffer the cut stays hollow, as before", () => {
     const { tool, shown } = solidHarness(false);
     tool.start("Z");
-    typeOffset(-15);
+    typeAt(0);
     expect(shown()).toEqual([]);
   });
 });
@@ -548,7 +827,7 @@ describe("a pick lands on what the cut shows (5effc008 review)", () => {
   /** The cut through A and B, at z = 0, keeping the top half. */
   function cutAtZero(h: ReturnType<typeof pickHarness>) {
     h.tool.start("Z"); // the model spans z -23..5, so this cuts at z = -9
-    typeOffset(9);
+    typeAt(0);
     expect(h.v.clipPlane?.normal.toArray()).toEqual([0, 0, 1]);
     expect(h.v.clipPlane?.constant).toBeCloseTo(0, 9);
   }
