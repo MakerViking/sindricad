@@ -229,3 +229,69 @@ describe("inspector: a sketch dimension edits like it does on the canvas", () =>
     expect(mainSrc).toContain("sketch.applyDimensionEdit(entityId, field, mm)");
   });
 });
+
+describe("inspector: a rectangle's offset follows a size typed in the panel", () => {
+  it("in a closed sketch, the copy stays 5 out all round (report 0fc1ceed)", async () => {
+    // A coordinate write and then a solve, and the solve cannot put the copy
+    // right: one unsigned distance a side is still met with the copy 30 wide
+    // inside a source widened to 40.
+    const store = new DocumentStore(backend(), {
+      parameters: {},
+      features: [
+        {
+          id: "f1", type: "sketch", plane: "XY", name: "Sketch1",
+          entities: [
+            { id: "r1", type: "rectangle", x: 40, y: 40, width: 20, height: 8 },
+            { id: "r2", type: "rectangle", x: 40, y: 40, width: 30, height: 18 },
+          ],
+          constraints: [{ type: "offset", pairs: [0, 1, 2, 3].map((k) => ({ src: `r1~${k}`, cpy: `r2~${k}` })), value: 5 }],
+        },
+      ] as Feature[],
+    });
+    store.headlessSolve = solveSketchFeature;
+    const root = new FakeEl("div");
+    new Inspector(root as unknown as HTMLElement, store).select("f1");
+    const row = input(root, "Width mm"); // the first rectangle's
+    row.value = "40";
+    row.dispatch("change");
+    await settle();
+    expect(entity(store, "r1").width).toBe(40);
+    expect(entity(store, "r2").width).toBeCloseTo(50, 9);
+    expect(entity(store, "r2").x).toBeCloseTo(40, 9);
+  });
+
+  it("and so does a copy that was turned into lines", async () => {
+    // The copy as Explode (or a Fillet on its corner) leaves it: four lines,
+    // each tied to its side of the rectangle. Before, the lines stayed 30 wide
+    // inside a source widened to 40.
+    const L = (id: string, x1: number, y1: number, x2: number, y2: number) => ({ id, type: "line", x1, y1, x2, y2 });
+    const store = new DocumentStore(backend(), {
+      parameters: {},
+      features: [
+        {
+          id: "f1", type: "sketch", plane: "XY", name: "Sketch1",
+          entities: [
+            { id: "r1", type: "rectangle", x: 40, y: 40, width: 20, height: 8 },
+            L("b", 25, 31, 55, 31), L("r", 55, 31, 55, 49), L("t", 55, 49, 25, 49), L("l", 25, 49, 25, 31),
+          ],
+          constraints: [
+            { type: "offset", pairs: ["b", "r", "t", "l"].map((cpy, k) => ({ src: `r1~${k}`, cpy })), value: 5 },
+            { type: "horizontal", line: "b" }, { type: "vertical", line: "r" },
+            { type: "horizontal", line: "t" }, { type: "vertical", line: "l" },
+          ],
+        },
+      ] as Feature[],
+    });
+    store.headlessSolve = solveSketchFeature;
+    const root = new FakeEl("div");
+    new Inspector(root as unknown as HTMLElement, store).select("f1");
+    const row = input(root, "Width mm");
+    row.value = "40";
+    row.dispatch("change");
+    await settle();
+    expect(entity(store, "r1").width).toBe(40);
+    const xs = sketchOf(store).entities.flatMap((e) => (e.type === "line" ? [Number(e.x1), Number(e.x2)] : []));
+    expect(Math.min(...xs)).toBeCloseTo(15, 9);
+    expect(Math.max(...xs), "5 out of the source's right side at 60").toBeCloseTo(65, 9);
+  });
+});

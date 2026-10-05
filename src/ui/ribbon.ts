@@ -195,6 +195,7 @@ export const SKETCH: Group[] = [
       { action: "extend", label: t("tool.extend"), iconName: "extend" },
       { action: "offset", label: t("tool.offset"), iconName: "offset", key: "O" },
       { action: "break", label: t("tool.break"), iconName: "break" },
+      { action: "join-sketch", label: t("tool.join"), iconName: "join", hint: t("ribbon.hint.join") },
       { action: "mirror-sketch", label: t("tool.mirror"), iconName: "mirror" },
       { action: "move-sketch", label: t("tool.move"), iconName: "move" },
       { action: "copy-sketch", label: t("tool.copy"), iconName: "copy" },

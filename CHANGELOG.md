@@ -880,6 +880,22 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ### Fixed
 
+- **An offset of a polygon stays tied to the polygon, and an offset follows a
+  size you type.** Offset made a polygon's copy a free shape, so it could be
+  dragged away from the polygon it came from. It now stays tied to it the way
+  an offset of separate lines does: drag either one and the other comes along,
+  and a radius, side count or rotation typed for either one, or set by a
+  parameter, carries over to the other. Typing a width or height for a
+  rectangle that has an offset, on the sketch or in the Inspector, left the
+  offset where it was, and its sides could end up inside the rectangle; the
+  offset now follows. The same held after a Fillet or Chamfer on a corner
+  turned either shape into lines, and that follows now too, rounded corner
+  included. A typed size that would leave nothing of an inward offset is
+  refused, and I say why; a parameter that does it keeps its value, and I say
+  the offset could not follow. A polygon whose offset was turned into lines
+  keeps its side count, because its lines cannot take another. A slot's offset
+  is still a free copy.
+
 - **The Sketch Palette's switches do what they say.** Sketch Grid and Show
   Profile change the screen as soon as you click them: the grid used to stay
   until the mouse next moved over the canvas, and Show Profile never hid the
@@ -1183,6 +1199,18 @@ This file starts on 2026-08-03. For anything before that, see the
   for are unchanged. Panning still moves the centre freely, and Fit resets it.
 
 ### Added
+
+- **Join two lines back into one.** Join, next to Break in the sketch ribbon,
+  makes two lines that meet end to end in a straight line one line again: click
+  one of them where they meet. It takes back a Break, also one made before the
+  sketch was closed and saved. What held the two outer ends stays on them, a
+  Horizontal or a tangency holds the whole line, and a curve that ended where
+  the two met stays on the line. A length on one of the two, or a dimension to
+  the point where they met, no longer applies and is removed, and a note says
+  how many. An extrude built on the area beside them, or one that starts from
+  or runs up to one of the two lines or an outer end, follows the new line.
+  Lines that meet at an angle, run back over each other, or where only one is
+  construction geometry are left as they are, and I say why.
 
 - **Center Arc.** The Arc button in the sketch ribbon has a second arc: click
   the center, click the start (that sets the radius), then sweep to the end

@@ -1813,16 +1813,242 @@ export function signedOffsetAt(e: ResolvedEntity, p: THREE.Vector2): number | nu
 /** What an offset produced.
  *
  *  `pairs` are the source→copy operands the associative `offset` constraint will
- *  govern (rect operands are EDGES, "<rectId>~<k>" — see types.ts). `linked:
- *  false` means the geometry is correct but free-floating: the solver models
- *  polygon / slot / spline as RIGID, so there is no constraint that could tie
- *  the copy to its source, and the caller says so once rather than implying a
- *  link that doesn't exist. */
+ *  govern (rectangle and polygon operands are SIDES, "<shapeId>~<k>" — see
+ *  types.ts). `linked: false` means the geometry is correct but free-floating:
+ *  there is no constraint that could tie a slot or a spline copy to its source,
+ *  and the caller says so once rather than implying a link that doesn't exist. */
 export type OffsetResult = {
   entities: ResolvedEntity[];
   pairs: { src: string; cpy: string }[];
   linked: boolean;
 };
+
+type RectE = Extract<ResolvedEntity, { type: "rectangle" }>;
+type PolyE = Extract<ResolvedEntity, { type: "polygon" }>;
+
+/** A rectangle's size once every side moves out by `dist` (in, when negative)
+ *  about the same centre, or null when nothing is left of it. */
+function offsetRectSize(e: RectE, dist: number): { width: number; height: number } | null {
+  const width = e.width + 2 * dist, height = e.height + 2 * dist;
+  return width > 1e-3 && height > 1e-3 ? { width, height } : null;
+}
+
+/** The same for a polygon's radius. Fusion keeps a polygon a polygon. `radius`
+ *  is the CIRCUMradius while the EDGES lie on the inscribed circle
+ *  (r·cos(π/n)), so moving the edges out by `dist` moves the circumradius by
+ *  dist / cos(π/n). */
+function offsetPolygonRadius(e: PolyE, dist: number): number | null {
+  const n = Math.max(3, Math.round(e.sides));
+  const r = e.radius + dist / Math.cos(Math.PI / n);
+  return r > 1e-3 ? r : null;
+}
+
+/** The two shapes `c` ties side for side, when it is an Offset of a whole
+ *  rectangle or polygon onto another of the same kind: every pair names side
+ *  k of the one and side k of the other, which is what Offset makes of one.
+ *  Null for any other link (lines, a trimmed or exploded copy), which
+ *  followOffsets carries line by line instead. */
+function wholeShapeOffset(
+  c: SketchConstraint,
+  get: (id: string) => ResolvedEntity | undefined,
+): { src: ResolvedEntity; cpy: ResolvedEntity; value: number } | null {
+  if (c.type !== "offset" || !c.pairs.length) return null;
+  const split = (s: string) => {
+    const cut = s.indexOf("~");
+    return cut > 0 ? { shape: s.slice(0, cut), side: s.slice(cut + 1) } : null;
+  };
+  const first = c.pairs[0]!;
+  const srcId = split(first.src)?.shape, cpyId = split(first.cpy)?.shape;
+  for (const pr of c.pairs) {
+    const a = split(pr.src), b = split(pr.cpy);
+    if (!a || !b || a.shape !== srcId || b.shape !== cpyId || a.side !== b.side) return null;
+  }
+  const src = srcId === undefined ? undefined : get(srcId), cpy = cpyId === undefined ? undefined : get(cpyId);
+  if (!src || !cpy || src.id === cpy.id) return null;
+  const same = (src.type === "rectangle" && cpy.type === "rectangle") || (src.type === "polygon" && cpy.type === "polygon");
+  return same ? { src, cpy, value: c.value } : null;
+}
+
+/** `onto` re-made as `from` with every side moved out by `dist`: its own id,
+ *  construction flag and label placements kept. Null when nothing is left. */
+function reshapeOnto(from: ResolvedEntity, dist: number, onto: ResolvedEntity): ResolvedEntity | null {
+  if (from.type === "rectangle" && onto.type === "rectangle") {
+    const s = offsetRectSize(from, dist);
+    return s && { ...onto, x: from.x, y: from.y, ...s };
+  }
+  if (from.type === "polygon" && onto.type === "polygon") {
+    const r = offsetPolygonRadius(from, dist);
+    return r === null ? null : { ...onto, x: from.x, y: from.y, radius: r, sides: from.sides, angle: from.angle };
+  }
+  return null;
+}
+
+type LineSeg = { x1: number; y1: number; x2: number; y2: number };
+
+/** Where a point beside the segment `s0` goes when the segment becomes `s1`:
+ *  it keeps how far out from the segment it sits and how far along from the
+ *  segment's nearer end, so the corner two sides of an offset share lands on
+ *  the same new spot whichever side carries it. */
+function sideCarry(s0: LineSeg, s1: LineSeg): (x: number, y: number) => THREE.Vector2 {
+  const frame = (s: LineSeg) => {
+    const a = v(s.x1, s.y1), b = v(s.x2, s.y2);
+    const len = a.distanceTo(b);
+    const u = len > 1e-12 ? b.clone().sub(a).divideScalar(len) : v(1, 0);
+    return { a, b, u, n: v(-u.y, u.x) };
+  };
+  const f0 = frame(s0), f1 = frame(s1);
+  return (x, y) => {
+    const q = v(x, y);
+    const atB = q.distanceTo(f0.b) < q.distanceTo(f0.a);
+    const o = q.sub(atB ? f0.b : f0.a);
+    return (atB ? f1.b : f1.a).clone().addScaledVector(f1.u, o.dot(f0.u)).addScaledVector(f1.n, o.dot(f0.n));
+  };
+}
+
+/** `e` with each of its ends that shared a spot with a carried line's end,
+ *  or sat On a carried line (`moved`: that spot's coincKey, then where it
+ *  went), taken along. The solver joins the ends that share a spot, with no
+ *  constraint saying so, so a fillet's arc or a chamfer's line left behind is
+ *  no longer joined to the sides it rounds: the solve then pulled the source
+ *  back to the copy instead. A point On a side left behind (the corner a
+ *  fillet cut away, kept On both sides) had the solve turn the source 3
+ *  degrees and move it 1 mm. An arc's middle moves by the mean of its ends'
+ *  moves, which is the whole arc moved when both ends moved alike. */
+function takenAlong(e: ResolvedEntity, moved: ReadonlyMap<string, THREE.Vector2>): ResolvedEntity {
+  const to = (x: number, y: number) => moved.get(coincKey(x, y));
+  if (e.type === "point") {
+    const a = to(e.x, e.y);
+    return a ? { ...e, x: a.x, y: a.y } : e;
+  }
+  if (e.type !== "line" && e.type !== "arc") return e;
+  const a = to(e.x1, e.y1), b = to(e.x2, e.y2);
+  if (!a && !b) return e;
+  const ends = { x1: a?.x ?? e.x1, y1: a?.y ?? e.y1, x2: b?.x ?? e.x2, y2: b?.y ?? e.y2 };
+  if (e.type === "line") return { ...e, ...ends };
+  const dx = (ends.x1 - e.x1 + ends.x2 - e.x2) / 2, dy = (ends.y1 - e.y1 + ends.y2 - e.y2) / 2;
+  return { ...e, ...ends, mx: e.mx + dx, my: e.my + dy };
+}
+
+export type FollowRefusal = "collapses" | "sides";
+
+/** Why followOffsets refused, in words: for a number typed, which is not
+ *  taken, or for one a parameter set, which the shape has already taken. */
+export function followRefusal(why: FollowRefusal, byParameter = false): string {
+  if (byParameter) return t(why === "sides" ? "sketch.offset.paramSides" : "sketch.offset.paramCollapses");
+  return t(why === "sides" ? "sketch.offset.followSides" : "sketch.offset.followCollapses");
+}
+
+/** After an edit that wrote a rectangle's or polygon's own numbers straight
+ *  into it (a typed width, height or radius, a polygon's side count or turn),
+ *  every rectangle or polygon an Offset ties to it side for side, re-made from
+ *  it, and on along a chain of offsets. `ents` holds the edited shape `id`
+ *  as edited, `was` the shape before the edit; `cons` are as they were
+ *  before the edit.
+ *
+ *  Those edits do not go through the solver, and a solve afterwards cannot
+ *  repair them. A rectangle's offset is an UNSIGNED distance per side, so a
+ *  source widened past its copy already satisfies every one of them with the
+ *  copy inside it: 40 wide with a 5 mm copy, typed 60, left the copy 50 wide
+ *  inside the source and every later solve kept it there. A polygon's is
+ *  signed, but the solve holds the first of the two shapes still: a radius
+ *  typed on the copy went straight back to what it was.
+ *
+ *  A partner an Explode left as lines (a Fillet or a Chamfer on its corner
+ *  explodes it too) cannot be re-made as a shape, and its distances are
+ *  unsigned the same way: a hexagon's filleted 5 mm copy, its source typed
+ *  from radius 10 to 25, sat 5 mm INSIDE the source with nothing amber. So
+ *  each line tied to a side of the edited shape is carried with that side
+ *  (sideCarry), and on along offsets of those lines, and what ended where
+ *  one of them ended, or is held On one, goes too (takenAlong): the solve
+ *  afterwards finds them on the right side with nothing left to close. A polygon given a new side
+ *  count has other sides now, and its lines are left to the solve.
+ *
+ *  `resided` are the polygons whose side count followed, with the count they
+ *  had, for the caller to re-aim what names their sides (rebindPolygonSides)
+ *  after it has re-aimed the edited one's. `refused` says why the edit
+ *  cannot be taken (followRefusal says it in words): a shape would be left
+ *  with nothing (an inward copy of a source made too small for it), or a
+ *  polygon whose offset is lines now was given a new side count (its six
+ *  lines were bent round eight sides, nothing amber). */
+export function followOffsets(
+  ents: readonly ResolvedEntity[],
+  cons: readonly SketchConstraint[],
+  id: string,
+  was: ResolvedEntity,
+): { entities: ResolvedEntity[]; resided: { id: string; sides: number }[] } | { refused: FollowRefusal } {
+  const entities = [...ents];
+  const at = new Map(entities.map((e, i) => [e.id, i]));
+  const get = (x: string) => { const i = at.get(x); return i === undefined ? undefined : entities[i]; };
+  /** each entity this moved, as it was before */
+  const before = new Map<string, ResolvedEntity>([[id, was]]);
+  const owner = (s: string) => (s.includes("~") ? s.slice(0, s.indexOf("~")) : s);
+  /** the carried lines' ends: where each spot went, the first line to move
+   *  it deciding, so two sides that met at a corner still meet */
+  const moved = new Map<string, THREE.Vector2>();
+  const carry = (x: number, y: number, to: { x: number; y: number }) => {
+    const k = coincKey(x, y);
+    if (!moved.has(k)) moved.set(k, v(to.x, to.y));
+    return moved.get(k)!;
+  };
+  /** how each carried line moved, for what is held On it */
+  const carriers = new Map<string, (x: number, y: number) => THREE.Vector2>();
+  const resided: { id: string; sides: number }[] = [];
+  const done = new Set([id]);
+  const queue = [id];
+  while (queue.length) {
+    const fromId = queue.shift()!;
+    const from = get(fromId), old = before.get(fromId);
+    if (!from || !old) continue;
+    const newSides = from.type === "polygon" && old.type === "polygon" && Math.round(from.sides) !== Math.round(old.sides);
+    for (const c of cons) {
+      if (c.type !== "offset") continue;
+      const link = wholeShapeOffset(c, get);
+      if (link) {
+        if (link.src.id !== from.id && link.cpy.id !== from.id) continue;
+        const fromSrc = link.src.id === from.id;
+        const other = fromSrc ? link.cpy : link.src;
+        if (done.has(other.id)) continue;
+        const made = reshapeOnto(from, fromSrc ? link.value : -link.value, other);
+        if (!made) return { refused: "collapses" };
+        if (other.type === "polygon" && made.type === "polygon" && Math.round(made.sides) !== Math.round(other.sides)) {
+          resided.push({ id: other.id, sides: other.sides });
+        }
+        entities[at.get(other.id)!] = made;
+        before.set(other.id, other);
+        done.add(other.id);
+        queue.push(other.id);
+        continue;
+      }
+      for (const pr of c.pairs) {
+        const mine = owner(pr.src) === from.id ? pr.src : owner(pr.cpy) === from.id ? pr.cpy : null;
+        if (!mine) continue;
+        if (newSides) return { refused: "sides" };
+        const line = get(mine === pr.src ? pr.cpy : pr.src); // a side ("Q~k") names no entity
+        if (line?.type !== "line" || done.has(line.id)) continue;
+        const s0 = lineOperand(new Map([[old.id, old]]), mine), s1 = lineOperand(new Map([[from.id, from]]), mine);
+        if (!s0 || !s1) continue;
+        const go = sideCarry(s0, s1);
+        const a = carry(line.x1, line.y1, go(line.x1, line.y1)), b = carry(line.x2, line.y2, go(line.x2, line.y2));
+        entities[at.get(line.id)!] = { ...line, x1: a.x, y1: a.y, x2: b.x, y2: b.y };
+        carriers.set(line.id, go);
+        before.set(line.id, line);
+        done.add(line.id);
+        queue.push(line.id);
+      }
+    }
+  }
+  // a point held On a carried line goes with it
+  for (const c of cons) {
+    if (c.type !== "pointOn" || done.has(c.e)) continue;
+    const go = carriers.get(c.curve), e = get(c.e);
+    const q = go && e ? refPoint(e, c.p) : null;
+    if (go && q) carry(q.x, q.y, go(q.x, q.y));
+  }
+  if (moved.size) {
+    entities.forEach((e, i) => { if (!done.has(e.id) && !isOriginGeometry(e.id)) entities[i] = takenAlong(e, moved); });
+  }
+  return { entities, resided };
+}
 
 /** Offset a SINGLE entity by `dist` (closed shapes grow with positive dist;
  *  lines shift to their left normal). Returns null only for entity types that
@@ -1840,9 +2066,9 @@ export function offsetEntity(
   let linked = true;
   const id = newEntityId();
   if (e.type === "rectangle") {
-    const w = e.width + 2 * dist, h = e.height + 2 * dist;
-    if (w > 1e-3 && h > 1e-3) {
-      copy = { type: "rectangle", id, width: w, height: h, x: e.x, y: e.y, ...constr(e) };
+    const s = offsetRectSize(e, dist);
+    if (s) {
+      copy = { type: "rectangle", id, width: s.width, height: s.height, x: e.x, y: e.y, ...constr(e) };
       // Both rectangles are axis-aligned about a shared centre, so edge k of the
       // copy IS edge k of the source (rectCorners' CCW order) — the pairing is
       // positional. Four edge pairs, one distance each, is exactly a
@@ -1885,14 +2111,14 @@ export function offsetEntity(
       linked = false;
     }
   } else if (e.type === "polygon") {
-    // Fusion keeps a polygon a polygon. `radius` is the CIRCUMradius while the
-    // EDGES lie on the inscribed circle (r·cos(π/n)), so moving the edges out by
-    // `dist` moves the circumradius by dist / cos(π/n).
-    const n = Math.max(3, Math.round(e.sides));
-    const r = e.radius + dist / Math.cos(Math.PI / n);
-    if (r > 1e-3) {
+    const r = offsetPolygonRadius(e, dist);
+    if (r !== null) {
       copy = { type: "polygon", id, x: e.x, y: e.y, radius: r, sides: e.sides, angle: e.angle, ...constr(e) };
-      linked = false;
+      // The same positional pairing (polygonPoints' order: both share a centre
+      // and a turn). The solver holds the copy as one shape rather than side
+      // by side (sketchSolve's offset), so the pairs say which sides go
+      // together; a side count change re-aims them (rebindPolygonSides).
+      pairs = Array.from({ length: Math.max(3, Math.round(e.sides)) }, (_, k) => ({ src: `${e.id}~${k}`, cpy: `${id}~${k}` }));
     }
   } else if (e.type === "slot") {
     // `width` is the OVERALL width (the caps have radius w/2), so pushing the
@@ -2413,6 +2639,250 @@ export function detachEndpoint(
   const released = new Set<SketchConstraint>(joins);
   const constraints = [...cons.filter((c) => !released.has(c)), ...relinks];
   return { kind: "detached", entities, idx: pick.idx, constraints };
+}
+
+/** Why Join left the lines as they were: the click found no line, nothing
+ *  meets it at an end, what meets it turns a corner there or runs back over
+ *  it, or one of the two is construction geometry and the other is not. */
+export type JoinRefusal = "noLine" | "nothingJoined" | "notInLine" | "overlap" | "construction";
+
+/** What Join made: the one line (`id`), the two it replaced (`from`), the
+ *  constraints rewritten for it, how many could not be kept, and where each
+ *  replaced line's OUTER end went (old id, then its end index), for an
+ *  extrude that starts from or runs up to one of them. */
+export type JoinResult =
+  | {
+    kind: "joined"; entities: ResolvedEntity[]; constraints: SketchConstraint[]; dropped: number;
+    id: string; from: [string, string]; points: Record<string, Record<number, { e: string; p: number }>>;
+  }
+  | { kind: "refused"; why: JoinRefusal };
+
+/** How far two lines meeting at a point may turn there and still be one line:
+ *  the sine of the angle between them. Break's halves turn by rounding only
+ *  (about 1e-16); anything a user can see is a corner. */
+const JOIN_STRAIGHT = 1e-6;
+
+/** Join, the opposite of Break: the line ents[index] and the line it
+ *  continues in a straight line, end to end, made ONE line from the far end of
+ *  the one to the far end of the other (field report 8d69be71: a Break could
+ *  not be taken back once the sketch had been closed).
+ *
+ *  Which two: of the clicked line's two ends, the one nearer `click` first,
+ *  then the other. A click within `tol` of a point where lines meet may also
+ *  join two OTHER lines there, so the stem of a T, picked at the joint, still
+ *  joins the bar it stands on.
+ *
+ *  The constraints are Trim's rule run backwards (remapTrimmed):
+ *    on the line       a direction, a tangency, a distance or point On the
+ *                      line holds for the whole line and is kept once; the
+ *                      length of one piece, an Equal or a Midpoint on one does
+ *                      not, and goes
+ *    an outer end      follows it to the end of the new line it now is
+ *    the joint         is gone: a Coincident that held another curve's point
+ *                      there, or that point sitting there with nothing holding
+ *                      it (the solver merged them), becomes that point On the
+ *                      new line, where it still is; the two pieces' own join
+ *                      goes quietly; anything else on the joint (a dimension
+ *                      to it, a Fix) goes
+ *  and what goes is counted in `dropped` for the caller to say so. The new
+ *  line gets a NEW id, as Break's pieces do (trimWithConstraints says why),
+ *  and runs the way the clicked line ran. */
+export function joinLines(
+  ents: ResolvedEntity[],
+  cons: readonly SketchConstraint[],
+  index: number,
+  click: THREE.Vector2,
+  tol: number,
+): JoinResult {
+  const picked = ents[index];
+  if (picked?.type !== "line" || isOriginGeometry(picked.id)) return { kind: "refused", why: "noLine" };
+  const endOf = (l: LineE, end: number) => (end === 0 ? v(l.x1, l.y1) : v(l.x2, l.y2));
+  /** the lines with an end at `at`, and which end */
+  const meetingAt = (at: THREE.Vector2) => {
+    const key = coincKey(at.x, at.y);
+    return ents.flatMap((l) => (l.type === "line" && !isOriginGeometry(l.id)
+      ? [0, 1].filter((end) => { const q = endOf(l, end); return coincKey(q.x, q.y) === key; }).map((end) => ({ l, end }))
+      : []));
+  };
+  /** why `a` (at its end `ae`) and `b` (at `be`) cannot be one line, or null */
+  const refusal = (a: LineE, ae: number, b: LineE, be: number): JoinRefusal | null => {
+    if (!!a.construction !== !!b.construction) return "construction";
+    const q = endOf(a, ae);
+    const d1 = q.clone().sub(endOf(a, 1 - ae)), d2 = endOf(b, 1 - be).sub(q);
+    const l1 = d1.length(), l2 = d2.length();
+    if (!(l1 > 1e-9 && l2 > 1e-9)) return "notInLine";
+    if (Math.abs(d1.cross(d2)) / (l1 * l2) > JOIN_STRAIGHT) return "notInLine";
+    return d1.dot(d2) > 0 ? null : "overlap";
+  };
+  // the most telling reason, when nothing joins
+  const RANK: JoinRefusal[] = ["nothingJoined", "notInLine", "overlap", "construction"];
+  let why: JoinRefusal = "nothingJoined";
+  const worse = (r: JoinRefusal) => { if (RANK.indexOf(r) > RANK.indexOf(why)) why = r; };
+  const near = endOf(picked, 0).distanceTo(click) <= endOf(picked, 1).distanceTo(click) ? 0 : 1;
+  for (const end of [near, 1 - near]) {
+    for (const m of meetingAt(endOf(picked, end))) {
+      if (m.l.id === picked.id) continue;
+      const r = refusal(picked, end, m.l, m.end);
+      if (!r) return joined(ents, cons, picked, end, m.l, m.end);
+      worse(r);
+    }
+  }
+  const joint = endOf(picked, near);
+  if (joint.distanceTo(click) <= tol) {
+    const there = meetingAt(joint).filter((m) => m.l.id !== picked.id);
+    for (const [i, m] of there.entries()) {
+      for (const o of there.slice(i + 1)) {
+        if (o.l.id !== m.l.id && !refusal(m.l, m.end, o.l, o.end)) return joined(ents, cons, m.l, m.end, o.l, o.end);
+      }
+    }
+  }
+  return { kind: "refused", why };
+}
+
+/** joinLines' result for `a` (joined at its end `ae`) and `b` (at `be`). */
+function joined(
+  ents: ResolvedEntity[],
+  cons: readonly SketchConstraint[],
+  a: LineE,
+  ae: number,
+  b: LineE,
+  be: number,
+): JoinResult & { kind: "joined" } {
+  const id = newEntityId();
+  const far = (l: LineE, end: number) => (end === 0 ? { x: l.x2, y: l.y2 } : { x: l.x1, y: l.y1 });
+  // a's far end keeps its index, so the line runs the way `a` ran
+  const [s, t] = ae === 1 ? [far(a, ae), far(b, be)] : [far(b, be), far(a, ae)];
+  const line: ResolvedEntity = { type: "line", id, x1: s.x, y1: s.y, x2: t.x, y2: t.y, ...constr(a) };
+  const entities = ents.flatMap((e) => (e.id === a.id ? [line] : e.id === b.id ? [] : [e]));
+  const joint = ae === 0 ? v(a.x1, a.y1) : v(a.x2, a.y2);
+  const names = (x: string) => x === a.id || x === b.id;
+  const curve = (x: string) => (names(x) ? id : x);
+  /** a point operand: an outer end to its end of the new line, the joint to
+   *  null (it is gone), anything else unchanged */
+  const point = (e: string, p: number): { e: string; p: number } | null => {
+    if (e === a.id) return p === 1 - ae ? { e: id, p } : null;
+    if (e === b.id) return p === 1 - be ? { e: id, p: ae } : null;
+    return { e, p };
+  };
+  const isJoint = (e: string, p: number) => (e === a.id && p === ae) || (e === b.id && p === be);
+  /** what sits at the joint, on the new line: a point On it */
+  const onLine = (q: { e: string; p: number }): SketchConstraint => ({ type: "pointOn", e: q.e, p: q.p, curve: id });
+
+  let dropped = 0;
+  const remap = (c: SketchConstraint): SketchConstraint | null | "quiet" => {
+    switch (c.type) {
+      case "horizontal": case "vertical": return { ...c, line: curve(c.line) };
+      case "parallel": case "collinear": case "perpendicular": case "angle": {
+        const l1 = curve(c.l1), l2 = curve(c.l2);
+        if (l1 !== l2) return { ...c, l1, l2 };
+        // between the two pieces: in line now by being one line
+        return c.type === "parallel" || c.type === "collinear" ? "quiet" : null;
+      }
+      // the length of a piece: not the new line's
+      case "distance": case "equal": return null;
+      case "tangent": return { ...c, line: curve(c.line) };
+      case "tangent2": return { ...c, a: curve(c.a), b: curve(c.b) };
+      case "c2lDistance": return { ...c, line: curve(c.line) };
+      case "coincident": {
+        const j1 = isJoint(c.e1, c.p1), j2 = isJoint(c.e2, c.p2);
+        if (j1 && j2) return "quiet"; // the pieces' own join
+        const q1 = point(c.e1, c.p1), q2 = point(c.e2, c.p2);
+        // another curve's point held on the joint: On the new line now
+        const other = j1 ? q2 : j2 ? q1 : null;
+        if (j1 || j2) return other && other.e !== id ? onLine(other) : null;
+        return q1 && q2 ? { ...c, e1: q1.e, p1: q1.p, e2: q2.e, p2: q2.p } : null;
+      }
+      case "p2pDistance": case "p2pDistanceX": case "p2pDistanceY": {
+        const q1 = point(c.e1, c.p1), q2 = point(c.e2, c.p2);
+        return q1 && q2 ? { ...c, e1: q1.e, p1: q1.p, e2: q2.e, p2: q2.p } : null;
+      }
+      case "fix": case "p2cDistance": {
+        const q = point(c.e, c.p);
+        return q ? { ...c, e: q.e, p: q.p } : null;
+      }
+      case "midpoint": {
+        const q = point(c.e, c.p);
+        return q && !names(c.line) ? { ...c, e: q.e, p: q.p } : null;
+      }
+      case "pointOn": {
+        const q = point(c.e, c.p), on = curve(c.curve);
+        if (!q) return null;
+        return q.e === id && on === id ? "quiet" : { ...c, e: q.e, p: q.p, curve: on };
+      }
+      case "p2lDistance": {
+        const q = point(c.e, c.p), line = curve(c.line);
+        return q && !(q.e === id && line === id) ? { ...c, e: q.e, p: q.p, line } : null;
+      }
+      case "symmetric": {
+        const q1 = point(c.e1, c.p1), q2 = point(c.e2, c.p2);
+        return q1 && q2 ? { ...c, e1: q1.e, p1: q1.p, e2: q2.e, p2: q2.p, line: curve(c.line) } : null;
+      }
+      // A piece that was the COPY keeps one source: two would govern the
+      // one line twice (remapTrimmed's rule for a trimmed source).
+      case "offset": {
+        const seen = new Set<string>();
+        const pairs = c.pairs.flatMap((pr) => {
+          const src = curve(pr.src), cpy = curve(pr.cpy);
+          if (src === cpy || seen.has(cpy)) return [];
+          seen.add(cpy);
+          return [{ src, cpy }];
+        });
+        return pairs.length ? { ...c, pairs } : null;
+      }
+      // rounds only: never a line
+      case "concentric": case "equalRadius": case "diameter": case "radius":
+      case "radialGap": case "c2cDistance":
+        return c;
+      default: return c satisfies never;
+    }
+  };
+  const mentions = (c: SketchConstraint) =>
+    c.type === "offset"
+      ? c.pairs.some((pr) => names(pr.src) || names(pr.cpy))
+      : Object.entries(c).some(([k, val]) => k !== "type" && k !== "id" && typeof val === "string" && names(val));
+  const constraints: SketchConstraint[] = [];
+  const seen = new Set<string>();
+  for (const c of cons) {
+    if (!mentions(c)) { constraints.push(c); continue; }
+    const next = remap(c);
+    if (next === "quiet") continue;
+    if (!next) { dropped++; continue; }
+    // both pieces Horizontal, say: once is enough
+    const key = JSON.stringify(next);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    constraints.push(next);
+  }
+  // A curve's point that sat on the joint with nothing holding it there was
+  // held all the same: the solver merges ends at one spot (coincKey). Kept On
+  // the new line, it stays where it is.
+  const key = coincKey(joint.x, joint.y);
+  const held = new Set(constraints.flatMap((c) => (c.type === "pointOn" && c.curve === id ? [`${c.e}:${c.p}`] : [])));
+  for (const e of entities) {
+    if (e.id === id) continue;
+    for (const { p, pos } of dimRefPoints(e)) {
+      if (!mergesAt(e, p) || coincKey(pos.x, pos.y) !== key || held.has(`${e.id}:${p}`)) continue;
+      held.add(`${e.id}:${p}`);
+      constraints.push(onLine({ e: e.id, p }));
+    }
+  }
+  return {
+    kind: "joined", entities, constraints, dropped, id, from: [a.id, b.id],
+    points: { [a.id]: { [1 - ae]: { e: id, p: 1 - ae } }, [b.id]: { [1 - be]: { e: id, p: ae } } },
+  };
+}
+
+/** Does point `p` of `e` join whatever else ends at the same spot? The points
+ *  the solver merges by position (getPoint's `mergeable`): a line's, arc's or
+ *  spline's ends, a sketch point, a rectangle's corners, and the same on
+ *  projected geometry. Not a centre, nor a polygon's or slot's points, which
+ *  join nothing until a constraint names them. */
+function mergesAt(e: ResolvedEntity, p: number): boolean {
+  if (e.type === "line" || e.type === "spline" || e.type === "point") return true;
+  if (e.type === "arc") return p !== 2;
+  if (e.type === "rectangle") return p !== RECT_CENTRE;
+  if (e.type === "projected") return e.curve.kind !== "circle" && !(e.curve.kind === "arc" && p === 2);
+  return false;
 }
 
 // --- geometric constraints (applied once; a full solver maintains them) ---

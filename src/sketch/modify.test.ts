@@ -154,7 +154,9 @@ describe("offsetEntity", () => {
     // circumradius grows by dist / cos(pi/6) so the EDGES move out by exactly 1
     expect(cpy.radius).toBeCloseTo(10 + 1 / Math.cos(Math.PI / 6), 6);
     expect(cpy.sides).toBe(6);
-    expect(out.linked).toBe(false);
+    // tied to its source side for side, the way a rectangle's copy is
+    expect(out.linked).toBe(true);
+    expect(out.pairs).toEqual([0, 1, 2, 3, 4, 5].map((k) => ({ src: `p~${k}`, cpy: `${cpy.id}~${k}` })));
   });
 
   it("offsets a slot by widening it (width is the overall width)", () => {

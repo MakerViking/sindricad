@@ -1319,6 +1319,7 @@
       "datumPlane": "Creates the plane only — no sketch.",
       "import": "Brings in a STEP, STL, 3MF, OBJ or GLB file as a body.",
       "insertPart": "Copies the visible bodies of another SindriCAD document into this one. Later changes to that file do not follow.",
+      "join": "Makes two lines that meet end to end in a straight line one line again, for example after Break.",
       "offsetPlane": "Creates the plane AND starts a sketch on it.",
       "project": "Brings edges of bodies and other sketches into this sketch, linked so they follow their source."
     },
@@ -1745,6 +1746,17 @@
       "explodeFormulaBound": "A formula sets this {shape}, so I left it a {shape}. As separate lines, nothing would be left for the formula to set.",
       "explodeParamBound": "Parameter {name} sets this {shape}, so I left it a {shape}. As separate lines, nothing would be left for {name} to set.",
       "explodedForCorner": "I turned the {shape} into separate lines so {tool} could work on its corner. It keeps its shape, and its constraints are on the lines now.",
+      "join": {
+        "construction": "One of these lines is construction geometry and the other is not, so I left them as two lines",
+        "noLine": "Join works on lines. Click a line next to the point where it meets the line it continues",
+        "notInLine": "These lines meet at an angle, so I can't make them one straight line",
+        "nothingJoined": "Nothing meets this line at its ends, so there is nothing to join it to",
+        "overlap": "These lines run back over each other, so joining them would lose part of one"
+      },
+      "joinDropped": {
+        "one": "Join removed a constraint that no longer applies once the lines are one",
+        "other": "Join removed {count} constraints that no longer apply once the lines are one"
+      },
       "sidesDoNotMeet": "{tool} works on two sides that meet at a corner, and these two do not. Click a side next to the first one.",
       "slotNoCorner": "{tool} works on a corner where two lines meet, and a slot has none: its sides never meet and its ends are already round.",
       "trimDropped": {
@@ -1760,8 +1772,12 @@
       "chainSelection": "Chain Selection",
       "clickCurve": "Offset: click a curve to offset",
       "collapses": "Offset: that distance collapses the geometry",
+      "followCollapses": "At that size nothing would be left of the offset tied to this shape, so I left both as they were",
+      "followSides": "The offset tied to this polygon is separate lines now and can't take a new side count, so I left both as they were",
       "noPoint": "Offset needs a curve, not a point",
       "noText": "Offset doesn't apply to sketch text",
+      "paramCollapses": "At this parameter value nothing would be left of an offset tied to a shape, so I left that offset where it was",
+      "paramSides": "An offset tied to a polygon is separate lines now and can't take the new side count, so I left it where it was",
       "prompt": "Offset: move to pick the side, or type a distance · click / Enter to apply · Esc to cancel",
       "rigidCopy": "Offset copy created — not linked to the source (this shape type is rigid)",
       "typeDistance": "Offset: type a distance, or Esc to cancel"
@@ -1823,6 +1839,7 @@
       "fillet": "Fillet: click two lines, then type a radius + Enter · Esc",
       "fix": "Fix: click a point, endpoint or circle/arc center to lock it in place · Esc",
       "horizontal": "Horizontal: click a line to make it horizontal · Esc",
+      "join": "Join: click a line where it meets the line it continues, to make the two one line · Esc",
       "line": "Line: click points · type length + Tab + angle · Enter to commit · click the start to close · Esc",
       "lockDimension": "Lock Dimension: click geometry to lock its measured dimensions at their current values · Esc",
       "midpoint": "Midpoint: click a point/endpoint, then a line — the point sits at its midpoint · Esc",
@@ -1931,6 +1948,7 @@
     },
     "rollForwardToEdit": "Roll the timeline forward to edit this feature",
     "sketchCancelled": "Sketch cancelled",
+    "sketchNote": "Sketch {id}: {note}",
     "sketchUnsatisfied": "Sketch {id}: dimensions could not be satisfied — geometry left unchanged",
     "spaceMouseBlocked": "Found \"{name}\" but can't read it — see the SpaceMouse section of the README (Linux needs a one-time udev rule; a running spacenavd/3Dconnexion driver also holds the device)",
     "unsuppressToEdit": "Unsuppress the feature to edit it",
@@ -2069,6 +2087,7 @@
     "importMesh": "Import",
     "insertPart": "Part from File",
     "interference": "Interference",
+    "join": "Join",
     "line": "Line",
     "lockDimension": "Lock Dimension",
     "loft": "Loft",

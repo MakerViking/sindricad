@@ -61,6 +61,9 @@ const PATHS = {
   extend: `<line x1="4" y1="12" x2="14" y2="12"/><path d="M14 8l4 4-4 4"/>`,
   fillet: `<path d="M5 4 L5 11 Q5 19 13 19 L20 19 M5 11 L5 19 L13 19" fill="none"/>`,
   break: `<line x1="4" y1="12" x2="9" y2="12"/><line x1="15" y1="12" x2="20" y2="12"/><line x1="11" y1="7" x2="11" y2="17"/><line x1="13" y1="7" x2="13" y2="17"/>`,
+  // Break's cut closed up: one line through the point where it was cut, and
+  // the two halves pushed together
+  join: `<line x1="3" y1="16" x2="21" y2="16"/><circle cx="12" cy="16" r="1.4" fill="currentColor"/><path d="M3.5 8.5h5.5M6.5 6l2.5 2.5L6.5 11"/><path d="M20.5 8.5H15M17.5 6L15 8.5l2.5 2.5"/>`,
 
   // modeling create
   sketch: `<path d="M14 4l6 6L9 21l-6 1 1-6z"/><line x1="13" y1="5" x2="19" y2="11"/>`,

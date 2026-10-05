@@ -23,7 +23,7 @@ import {
   targetKey, unsupportedMessage,
   type DimOptions, type DimPlan, type DimTarget,
 } from "./dimensionTool";
-import { pickEntity, pointBeatsCurve, tangencyPoints, trimSpan, trimWithConstraints, detachEndpoint, detachableEnd, isBreakCut, filletCorner, chamferCorner, cornerJoins, explodeCompound, polygonRingHolds, rotationTie, translationTie, offsetEntity, offsetChain, offsetChainJunction, signedOffsetAt, breakWithConstraints, extendLine, breakLink, attachmentPoints, bodyDragBlocked, bodyDragFrame, fixPinnedIds, pickDragPoint, FIXED_POINT_MSG, PROJECTED_FIXED_MSG, type ExplodeResult, type OffsetResult, type TrimResult } from "./modify";
+import { pickEntity, pointBeatsCurve, tangencyPoints, trimSpan, trimWithConstraints, detachEndpoint, detachableEnd, isBreakCut, filletCorner, chamferCorner, cornerJoins, explodeCompound, polygonRingHolds, rotationTie, translationTie, offsetEntity, offsetChain, offsetChainJunction, signedOffsetAt, followOffsets, followRefusal, breakWithConstraints, joinLines, extendLine, breakLink, attachmentPoints, bodyDragBlocked, bodyDragFrame, fixPinnedIds, pickDragPoint, FIXED_POINT_MSG, PROJECTED_FIXED_MSG, type ExplodeResult, type OffsetResult, type TrimResult } from "./modify";
 import { newEntityId, newConstraintId, isDimConstraint, notePatternId } from "./id";
 import { SketchHistory, cloneSnapshot, type SketchSnapshot } from "./history";
 import { isPlainNumber, parseField, dimValueOk, fmtLength, fieldText, canonicalDecimal, fieldExpr } from "../ui/units";
@@ -97,6 +97,7 @@ export type SketchTool =
   | "offset"
   | "extend"
   | "break"
+  | "join"
   | "horizontal"
   | "vertical"
   | "parallel"
@@ -132,6 +133,7 @@ const MODIFY_TOOLS = new Set<SketchTool>([
   "offset",
   "extend",
   "break",
+  "join",
   "mirror",
   "dimension",
   "lockDimension",
@@ -487,12 +489,12 @@ export class SketchMode {
   private regionCarry: RegionCarry = {};
   /** What an edit here renamed, and where each of its points and lines went:
    *  a shape exploded (commitExplodes), a curve or shape trimmed or broken
-   *  (carryPieces), a polygon's corners and sides renumbered
-   *  (commitPolygonEdit). finish() re-points with it every extrude, on any
-   *  sketch, that starts from or runs up to one of them, in the same undo
-   *  step; it rides in the in-sketch undo snapshot like regionCarry. Only kept
-   *  while an extrude names something in this sketch (carryPoints), so a
-   *  session nothing refers into snapshots as before. */
+   *  (carryPieces), two lines Join made one, or a polygon's corners and sides
+   *  renumbered (commitPolygonEdit). finish() re-points with it every
+   *  extrude, on any sketch, that starts from or runs up to one of them, in
+   *  the same undo step; it rides in the in-sketch undo snapshot like
+   *  regionCarry. Only kept while an extrude names something in this sketch
+   *  (carryPoints), so a session nothing refers into snapshots as before. */
   private pointCarry: PointCarry = {};
   /** The curves a Trim here cut that kept their id (trimClick). finish() stops
    *  a projection of one, in another sketch, from following it; it rides in
@@ -1229,8 +1231,24 @@ export class SketchMode {
       if (c && isDimConstraint(c)) this.writeDimValue(c, plan.value);
       return;
     }
-    entityDims(e).find((d) => d.field === field)?.write(mm);
+    const written = this.shapeFieldWrite(index, field, mm);
+    if (typeof written === "string") toast(written);
+    else this.entities = written;
     this.refreshActive();
+  }
+
+  /** The entities with a rectangle's, polygon's or slot's own number written
+   *  straight into it, and every shape an Offset ties to it side for side
+   *  re-made from it (followOffsets): nothing else would, a solve afterwards
+   *  included. Or what to say instead, when the edit cannot be taken
+   *  (followOffsets' `refused`). */
+  private shapeFieldWrite(index: number, field: DimField, mm: number): ResolvedEntity[] | string {
+    const e = this.entities[index];
+    if (!e) return this.entities;
+    const edited = { ...e };
+    entityDims(edited).find((d) => d.field === field)?.write(mm);
+    const follow = followOffsets(this.entities.map((x, i) => (i === index ? edited : x)), this.constraints, e.id, e);
+    return "refused" in follow ? followRefusal(follow.refused) : follow.entities;
   }
 
   /** The same edit arriving from the INSPECTOR while this sketch is open
@@ -1743,10 +1761,16 @@ export class SketchMode {
 
   /** Shared raw-input commit for a bindable dim slot with a known key.
    *  `signed` passes the dim's own rule about acceptable values down to
-   *  evalDimInput — see units.dimValueOk. */
-  private commitExprInput(key: string, kind: FieldKind, raw: string, apply: (value: number) => void, signed = false): string | null {
+   *  evalDimInput — see units.dimValueOk. `refuse` says why a value cannot be
+   *  taken, before anything (its binding included) is written. */
+  private commitExprInput(
+    key: string, kind: FieldKind, raw: string, apply: (value: number) => void, signed = false,
+    refuse?: (value: number) => string | null,
+  ): string | null {
     const r = this.evalDimInput(raw, kind, key, signed);
     if ("error" in r) return r.error;
+    const no = refuse?.(r.value);
+    if (no) return no;
     this.recordBinding(key, r, kind);
     apply(r.value);
     return null;
@@ -1765,10 +1789,15 @@ export class SketchMode {
     if (e.type === "circle" && field === "diameter") return this.commitConvertedDim({ type: "diameter", circle: e.id, value: 0 }, raw);
     const bindable = RIGID_ENTITY_NUM_FIELDS[e.type]?.some(([f]) => f === field);
     if (!bindable) return t("sketch.dimension.error.noExpression");
+    const write = (v: number) => this.shapeFieldWrite(index, field, coerceForField(field, v));
     return this.commitExprInput(`e:${e.id}:${field}`, "length", raw, (v) => {
-      entityDims(e).find((d) => d.field === field)?.write(coerceForField(field, v));
+      const written = write(v);
+      if (typeof written !== "string") this.entities = written;
       this.refreshActive();
       this.onState?.();
+    }, false, (v) => {
+      const written = write(v);
+      return typeof written === "string" ? written : null;
     });
   }
 
@@ -1828,22 +1857,46 @@ export class SketchMode {
         touched = true;
       }
     }
+    const reshaped: { id: string; was: ResolvedEntity }[] = [];
     for (const e of this.entities) {
-      let oldSides: number | undefined;
+      const was = { ...e };
       for (const [field] of RIGID_ENTITY_NUM_FIELDS[e.type] ?? []) {
         const next = valueFor(`e:${e.id}:${field}`);
         if (next == null) continue;
         const rec = e as unknown as Record<string, unknown>;
         const coerced = coerceForField(field, next);
         if (rec[field] !== coerced) {
-          if (field === "sides") oldSides = rec[field] as number;
           rec[field] = coerced;
           touched = true;
+          if (reshaped.at(-1)?.id !== e.id) reshaped.push({ id: e.id, was });
         }
       }
-      // a new side count renumbers the sides and corners constraints name
-      if (oldSides !== undefined) rebindPolygonSides(this.entities, this.constraints, e.id, oldSides);
     }
+    // What an Offset ties to a shape the parameter set is taken along, as for
+    // a number typed (followOffsets), against the constraints as they were;
+    // then a new side count renumbers the sides and corners constraints name,
+    // on the shape and on every one that followed it. What cannot follow is
+    // said: the parameter has set the shape all the same.
+    const resided: { id: string; sides: number }[] = [];
+    const moved = new Set<string>(); // one an earlier shape re-made: that one decides
+    for (const { id, was } of reshaped) {
+      if (moved.has(id)) continue;
+      const follow = followOffsets(this.entities, this.constraints, id, was);
+      if ("refused" in follow) {
+        toast(followRefusal(follow.refused, true));
+        continue;
+      }
+      follow.entities.forEach((x, j) => { if (x !== this.entities[j]) moved.add(x.id); });
+      this.entities = follow.entities;
+      resided.push(...follow.resided);
+    }
+    for (const { id, was } of reshaped) {
+      const now = this.entities.find((x) => x.id === id);
+      if (was.type === "polygon" && now?.type === "polygon" && now.sides !== was.sides) {
+        rebindPolygonSides(this.entities, this.constraints, id, was.sides);
+      }
+    }
+    for (const r of resided) rebindPolygonSides(this.entities, this.constraints, r.id, r.sides);
     if (touched) {
       this.armPreEdit(); // parameter sync is DERIVED — never an undo step
       this.requestSolve();
@@ -2446,6 +2499,7 @@ export class SketchMode {
     if (this.tool === "offset") return this.offsetClick(p);
     if (this.tool === "extend") return this.extendClick(p);
     if (this.tool === "break") return this.breakClick(p);
+    if (this.tool === "join") return this.joinClick(p);
     if (CONSTRAINT_TOOLS.has(this.tool)) return this.constraintClick(p);
 
     if (!this.base) {
@@ -3088,18 +3142,34 @@ export class SketchMode {
       }
       writes.push({ field, key, kind, r });
     }
+    if (!writes.length) { this.cancelPolygonEdit(); return; }
     const oldSides = e.sides;
-    for (const w of writes) {
-      this.recordBinding(w.key, w.r, w.kind);
-      e[w.field] = coerceForField(w.field, w.r.value);
+    // Planned on a copy first: a shape an Offset ties to this one is re-made
+    // from it (followOffsets), and one that would be left with nothing refuses
+    // the edit before anything is written.
+    const edited = { ...e };
+    for (const w of writes) edited[w.field] = coerceForField(w.field, w.r.value);
+    const follow = followOffsets(this.entities.map((x) => (x === e ? edited : x)), this.constraints, e.id, e);
+    if ("refused" in follow) {
+      setPrompt(t("sketch.polygonEdit.badValue", { error: followRefusal(follow.refused) }));
+      this.dim.focus();
+      return;
     }
+    for (const w of writes) this.recordBinding(w.key, w.r, w.kind);
     this.cancelPolygonEdit();
-    if (!writes.length) return;
-    // a new side count renumbers the sides and corners constraints name, and
-    // an extrude's start or up-to reference
-    if (e.sides !== oldSides) {
+    this.entities = follow.entities;
+    // a new side count renumbers the sides and corners constraints name, on
+    // this polygon and on every one that followed it; each rebind also
+    // re-points any extrude that starts from or runs up to one of those
+    // corners or sides.
+    if (edited.sides !== oldSides) {
       rebindPolygonSides(this.entities, this.constraints, e.id, oldSides);
-      this.carryPoints(polygonSidesCarry(e.id, oldSides, e.sides));
+      this.carryPoints(polygonSidesCarry(e.id, oldSides, edited.sides));
+    }
+    for (const r of follow.resided) {
+      rebindPolygonSides(this.entities, this.constraints, r.id, r.sides);
+      const now = this.entities.find((x) => x.id === r.id);
+      if (now?.type === "polygon") this.carryPoints(polygonSidesCarry(r.id, r.sides, now.sides));
     }
     this.refreshActive();
     this.requestSolve(); // banks the undo step, like every other sketch edit
@@ -5832,6 +5902,48 @@ export class SketchMode {
     const dropped = res.dropped + kept - this.constraints.length;
     if (this.entities.length > before) toast(t("sketch.modify.breakJoined"));
     if (dropped > 0) toast(t("sketch.modify.breakDropped", { count: dropped }));
+  }
+  /** Join, the opposite of Break: the clicked line and the one it continues
+   *  in a straight line become one line, keeping what still applies to it
+   *  (joinLines), and saying what could not come along. An extrude that names
+   *  an area, an end or a whole line by the two old lines is re-pointed at the
+   *  new one, the way Explode does it. */
+  private joinClick(p: THREE.Vector2) {
+    const idx = pickEntity(this.entities, p, this.pickTol());
+    if (idx < 0 || this.guardProjected(this.entities[idx])) return;
+    const res = joinLines(this.entities, this.constraints, idx, p, this.pickTol());
+    if (res.kind === "refused") {
+      toast(t(`sketch.modify.join.${res.why}`));
+      return;
+    }
+    const regions = this.regionsBeforeRename();
+    this.entities = res.entities;
+    this.constraints = res.constraints;
+    this.carryPoints(
+      Object.fromEntries(
+        Object.entries(res.points).map(([id, ps]) => [
+          id,
+          {
+            // an extrude that starts from or runs up to this whole line
+            "": { entity: res.id },
+            ...Object.fromEntries(Object.entries(ps).map(([k, q]) => [k, { entity: q.e, pointIndex: q.p }])),
+          },
+        ]),
+      ),
+    );
+    for (const pat of this.patterns) {
+      if ("sources" in pat && pat.sources.some((id) => res.from.includes(id))) {
+        pat.sources = [...new Set(pat.sources.map((id) => (res.from.includes(id) ? res.id : id)))];
+      }
+    }
+    const wasSelected = res.from.some((id) => this.selected.has(id));
+    for (const id of res.from) this.selected.delete(id);
+    if (wasSelected) this.selected.add(res.id);
+    this.carryRegionRefs(regions);
+    const kept = this.constraints.length;
+    this.afterModify(); // prunes too: anything it still finds dangling counts
+    const dropped = res.dropped + kept - this.constraints.length;
+    if (dropped > 0) toast(t("sketch.modify.joinDropped", { count: dropped }));
   }
   /** add a persistent geometric constraint and re-solve (the solver maintains
    *  all constraints together, not just the one you applied). Delegates to

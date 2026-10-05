@@ -9,7 +9,9 @@ import type { GeometryBackend, ProjectionResult, QueryResult } from "../geometry
 import { featureErrorText } from "../geometry/featureErrorText";
 import { migrateDocument, savedVersion } from "./migrate";
 import { applyDrivingDimsDirect, planDimEdit, upsertDrivingDim } from "../sketch/directDims";
-import { entityDims } from "../sketch/entityDims";
+import { entityDims, rebindPolygonSides } from "../sketch/entityDims";
+import { followOffsets, followRefusal, type FollowRefusal } from "../sketch/modify";
+import type { ResolvedEntity } from "../sketch/snap";
 import { isDimConstraint } from "../sketch/id";
 import { resolveRealEntities, toSketchEntity } from "../sketch/resolve";
 import * as params from "../params/engine";
@@ -76,6 +78,53 @@ export function applyTrimmedProjections(d: CadDocument, sketchId: string, trimme
   });
 }
 
+/** The shapes' own numbers a parameter can set, and the place a shape is at:
+ *  what tells a rectangle or polygon a parameter edit changed. */
+const SHAPE_FIELDS = ["x", "y", "width", "height", "radius", "sides", "angle"] as const;
+
+/** A closed sketch after a parameter edit (`post`, `pre` before it), with
+ *  what an Offset ties to each rectangle or polygon the edit changed taken
+ *  along first (followOffsets), the way a number typed into the shape is: the
+ *  solve cannot do it. A polygon's side count set from the parameter table
+ *  left its copy a hexagon, turned and moved off the octagon, nothing amber;
+ *  and a source shrunk past its inward copy has no answer, which the solve
+ *  reported as "geometry left unchanged" over a source the parameter had
+ *  already resized. `post` is written in place, only the shapes that moved
+ *  re-serialized (the rest keep their parameter references). Returns why
+ *  nothing could be taken along, with `post` as the parameter left it. */
+function followParamEdit(
+  pre: Extract<Feature, { type: "sketch" }>,
+  preParams: CadDocument["parameters"],
+  post: Extract<Feature, { type: "sketch" }>,
+  parameters: CadDocument["parameters"],
+): FollowRefusal | null {
+  const was = new Map(resolveRealEntities(pre, preParams).map((e) => [e.id, e]));
+  const resolved = resolveRealEntities(post, parameters);
+  const changed = resolved.filter((e) => {
+    const w = was.get(e.id);
+    const field = (x: ResolvedEntity, f: string) => (x as unknown as Record<string, unknown>)[f];
+    return (e.type === "rectangle" || e.type === "polygon") && w?.type === e.type && SHAPE_FIELDS.some((f) => field(e, f) !== field(w, f));
+  });
+  if (!changed.length) return null;
+  let ents = resolved;
+  const resided: { id: string; sides: number }[] = [];
+  const moved = new Set<string>();
+  for (const e of changed) {
+    // one a parameter set AND an earlier one re-made: the earlier one decides
+    if (moved.has(e.id)) continue;
+    // the constraints as they were: a new side count has re-aimed the edited
+    // polygon's sides in `post` already (writeTarget), but not its partner's
+    const follow = followOffsets(ents, pre.constraints ?? [], e.id, was.get(e.id)!);
+    if ("refused" in follow) return follow.refused;
+    follow.entities.forEach((x, j) => { if (x !== ents[j]) moved.add(x.id); });
+    ents = follow.entities;
+    resided.push(...follow.resided);
+  }
+  if (!moved.size) return null;
+  for (const r of resided) rebindPolygonSides(ents, post.constraints ?? [], r.id, r.sides);
+  post.entities = post.entities.map((se, j) => (ents[j] !== resolved[j] ? toSketchEntity(ents[j]!) : se));
+  return null;
+}
 
 /** An expression typed on a sketch dimension while the sketch was OPEN — the
  *  dim isn't in the document until the sketch commits, so the binding travels
@@ -751,6 +800,7 @@ export class DocumentStore {
     const isSketch = (x: Feature): x is Extract<Feature, { type: "sketch" }> => x.type === "sketch";
     // every sketch as it was before the edit, taken before the first await
     const preOf = new Map(this.doc.features.filter(isSketch).map((x) => [x.id, x]));
+    const preParams = this.doc.parameters;
     const draft = clone(this.doc);
     fn(draft);
     const r = params.recompute(draft);
@@ -759,7 +809,15 @@ export class DocumentStore {
       if (sid === open) continue;
       const f = draft.features.find((x): x is Extract<Feature, { type: "sketch" }> => isSketch(x) && x.id === sid);
       if (!f) continue;
-      const solved = await this.solveParamEdit(preOf.get(sid) ?? f, f, draft.parameters);
+      const pre = preOf.get(sid) ?? f;
+      const refused = followParamEdit(pre, preParams, f, draft.parameters);
+      if (refused) {
+        // Nothing satisfies the sketch now, and the parameter has already set
+        // the shape: said as it is, not as "geometry left unchanged".
+        this.onWarning?.(t("status.sketchNote", { id: sid, note: followRefusal(refused, true) }));
+        continue;
+      }
+      const solved = await this.solveParamEdit(pre, f, draft.parameters);
       if (solved) f.entities = solved;
     }
     this.mutate((d) => {
@@ -1095,7 +1153,8 @@ export class DocumentStore {
   private async commitSketchDimension(sketchId: string, entityIndex: number, field: DimField, mm: number): Promise<void> {
     const cur = this.doc.features.find((x): x is Extract<Feature, { type: "sketch" }> => x.type === "sketch" && x.id === sketchId);
     if (!cur) return;
-    const e = resolveRealEntities(cur, this.doc.parameters)[entityIndex];
+    const resolved = resolveRealEntities(cur, this.doc.parameters);
+    const e = resolved[entityIndex];
     if (!e) return;
     // A constraint names its entity by id, so an entity that has never been
     // given one (a pre-id saved file) keeps the coordinate write.
@@ -1106,9 +1165,14 @@ export class DocumentStore {
     // next solve, which is report dff87040 one layer up.
     const plan = docId ? planDimEdit(cur.constraints ?? [], { type: e.type, id: docId }, field, mm) : null;
     const dim = plan?.kind === "upsert" ? plan.c : null;
-    // Only the edited entity is ever re-serialized: the others keep their
-    // parameter references (resolve would have baked them out to numbers).
-    const withEdited = () => cur.entities.map((ent, j) => (j === entityIndex ? toSketchEntity(e) : ent));
+    // Only the edited entity is ever re-serialized, and a shape an Offset made
+    // it follow: the others keep their parameter references (resolve would
+    // have baked them out to numbers).
+    let followed = new Map<number, ResolvedEntity>();
+    const withEdited = () => cur.entities.map((ent, j) => {
+      const f = followed.get(j);
+      return j === entityIndex ? toSketchEntity(e) : f ? toSketchEntity(f) : ent;
+    });
     let next: Extract<Feature, { type: "sketch" }>;
     // The constraint the no-solver fallback below has to write into the
     // geometry: the new one on an upsert, the RETYPED one on a retype. A retype
@@ -1127,7 +1191,18 @@ export class DocumentStore {
     } else {
       const d = entityDims(e).find((x) => x.field === field);
       if (!d) return;
+      const was = { ...e };
       d.write(mm); // mutates the resolved copy
+      // A rectangle or polygon an Offset ties to this one side for side is
+      // re-made from it: the solve below cannot do that (followOffsets).
+      if (docId) {
+        const follow = followOffsets(resolved, cur.constraints ?? [], docId, was);
+        if ("refused" in follow) {
+          this.onWarning?.(followRefusal(follow.refused));
+          return;
+        }
+        followed = new Map(follow.entities.flatMap((f, j) => (j !== entityIndex && f !== resolved[j] ? [[j, f] as const] : [])));
+      }
       next = { ...cur, entities: withEdited() };
     }
     const r = await this.solveSketchOutcome(next, this.doc.parameters);

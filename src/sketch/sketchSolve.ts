@@ -859,7 +859,63 @@ export async function compileAndSolve(
       // dimension rather than nothing. A digit-first suffix would silently
       // decode to a different constraint index ("k1" + "0" → index 10).
       const mag = Math.abs(c.value); // p2l_distance is unsigned; rimBranch holds the side
+      // A POLYGON's sides (`P~k`) are not taken pair by pair. Taken by the
+      // rectangle-edge rule below, one distance a side, a hexagon's offset
+      // came out with one of its six amber (redundant) and the copy still not
+      // held: 5 freedoms left where the source's 4 should be all. Grouped by
+      // the shapes on each side of the pairs instead:
+      //   polygon to polygon  centres together, the two turned alike (a spoke
+      //                       of each, the corners the first pair starts at),
+      //                       and the circles through the corners apart by
+      //                       value / cos(180/n), SIGNED like a round's, so
+      //                       the copy cannot cross to the other side
+      //   one side lines      what Explode (or a Fillet on a corner) leaves of
+      //                       a polygon: parallel once, and a distance on three
+      //                       sides spread round it, which pins centre and size
+      //                       too. Unsigned like a line pair's; rimBranch holds
+      //                       the side.
+      const polyOf = (s: string): string | undefined => {
+        const cut = s.indexOf("~");
+        return cut > 0 && polyMap.has(s.slice(0, cut)) ? s.slice(0, cut) : undefined;
+      };
+      const sideOf = (s: string) => Number(s.slice(s.indexOf("~") + 1));
+      const byPolys = new Map<string, number[]>();
       c.pairs.forEach((pr, n) => {
+        const a = polyOf(pr.src), b = polyOf(pr.cpy);
+        if (!a && !b) return;
+        const key = `${a ?? ""}>${b ?? ""}`;
+        const ns = byPolys.get(key);
+        if (ns) ns.push(n);
+        else byPolys.set(key, [n]);
+      });
+      const grouped = new Set<number>();
+      for (const [key, ns] of byPolys) {
+        ns.forEach((n) => grouped.add(n));
+        const [a, b] = key.split(">") as [string, string];
+        const pa = polyMap.get(a), pb = polyMap.get(b);
+        const n0 = ns[0]!, first = c.pairs[n0]!;
+        if (pa && pb && pa.verts.length === pb.verts.length) {
+          cons.push({ id: `${id}c${n0}`, type: "coincident", a: pa.centre, b: pb.centre });
+          cons.push({ id: `${id}t${n0}`, type: "angleLL", l1: `${a}~r${sideOf(first.src)}`, l2: `${b}~r${sideOf(first.cpy)}`, value: 0 });
+          cons.push({ id: `${id}r${n0}`, type: "radiusDifference", inner: pa.circle, outer: pb.circle, value: c.value / Math.cos(Math.PI / pa.verts.length) });
+          continue;
+        }
+        const order = [...ns].sort((x, y) => {
+          const px = c.pairs[x]!, py = c.pairs[y]!;
+          return sideOf(pa ? px.src : px.cpy) - sideOf(pa ? py.src : py.cpy);
+        });
+        const lead = c.pairs[order[0]!]!;
+        if (isLine(lead.src) && isLine(lead.cpy)) cons.push({ id: `${id}p${order[0]}`, type: "parallel", l1: lead.src, l2: lead.cpy });
+        const m = order.length;
+        for (const i of new Set([0, Math.round(m / 3), Math.round((2 * m) / 3)])) {
+          const n = order[i];
+          const pr = n === undefined ? undefined : c.pairs[n];
+          const e = pr ? ends.get(pr.cpy) : undefined;
+          if (pr && e && isLine(pr.src)) cons.push({ id: `${id}a${n}`, type: "p2lDistance", p: e[0], line: pr.src, value: mag });
+        }
+      }
+      c.pairs.forEach((pr, n) => {
+        if (grouped.has(n)) return;
         // A rect-EDGE operand ("<rectId>~<k>") is already direction-locked by the
         // rectangle's implicit horizontal/vertical constraints, so it needs ONE
         // distance and no parallel — 4 edges × 1 equation is exactly a
@@ -2397,8 +2453,18 @@ function rimBranch(c: SketchConstraint, byId: Map<string, ResolvedEntity>): stri
     // their p2l_distance is unsigned, so a solve could satisfy the number with
     // the copy on the far side. Round pairs use the signed `difference` and are
     // excluded by construction — they contribute a constant "." so the string
-    // still compares equal across the solve.
+    // still compares equal across the solve. So do a polygon's sides on another
+    // polygon of as many sides, held signed the same way (the offset compile):
+    // a parameter that grows the source past its copy starts the solve with the
+    // copy inside it, and the solve that puts it back out must not be refused.
+    const polygon = (s: string) => {
+      const cut = s.indexOf("~");
+      const e = cut > 0 ? byId.get(s.slice(0, cut)) : undefined;
+      return e?.type === "polygon" ? Math.max(3, Math.round(e.sides)) : null;
+    };
     const sides = c.pairs.map((pr) => {
+      const ns = polygon(pr.src);
+      if (ns !== null && ns === polygon(pr.cpy)) return ".";
       const s = lineOperand(byId, pr.src), t = lineOperand(byId, pr.cpy);
       if (!s || !t) return ".";
       const dx = s.x2 - s.x1, dy = s.y2 - s.y1;
