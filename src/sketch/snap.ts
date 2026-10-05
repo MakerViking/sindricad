@@ -14,6 +14,9 @@ export type SnapKind =
   | "endpoint"
   | "midpoint"
   | "center"
+  // where two curves a Tangent names touch (modify's tangencyPoints): on both
+  // of them, and no solver point, so it snaps the coordinate only
+  | "tangent"
   | "on-x"
   | "on-y";
 

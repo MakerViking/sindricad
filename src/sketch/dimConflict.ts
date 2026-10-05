@@ -172,6 +172,11 @@ export interface SketchTrial {
    *  REDUNDANT, already implied by the rest of the sketch, are dropped instead
    *  of staying in it painted amber, and this hears which ones were kept. */
   dropRedundant?: (kept: SketchConstraint[]) => void;
+  /** Set when the trial was armed in a sketch that ALREADY conflicted (Trim
+   *  sets it for its joins): that sketch conflicts with or without the trial,
+   *  so a conflict withdraws it only when the solve names one of its members.
+   *  Unset, any conflict withdraws it, and blames it. */
+  alreadyConflicting?: boolean;
 }
 
 /** Undo a refused trial: the constraint list to go back to, and the one thing

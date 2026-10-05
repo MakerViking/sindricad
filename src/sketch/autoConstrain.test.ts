@@ -135,7 +135,8 @@ describe("a snapped endpoint is never moved", () => {
 
 describe("which snaps count as a join", () => {
   it("geometry snaps pin the point", () => {
-    for (const k of ["endpoint", "midpoint", "center"]) {
+    // a tangency point too: it is on two curves, aimed at like a midpoint
+    for (const k of ["endpoint", "midpoint", "center", "tangent"]) {
       expect(isGeometrySnap(k), `${k} should pin the point`).toBe(true);
     }
   });

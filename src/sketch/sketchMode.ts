@@ -8,7 +8,7 @@ import type { DocumentStore } from "../document/store";
 import type { EdgeFingerprint, ExtrudeRef, Feature, ParamTarget, PlaceOffset, PlaneSpec, ProjectedSource, ProjectionUpdate, Selector, SketchConstraint, SketchEntity, SketchPattern } from "../types";
 import { applyProjectionUpdate, dimPlaceOf, isBadgeEntity, isDriven, isPlacedDim } from "../types";
 import { SketchPlane } from "./plane";
-import { SketchOverlay, curveObjects, dimensionLineObjects, pointHighlight, polyline, dashedPolyline, CURVE_COLOR, PREVIEW_COLOR, SELECT_COLOR } from "./overlay";
+import { SketchOverlay, curveObjects, dimensionLineObjects, pointHighlight, polyline, dashedPolyline, CURVE_COLOR, ENDPOINT_COLOR, PREVIEW_COLOR, SELECT_COLOR } from "./overlay";
 import { DimInput, type DimFieldDef } from "./dimInput";
 import { TextPanel } from "./textPanel";
 import type { TextValues } from "./textPanel";
@@ -23,7 +23,7 @@ import {
   targetKey, unsupportedMessage,
   type DimOptions, type DimPlan, type DimTarget,
 } from "./dimensionTool";
-import { pickEntity, trimSpan, trimWithConstraints, detachEndpoint, detachableEnd, isBreakCut, filletCorner, chamferCorner, cornerJoins, explodeCompound, polygonRingHolds, rotationTie, translationTie, offsetEntity, offsetChain, offsetChainJunction, signedOffsetAt, breakWithConstraints, extendLine, breakLink, attachmentPoints, bodyDragBlocked, bodyDragFrame, fixPinnedIds, pickDragPoint, FIXED_POINT_MSG, PROJECTED_FIXED_MSG, type ExplodeResult, type OffsetResult, type TrimResult } from "./modify";
+import { pickEntity, tangencyPoints, trimSpan, trimWithConstraints, detachEndpoint, detachableEnd, isBreakCut, filletCorner, chamferCorner, cornerJoins, explodeCompound, polygonRingHolds, rotationTie, translationTie, offsetEntity, offsetChain, offsetChainJunction, signedOffsetAt, breakWithConstraints, extendLine, breakLink, attachmentPoints, bodyDragBlocked, bodyDragFrame, fixPinnedIds, pickDragPoint, FIXED_POINT_MSG, PROJECTED_FIXED_MSG, type ExplodeResult, type OffsetResult, type TrimResult } from "./modify";
 import { newEntityId, newConstraintId, isDimConstraint, notePatternId } from "./id";
 import { SketchHistory, cloneSnapshot, type SketchSnapshot } from "./history";
 import { isPlainNumber, parseField, dimValueOk, fmtLength, fieldText, canonicalDecimal, fieldExpr } from "../ui/units";
@@ -915,7 +915,15 @@ export class SketchMode {
       this.editingId ?? "__active__",
       [...this.entities, ...derived],
     );
-    this.candidates = candidatesFromEntities([...this.entities, ...derived]);
+    // A tangency is a point on two curves that nothing else marks, and a trim
+    // stops there: whatever snaps can land on it too (a coordinate only, as a
+    // midpoint snaps: it is no solver point to join). Ranked WITH a midpoint,
+    // so an end or a centre in reach still wins: those are solver points a
+    // drawn line is joined to, and at 95 a small hole's touch took its centre's
+    // snap away, Coincident and all.
+    const touches = tangencyPoints(this.entities, this.constraints)
+      .map((q): SnapCandidate => ({ p: q, kind: "tangent", priority: 80 }));
+    this.candidates = [...candidatesFromEntities([...this.entities, ...derived]), ...touches];
     // an in-progress dimension holds entity REFERENCES, and a solve replaces
     // every entity object — re-read the picks off the fresh list
     if (this.dimPicks.length) this.refreshDimPlan();
@@ -4225,6 +4233,14 @@ export class SketchMode {
       : this.tool === "coincident" ? this.constraintTools.hoverCurve(p)
       : null);
     if (curve) preview.push(...curveObjects([curve], this.plane, 0xff5555, true));
+    // Where curves held tangent touch, drawn as points while Trim is armed: a
+    // trim stops at a touch as it does at a crossing (Doug, 25), and a curve
+    // that runs smoothly into another shows nowhere where that is.
+    if (this.tool === "trim") {
+      for (const q of tangencyPoints(this.entities, this.constraints)) {
+        preview.push(pointHighlight(this.plane, q.x, q.y, ENDPOINT_COLOR, this.endpointDotRadius() * 1.4));
+      }
+    }
     // The point under the cursor, for the tools that consume one. It goes on
     // AFTER the entity highlight so it paints on top: an endpoint and the curve
     // owning it are both under the cursor at once, and the click takes the
@@ -4549,7 +4565,13 @@ export class SketchMode {
    *  stale, as both were when Trim made every id new. A projection that
    *  followed the kept piece would move without a word: a circle trimmed to an
    *  arc renumbers its centre from 0 to 2, so a constraint on the projected
-   *  centre would hold the arc's start instead. */
+   *  centre would hold the arc's start instead.
+   *
+   *  Each end the trim cut is joined to the curve it was cut against (cutJoins),
+   *  in the same undo step, on trial like a fillet's constraints: a sketch that
+   *  cannot take a join keeps the trim and loses only the joins, and a join the
+   *  rest of the sketch already implies is dropped rather than painted amber.
+   *  In a sketch that is red already, only a join the solve blames goes. */
   private trimClick(p: THREE.Vector2) {
     const idx = pickEntity(this.entities, p, this.pickTol());
     if (idx < 0 || this.guardProjected(this.entities[idx])) return;
@@ -4559,7 +4581,7 @@ export class SketchMode {
     const had = new Set(this.entities.map((e) => e.id));
     const res = trimWithConstraints(this.entities, idx, p, this.constraints);
     this.entities = res.entities;
-    this.constraints = res.constraints;
+    this.constraints = [...res.constraints, ...res.joins];
     const became = this.entities.filter((e) => e.id === cut.id || !had.has(e.id)).map((e) => e.id);
     for (const pat of this.patterns) {
       if ("sources" in pat && pat.sources.includes(cut.id)) pat.sources = pat.sources.flatMap((id) => (id === cut.id ? became : [id]));
@@ -4571,6 +4593,14 @@ export class SketchMode {
     // pieces (expandPattern numbers copies by position), so an area named by
     // one is treated like an area named by the curve itself.
     this.carryRegionRefs(regions, (id) => id === cut.id || copiers.some((pid) => id.startsWith(`${pid}#`)));
+    if (res.joins.length) {
+      this.trial = {
+        cons: res.joins,
+        msg: t("sketch.modify.trimJoinConflict"),
+        dropRedundant: () => {},
+        alreadyConflicting: this.conflict,
+      };
+    }
     const before = this.constraints.length;
     this.afterModify(); // prunes too: anything it still finds dangling counts
     const dropped = res.dropped + before - this.constraints.length;
@@ -5903,11 +5933,17 @@ export class SketchMode {
           this.conflict = r.conflicts.length > 0;
           // A constraint that cannot be satisfied must not stay in the sketch.
           // Keeping it leaves the whole system unsolvable, so every LATER
-          // constraint silently does nothing and the tools look broken.
-          if (this.trial && (this.conflict || !r.ok)) {
+          // constraint silently does nothing and the tools look broken. Unless
+          // the sketch was red before the trial and the solve blames none of
+          // it: then the conflict is the one that was already there, and
+          // withdrawing would lose a Trim's joins on every trim and blame them.
+          const blamed = parseConflictIdx(r.conflicts);
+          const innocent = !!this.trial?.alreadyConflicting && this.conflict
+            && this.trial.cons.every((c) => solved.includes(c) && !blamed.has(solved.indexOf(c)));
+          if (this.trial && (this.conflict || !r.ok) && !innocent) {
             const trial = this.trial;
             this.trial = null;
-            const w = withdrawTrial(this.constraints, trial, parseConflictIdx(r.conflicts));
+            const w = withdrawTrial(this.constraints, trial, blamed);
             this.constraints = w.constraints;
             // The solve's own reason wins over the tool's when it has one: a
             // tangency with no answer left on the segment it was created

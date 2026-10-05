@@ -112,7 +112,7 @@ export function inferHorizontalVertical(e: LineEnds, opts: AutoHVOptions = {}): 
 /** Snap kinds that mean "this point sits on existing geometry". A grid or free
  *  point is the user's hand, not a join, so auto-H/V may still move it. */
 export function isGeometrySnap(kind: string): boolean {
-  return kind === "endpoint" || kind === "midpoint" || kind === "center";
+  return kind === "endpoint" || kind === "midpoint" || kind === "center" || kind === "tangent";
 }
 
 // --- perpendicular and tangent at a joint ------------------------------------

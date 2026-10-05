@@ -7,7 +7,7 @@ import type { ResolvedEntity } from "./snap";
 import type { PlaceOffset, SketchConstraint } from "../types";
 import { TRIMMED_AWAY, dimPlaceOf, isDriven } from "../types";
 import { entitySegments, polygonPoints, rectCorners } from "./region";
-import { POLYGON_CENTRE, RECT_CENTRE, asRound, dimRefPoints, lineOperand, namedEntityIds, refPoint } from "./entityDims";
+import { POLYGON_CENTRE, RECT_CENTRE, asRound, curveKind, dimRefPoints, lineOperand, lineOperandAt, namedEntityIds, refPoint } from "./entityDims";
 import { isOriginGeometry } from "./origin";
 import { newEntityId } from "./id";
 import { arcCenterRadius } from "./arc";
@@ -20,6 +20,7 @@ import {
   lineIntersect,
   paramOnSeg,
   distToSeg,
+  touchTol,
   type Carrier2,
   type Curve2,
 } from "./geom2d";
@@ -609,10 +610,10 @@ export function trimWithConstraints(
   index: number,
   click: THREE.Vector2,
   cons: SketchConstraint[],
-): TrimResult & { points: Record<number, { e: string; p: number }> } {
+): TrimResult & { joins: SketchConstraint[] } {
   const e = ents[index];
   const plan = planTrim(ents, index, click);
-  if (!e || !plan) return { entities: ents, constraints: cons, dropped: 0, points: {}, lines: {} };
+  if (!e || !plan) return { entities: ents, constraints: cons, dropped: 0, points: {}, lines: {}, joins: [] };
   const start = dimRefPoints(e).find((r) => r.p === 0)?.pos;
   const startsHere = (pc: TrimPiece) => !!start && endsAt(pc.geom, start);
   const lead = e.type === "rectangle" ? null : plan.kept.find(startsHere) ?? plan.kept[0];
@@ -636,7 +637,7 @@ export function trimWithConstraints(
   for (const [p, q] of Object.entries(points)) {
     if (q.p === TRIMMED_AWAY && remapped.points[Number(p)]) points[Number(p)] = remapped.points[Number(p)]!;
   }
-  return { entities, ...remapped, points };
+  return { entities, ...remapped, points, joins: cutJoins(e, pieces, entities) };
 }
 
 /** Where each of `e`'s points (by dimRefPoints index) is after a trim, when
@@ -666,6 +667,109 @@ function trimmedPoints(e: ResolvedEntity, pieces: TrimPiece[]): Record<number, {
       break;
     }
     if (!found && idKept) out[p] = { e: e.id, p: TRIMMED_AWAY };
+  }
+  return out;
+}
+
+/** The joins a trim owes the ends it CUT: each kept piece's new end, held on
+ *  the curve it was cut against, as other CAD packages do (Doug, 25). Without
+ *  them the new end was free, so the next change of a dimension opened the
+ *  outline right there: a belt came off its pulley, a keyhole stopped being
+ *  closed. They are returned apart from the rewritten constraints because
+ *  the caller adds them on trial: a sketch that cannot take one keeps the trim
+ *  and loses only the joins.
+ *
+ *  A Coincident when the curve it was cut against has a POINT there (an end,
+ *  a corner), the way two ends that meet are joined; otherwise a point on that
+ *  curve (`pointOn`): a line, a rectangle, polygon or slot side, a circle or an
+ *  arc, native or projected. A spline, a slot's round end and sketch text take
+ *  no point on them, so a cut against one stays free, as it always was. Where
+ *  several curves pass through the cut, a point on any of them comes first,
+ *  then the first curve in sketch order.
+ *
+ *  A cut is an end of a kept piece the curve did not have before (planTrim
+ *  never cuts within 1e-4 of an end), and the curve it was cut against is the
+ *  one that end lies on. To a few times touchTol, not exactly: a cut at a
+ *  tangency is where curveCrossings counted a touch, and that sits up to
+ *  touchTol off one of the two curves.
+ *
+ *  A tangency between the piece and that curve is kept (remapTrimmed). Held on
+ *  the curve at the touch, the solver states it AT that point (sketchSolve's
+ *  tangent2), because to planegcs a tangency and a point on the curve at the
+ *  touch are the same condition twice. */
+function cutJoins(e: ResolvedEntity, pieces: TrimPiece[], after: ResolvedEntity[]): SketchConstraint[] {
+  const had = dimRefPoints(e).map((r) => r.pos);
+  const own = new Set(pieces.map((pc) => pc.geom.id));
+  // the origin axes cut nothing (crossingsOn), so nothing was cut against them
+  const others = after.filter((o) => !own.has(o.id) && !isOriginGeometry(o.id));
+  const tolFor = (o: ResolvedEntity) => 4 * touchTol(Math.max(asRound(e)?.r ?? 0, asRound(o)?.r ?? 0));
+  const out: SketchConstraint[] = [];
+  for (const pc of pieces) {
+    const g = pc.geom;
+    if (pc.whole || (g.type !== "line" && g.type !== "arc")) continue;
+    for (const end of [0, 1]) {
+      const at = refPoint(g, end);
+      if (!at || had.some((q) => q.distanceTo(at) < 1e-6)) continue; // an end it always had
+      const through = others.filter((o) => entityCurves(o).some((c) => onCurve(c, at, tolFor(o))));
+      const point = through
+        .map((o) => ({ o, r: dimRefPoints(o).find((r) => r.pos.distanceTo(at) <= tolFor(o)) }))
+        .find((x) => x.r);
+      if (point?.r) {
+        out.push({ type: "coincident", e1: g.id, p1: end, e2: point.o.id, p2: point.r.p });
+        continue;
+      }
+      for (const o of through) {
+        const k = curveKind(o);
+        const curve = lineOperandAt(o, at) ?? (k === "circle" || k === "arc" ? o.id : null);
+        if (!curve) continue;
+        out.push({ type: "pointOn", e: g.id, p: end, curve });
+        break;
+      }
+    }
+  }
+  return out;
+}
+
+/** is `q` on the curve `c`, within `tol` (an arc within its sweep)? */
+function onCurve(c: Curve2, q: THREE.Vector2, tol: number): boolean {
+  if (c.kind === "seg") return distToSeg(c.a, c.b, q) <= tol;
+  if (Math.abs(q.distanceTo(c.c) - c.r) > tol) return false;
+  if (c.sweep >= TAU) return true;
+  const slack = tol / Math.max(c.r, 1e-9);
+  const at = ccwDelta(c.a0, Math.atan2(q.y - c.c.y, q.x - c.c.x));
+  return at <= c.sweep + slack || at >= TAU - slack;
+}
+
+/** Where the curves a Tangent names touch, for the Trim tool to show and the
+ *  drawing tools to snap to: a tangency is a point a trim stops at (a touch
+ *  counts as a crossing), and nothing else on screen says where it is. Only
+ *  where both curves really reach it, so not on a line's extension or past an
+ *  arc's end, and only once the solve has made them touch. Not where a curve
+ *  touches an origin axis either: the axes cut nothing (crossingsOn), so a
+ *  trim runs straight through that touch and a dot there would promise a stop
+ *  it does not make. */
+export function tangencyPoints(ents: readonly ResolvedEntity[], cons: readonly SketchConstraint[]): THREE.Vector2[] {
+  const byId = new Map(ents.map((e) => [e.id, e]));
+  /** the entity an operand is on: a side `S~k` is on its shape */
+  const owner = (id: string) => byId.get(id) ?? byId.get(id.split("~")[0]!);
+  const shape = (id: string) => {
+    const o = byId.get(id);
+    return lineOperand(byId, id) ?? (o ? asRound(o) : null);
+  };
+  const reaches = (id: string, q: THREE.Vector2) => {
+    const o = owner(id);
+    return !!o && entityCurves(o).some((c) => onCurve(c, q, 1e-4));
+  };
+  const out: THREE.Vector2[] = [];
+  for (const c of cons) {
+    const pair: [string, string] | null =
+      c.type === "tangent" ? [c.line, c.circle] : c.type === "tangent2" ? [c.a, c.b] : null;
+    if (!pair || pair.some((id) => isOriginGeometry(id))) continue;
+    const [a, b] = pair;
+    const sa = shape(a), sb = shape(b);
+    const at = sa && sb ? touchPoint(sa, sb) : null;
+    if (!at || !reaches(a, at) || !reaches(b, at)) continue;
+    if (!out.some((q) => q.distanceTo(at) < 1e-6)) out.push(at);
   }
   return out;
 }

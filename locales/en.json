@@ -1742,7 +1742,8 @@
       "trimDropped": {
         "one": "Trim removed a constraint that no longer applies to what is left",
         "other": "Trim removed {count} constraints that no longer apply to what is left"
-      }
+      },
+      "trimJoinConflict": "Trimmed, but holding the cut ends on the curves they were cut against would conflict with this sketch's constraints, so I left them free."
     },
     "offset": {
       "chainJunction": "Chain Selection stops at ({x}, {y}), where more than two curves meet, so I will offset only the curve you picked.",

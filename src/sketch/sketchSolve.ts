@@ -568,6 +568,23 @@ export async function compileAndSolve(
     const eb = curveEnds(b);
     return curveEnds(a).find((p) => eb.includes(p));
   };
+  // The END of one curve that a `pointOn` holds on the other, if any: what a
+  // Trim leaves where it cut a curve against one it touches (modify's
+  // cutJoins), or a Coincident putting an end on a curve. An end on a curve
+  // that is also tangent to it can only be the touch point, so the tangency
+  // is the same degenerate pair there as at a shared end, and is stated the
+  // same way. Only a document with a `pointOn` reaches this (added 2026-10),
+  // so every older one compiles exactly as it did.
+  const heldOn = new Map<string, Set<string>>(); // solver point -> curves a pointOn holds it on
+  for (const c of constraints) {
+    if (c.type !== "pointOn") continue;
+    const p = endpointPoint(c.e, c.p);
+    if (!p) continue;
+    const on = heldOn.get(p) ?? new Set<string>();
+    heldOn.set(p, on.add(c.curve));
+  }
+  const heldEnd = (a: string, b: string): string | undefined =>
+    curveEnds(a).find((p) => heldOn.get(p)?.has(b)) ?? curveEnds(b).find((p) => heldOn.get(p)?.has(a));
   // The angle angle_via_point is to hold between `a` and `b` at `p`: 0 or pi,
   // whichever the curves are nearer NOW. planegcs measures it between the two
   // curves' NORMALS at the point, a line's being its direction p1 -> p2 turned
@@ -584,8 +601,8 @@ export async function compileAndSolve(
       const a = posOf.get(ln[0]), b = posOf.get(ln[1]);
       return a && b ? lineNormal(a, b) : null;
     }
-    const ar = arcMap.get(id);
-    const c = ar && posOf.get(ar.center), q = posOf.get(p);
+    const centre = arcMap.get(id)?.center ?? centers.get(id); // a circle only at a held end
+    const c = centre && posOf.get(centre), q = posOf.get(p);
     return c && q ? roundNormal(c, q) : null;
   };
   const endTangentAngle = (a: string, b: string, p: string): number => {
@@ -721,7 +738,14 @@ export async function compileAndSolve(
       const p = dimPoint(c.e, c.p);
       if (p && isRound(c.circle)) cons.push({ id, type: "rimPoint", p, round: c.circle, value: c.value });
     }
-    else if (c.type === "tangent") { if (isLine(c.line) && isCircle(c.circle)) cons.push({ id, type: "tangentLC", line: c.line, circle: c.circle }); }
+    else if (c.type === "tangent") {
+      if (isLine(c.line) && isCircle(c.circle)) {
+        // the line's end held on the circle, as a Trim at the touch leaves it: see tangent2
+        const at = heldEnd(c.line, c.circle);
+        if (at) cons.push({ id, type: "tangentAt", c1: c.line, c2: c.circle, p: at, angle: endTangentAngle(c.line, c.circle, at) });
+        else cons.push({ id, type: "tangentLC", line: c.line, circle: c.circle });
+      }
+    }
     else if (c.type === "coincident") {
       // Both operands already ONE solver point (their positions merged in
       // coincKey's bucket): the merge IS the join, and compiling a coincident
@@ -812,9 +836,11 @@ export async function compileAndSolve(
       // line and an arc sharing an end: dof 7 with or without the tangent.
       // angle_via_point (FreeCAD's endpoint tangency) holds the angle between
       // the two curves at the shared point instead, which is well posed. Every
-      // fillet and every tangent the line and arc tools infer is this case.
-      const hasEnds = (k: typeof ka) => k === "line" || k === "arc";
-      const at = hasEnds(ka) && hasEnds(kb) && (ka === "arc" || kb === "arc") ? sharedEnd(c.a, c.b) : undefined;
+      // fillet and every tangent the line and arc tools infer is this case,
+      // and so is an end HELD on the other curve where a Trim cut it at the
+      // touch (heldEnd). A circle has no ends, so it takes only the second.
+      const round = (k: typeof ka) => k === "circle" || k === "arc";
+      const at = ka && kb && (round(ka) || round(kb)) ? sharedEnd(c.a, c.b) ?? heldEnd(c.a, c.b) : undefined;
       if (at) cons.push({ id, type: "tangentAt", c1: c.a, c2: c.b, p: at, angle: endTangentAngle(c.a, c.b, at) });
       else if (ka === "line" && kb === "circle") cons.push({ id, type: "tangentLC", line: c.a, circle: c.b });
       else if (ka === "circle" && kb === "line") cons.push({ id, type: "tangentLC", line: c.b, circle: c.a });

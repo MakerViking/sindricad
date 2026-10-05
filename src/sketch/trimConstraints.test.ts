@@ -41,7 +41,10 @@ interface Priv {
   constraints: SketchConstraint[];
 }
 
-/** click Trim at `at` on a SketchMode holding `entities` + `constraints` */
+/** click Trim at `at` on a SketchMode holding `entities` + `constraints`.
+ *  `constraints` is everything the sketch holds after the click; `carried` is
+ *  that without the joins the trim added at its cuts (trimJoins.test.ts), which
+ *  is what the tests here are about: what became of the constraints it had. */
 function trimAt(entities: ResolvedEntity[], constraints: SketchConstraint[], at: THREE.Vector2) {
   const s = Object.create(SketchMode.prototype) as SketchMode & Record<string, unknown>;
   Object.assign(s, {
@@ -58,7 +61,8 @@ function trimAt(entities: ResolvedEntity[], constraints: SketchConstraint[], at:
   const priv = s as unknown as Priv;
   const ev = { button: 0, clientX: 0, clientY: 0, shiftKey: false, ctrlKey: false, preventDefault() {}, stopPropagation() {} };
   priv.onPointerDown(ev as unknown as PointerEvent);
-  return { entities: priv.entities, constraints: priv.constraints };
+  const joins = (s as unknown as { trial?: { cons: SketchConstraint[] } }).trial?.cons ?? [];
+  return { entities: priv.entities, constraints: priv.constraints, carried: priv.constraints.filter((c) => !joins.includes(c)) };
 }
 
 const radiusOf = (a: ResolvedEntity) => arcCenterRadius(a as Arc)!.r;
@@ -102,7 +106,7 @@ describe("trim keeps what still applies", () => {
     const cons: SketchConstraint[] = [{ type: "tangent2", a: "a", b: "top" }];
     const after = trimAt(ents, cons, v(9.6, 2)); // the short end below the crossing
     const arc = after.entities.find((e) => e.type === "arc")!;
-    expect(after.constraints).toEqual([{ type: "tangent2", a: arc.id, b: "top" }]);
+    expect(after.carried).toEqual([{ type: "tangent2", a: arc.id, b: "top" }]);
 
     // the effect: lift the line 3 mm and the arc must stay on it
     const lifted = after.entities.map((e) => (e.id === "top" ? { ...e, y1: 13, y2: 13 } as ResolvedEntity : e));
@@ -134,7 +138,7 @@ describe("trim keeps what still applies", () => {
     // which arc is which pulley: by centre, so the check does not lean on the ids
     const pulley = new Map(arcs.map((a) => [arcCenterRadius(a)!.c.x < 20 ? "cA" : "cB", a.id] as const));
     const renamed = (id: string) => pulley.get(id as "cA" | "cB") ?? id;
-    expect(step.constraints).toEqual(cons.map((c) => (c.type === "tangent2" ? { ...c, b: renamed(c.b) } : c)));
+    expect(step.constraints.filter((c) => c.type === "tangent2")).toEqual(cons.map((c) => (c.type === "tangent2" ? { ...c, b: renamed(c.b) } : c)));
     expect(toasts).toEqual([]);
     // and the belt holds when a pulley moves
     const moved = step.entities.map((e) => (e.id === renamed("cB") ? { ...(e as Arc), x1: (e as Arc).x1 + 5, x2: (e as Arc).x2 + 5, mx: (e as Arc).mx + 5 } as ResolvedEntity : e));
@@ -182,7 +186,7 @@ describe("trim keeps what still applies", () => {
     const after = trimAt(ents, cons, v(2, 0.1));
     const L = after.entities.find((e) => e.type === "line" && e.id !== "M" && e.id !== "x") as Line;
     expect([L.x1, L.x2]).toEqual([5, 20]);
-    expect(after.constraints).toEqual([{ type: "coincident", e1: L.id, p1: 1, e2: "M", p2: 0 }]);
+    expect(after.carried).toEqual([{ type: "coincident", e1: L.id, p1: 1, e2: "M", p2: 0 }]);
 
     // the effect: pull M's start 4 mm up and L's end must come with it.
     // Moved apart in the MODEL, so only a real constraint can close the gap:
@@ -203,7 +207,7 @@ describe("trim keeps what still applies", () => {
     // nothing and the next prune would delete it
     const after = trimAt(ents, [{ type: "tangent", line: "top", circle: "c" }], v(0, -10.1));
     const arc = after.entities.find((e) => e.type === "arc")!;
-    expect(after.constraints).toEqual([{ type: "tangent2", a: "top", b: arc.id }]);
+    expect(after.carried).toEqual([{ type: "tangent2", a: "top", b: arc.id }]);
     const lifted = after.entities.map((e) => (e.id === "top" ? { ...e, y1: 12, y2: 12 } as ResolvedEntity : e));
     const r = await compileAndSolve(lifted, after.constraints);
     const top = byId(r.entities, "top") as Line;
@@ -234,7 +238,7 @@ describe("trim says what it had to remove", () => {
     ];
     // kept, a 40 mm length would drag the 30 mm piece straight back out
     const after = trimAt(ents, [{ type: "distance", line: "L", value: 40 }], v(35, 0.1));
-    expect(after.constraints).toEqual([]);
+    expect(after.carried).toEqual([]);
     expect(toasts).toEqual([DROPPED_ONE]);
   });
 
@@ -247,7 +251,7 @@ describe("trim says what it had to remove", () => {
     const after = trimAt(ents, cons, v(35, 0.1));
     const L = after.entities.find((e) => e.id !== "x")!;
     // the start survives, so its Fix does; the end is gone, so its Fix is too
-    expect(after.constraints).toEqual([{ type: "fix", e: L.id, p: 0 }]);
+    expect(after.carried).toEqual([{ type: "fix", e: L.id, p: 0 }]);
     expect(toasts).toEqual([DROPPED_ONE]);
   });
 
@@ -274,7 +278,7 @@ describe("trim says what it had to remove", () => {
     const after = trimAt(ents, [join], v(38, -30.1)); // A, between the crossing and the corner
     const A = after.entities.find((e) => e.type === "line" && !["B", "x"].includes(e.id)) as Line;
     expect(A.x2, "the trim cut somewhere else").toBeCloseTo(35, 9);
-    expect(after.constraints).toEqual([]);
+    expect(after.carried).toEqual([]);
     expect(toasts).toEqual([]);
     expect(byId(after.entities, "B")).toEqual(ents[1]);
 
@@ -300,7 +304,7 @@ describe("trim keeps a point that was put ON the trimmed curve", () => {
     const pieces = after.entities.filter((e) => e.type === "line" && !["x1", "x2"].includes(e.id)) as Line[];
     expect(pieces).toHaveLength(2);
     const right = pieces.find((l) => Math.max(l.x1, l.x2) === 40)!;
-    expect(after.constraints).toEqual([{ type: "pointOn", e: "P", p: 0, curve: right.id }]);
+    expect(after.carried).toEqual([{ type: "pointOn", e: "P", p: 0, curve: right.id }]);
     expect(toasts).toEqual([]);
 
     // the effect: lift the right piece 3 mm and P must go with it

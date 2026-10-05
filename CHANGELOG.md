@@ -571,6 +571,19 @@ This file starts on 2026-08-03. For anything before that, see the
   Auto Constrain in the Sketch Palette turns this off, Horizontal and Vertical
   included; joins at snapped points stay either way.
 
+- **Trim keeps the cut joined to what it was cut against.** When Trim stops at
+  a crossing or at a tangent touch, the end it leaves is now held on the curve
+  it was cut against: with a Coincident where that curve has an end or a corner
+  there, and on the curve where it runs through. A belt or a keyhole outline
+  stays closed and tangent when you change a dimension later; before, that end
+  was free and the outline opened at the cut. A Tangent the trimmed curve had
+  stays on the piece that touches, and is not drawn amber. One undo takes the
+  trim and its joins away together. If the sketch cannot take the joins, I keep
+  the trim, leave its ends free and say so. An end cut against a spline or a
+  slot's round end stays free, as before. While Trim is picked, the points
+  where two curves held by a Tangent touch show as dots, because a trim stops
+  there too, and the drawing tools snap to them.
+
 ## 0.1.232 (2026-10-02)
 
 ### Changed

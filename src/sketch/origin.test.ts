@@ -179,7 +179,12 @@ describe("origin geometry is reference, not a modify boundary", () => {
     // circleCrossAngles (trim and extend on a circle or arc), trim on a line,
     // extend on a line: a fourth search written without it would not skip
     expect(modifySrc.match(/crossingsOn\(ents, index, /g)?.length).toBe(3);
-    expect(modifySrc.match(/entityCurves\(o\)/g)?.length, "a second collector walks the entities").toBe(1);
+    // The two other walks are not crossing searches. cutJoins asks which curve
+    // an end the trim cut lies on, so it walks the same entities and skips the
+    // axes the same way; tangencyPoints checks a point against the curves a
+    // Tangent names.
+    expect(modifySrc.match(/entityCurves\(o\)/g)?.length, "a second collector walks the entities").toBe(3);
+    expect(modifySrc).toMatch(/const others = after\.filter\(\(o\) => !own\.has\(o\.id\) && !isOriginGeometry\(o\.id\)\);/);
   });
 
   it("loses a pick to the user's own geometry", () => {
