@@ -97,9 +97,12 @@ const ccwDelta = (from: number, to: number) => ((to - from) % TAU + TAU) % TAU;
 /** `after`, unless it is `before` to within float noise: then `before`, digit
  *  for digit. For the numbers a solve DERIVES rather than moves (a polygon's
  *  radius and angle, read back off solved points), so a shape the solve left
- *  where it was writes back exactly what it was. */
+ *  where it was writes back exactly what it was. The noise depends on the
+ *  runtime's Math (CI's Node left a 10 mm hexagon 1.2e-8 off where this
+ *  machine left it exact), so the band is 1e-7 relative: far below anything
+ *  drawn, wide enough for any engine's last digits. */
 const kept = (before: number, after: number) =>
-  Math.abs(after - before) <= 1e-9 * Math.max(1, Math.abs(before)) ? before : after;
+  Math.abs(after - before) <= 1e-7 * Math.max(1, Math.abs(before)) ? before : after;
 
 /** Most solves the hold seed may try before the plain solve stands (see
  *  compileAndSolve's holdSeed). Two shapes made square to each other from a
