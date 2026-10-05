@@ -109,7 +109,10 @@ describe("a point on a polygon or slot side", () => {
     const r = await compileAndSolve(ents, [on("P", "H~0")], undefined, { moves: ["P"] });
     expect(r.ok).toBe(true);
     expect(r.conflicts).toEqual([]);
-    expect(offLine(r.entities, pos(r.entities, "P"), "H~0")).toBeLessThan(1e-9);
+    // The polygon is written back digit for digit (kept()), so P was solved
+    // against a hexagon a few 1e-9 away from the one it is checked against:
+    // CI's Node measured 4e-9 here. 1e-7 is the kernel's own Precision::Confusion.
+    expect(offLine(r.entities, pos(r.entities, "P"), "H~0")).toBeLessThan(1e-7);
     expect(r.entities.find((e) => e.id === "H"), "every number kept, digit for digit").toEqual(HEX());
   });
 
