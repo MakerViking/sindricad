@@ -11,6 +11,7 @@ import type { DimField, DimPlace, PlaceOffset, SketchConstraint } from "../types
 import { isDriven, dimPlaceOf, projEndSamples } from "../types";
 import { circumcenter, arcCenterRadius } from "./arc";
 import { polygonPoints, rectCorners } from "./region";
+import { splineEndIndices } from "./spline";
 import { paramOnSeg, distToSeg, signedAngleDeg } from "./geom2d";
 import { isOriginGeometry } from "./origin";
 
@@ -734,11 +735,9 @@ export function dimRefPoints(e: ResolvedEntity): { p: number; pos: V }[] {
   }
   if (e.type === "slot") return [{ p: 0, pos: v(e.x1, e.y1) }, { p: 1, pos: v(e.x2, e.y2) }];
   if (e.type === "spline") {
-    const out: { p: number; pos: V }[] = [];
-    const a = e.points[0], b = e.points[e.points.length - 1];
-    if (a) out.push({ p: 0, pos: v(a.x, a.y) });
-    if (b && e.points.length > 1) out.push({ p: 1, pos: v(b.x, b.y) });
-    return out;
+    // its ends, 0 and 1; a CLOSED spline has none, and exposes its first point
+    // as 0, as a closed projected curve does (splineEndIndices)
+    return splineEndIndices(e).map((k, i) => ({ p: i, pos: v(e.points[k]!.x, e.points[k]!.y) }));
   }
   if (e.type === "projected") {
     // fixed reference points user dims/constraints can target — same indices

@@ -295,8 +295,10 @@ export async function compileAndSolve(
     } else if (e.type === "arc") {
       compileArc(e.id, e.x1, e.y1, e.x2, e.y2, e.mx, e.my);
     } else if (e.type === "spline") {
-      // endpoints are mergeable (chain with lines); interior points are unique
-      const last = e.points.length - 1;
+      // endpoints are mergeable (chain with lines); interior points are unique.
+      // A closed spline has no ends: its first point merges, as the one point
+      // it exposes (dimRefPoints), and its last is an interior point like any.
+      const last = e.closed ? 0 : e.points.length - 1;
       splineMap.set(e.id, e.points.map((p, k) => getPoint(p.x, p.y, k === 0 || k === last)));
     } else if (e.type === "point") {
       // a sketch point is mergeable so it can snap onto / coincide with geometry
@@ -384,6 +386,8 @@ export async function compileAndSolve(
   // (lineOperand cannot decode them, so pruneConstraints drops any that names
   // one).
   const entById = new Map(entities.map((e) => [e.id, e]));
+  // a closed spline's one addressable point is its first, at any index
+  const closedSplines = new Set(entities.filter((e) => e.type === "spline" && e.closed).map((e) => e.id));
   const shapesNamed = [...namedEntityIds(constraints)].filter((id) => {
     const t = entById.get(id)?.type;
     return t === "polygon" || t === "slot";
@@ -535,7 +539,7 @@ export async function compileAndSolve(
     const pt = pointMap.get(entId);
     if (pt) return pt;
     const sp = splineMap.get(entId);
-    if (sp) return idx === 0 ? sp[0] : sp[sp.length - 1];
+    if (sp) return idx === 0 || closedSplines.has(entId) ? sp[0] : sp[sp.length - 1];
     return undefined;
   };
   // resolve a circle/arc center to its solver point id
@@ -685,6 +689,40 @@ export async function compileAndSolve(
     // and only one of them may mirror
     if (observable || rects.size > 1) for (const rect of rects) rectAddressed.add(rect);
   };
+  // --- spline tangency (splineTangent) helpers ----------------------------
+  const pointById = new Map(points.map((p) => [p.id, p]));
+  const pointAt = (pid: string) => pointById.get(pid)!;
+  /** The solver points a spline leaves its end `end` by: the end itself and
+   *  its neighbouring fit point. Null for anything without ends: a closed
+   *  spline, a projected curve (which is in splineMap too), a lone point. */
+  const splineLeave = (sid: string, end: number): { end: string; next: string } | null => {
+    const e = entById.get(sid), sp = splineMap.get(sid);
+    if (e?.type !== "spline" || e.closed || !sp || sp.length < 2) return null;
+    return end === 0 ? { end: sp[0]!, next: sp[1]! } : { end: sp[sp.length - 1]!, next: sp[sp.length - 2]! };
+  };
+  /** whether two solver points are one joint: merged, or within the merge
+   *  bucket's reach of each other (a coincident not solved yet) */
+  const atJoint = (a: string, b: string) => {
+    if (a === b) return true;
+    const p = pointAt(a), q = pointAt(b);
+    return Math.hypot(p.x - q.x, p.y - q.y) <= TANGENT_TOL;
+  };
+  /** the end of spline `sid` nearer the point `pid` */
+  const nearerEnd = (sid: string, pid: string): 0 | 1 | undefined => {
+    const s0 = splineLeave(sid, 0), s1 = splineLeave(sid, 1);
+    if (!s0 || !s1) return undefined;
+    const q = pointAt(pid), a = pointAt(s0.end), b = pointAt(s1.end);
+    return Math.hypot(a.x - q.x, a.y - q.y) <= Math.hypot(b.x - q.x, b.y - q.y) ? 0 : 1;
+  };
+  /** each compiled splineTangent's spline, the curve it meets and the joint
+   *  (the spline's end): the bias below holds the joint when either is what
+   *  moves */
+  const splineJoints: { spline: string; other: string; joint: string }[] = [];
+  const addHelperLine = (lid: string, p1: string, p2: string) => {
+    lines.push({ id: lid, p1, p2 });
+    ends.set(lid, [p1, p2]);
+  };
+
   constraints.forEach((c, i) => {
     const id = constraintKey(i); // user constraint ids never collide with `~` implicit ones
     if (isDriven(c)) return; // reference dim: measured only, never constrains
@@ -851,6 +889,59 @@ export async function compileAndSolve(
       else if (ka === "circle" && kb === "arc") cons.push({ id, type: "tangentCA", circle: c.a, arc: c.b });
       else if (ka === "arc" && kb === "circle") cons.push({ id, type: "tangentCA", circle: c.b, arc: c.a });
     }
+    else if (c.type === "splineTangent") {
+      // The drawn spline leaves its end E heading for its neighbouring fit
+      // point I (spline.ts), so the tangency is ONE signed angle on the line
+      // E -> I, held against the other curve's direction at the joint. Signed
+      // (planegcs l2l_angle, as the polygon spokes use it), because a plain
+      // parallel is also satisfied by the spline folding straight back over
+      // the curve it meets. The helper lines' ids carry `~` (never blamed, never
+      // an operand) and sit in `ends` like a polygon's spokes, so the mover
+      // bias walks through them; the angle itself is `id`, so a conflict is
+      // blamed on this constraint.
+      const leave = splineLeave(c.spline, c.end);
+      if (leave && c.other !== c.spline) {
+        splineJoints.push({ spline: c.spline, other: c.other, joint: leave.end });
+        const along = `${id}~s`;
+        addHelperLine(along, leave.end, leave.next);
+        const dir = (a: string, b: string) => { const p = pointAt(a), q = pointAt(b); return { x: q.x - p.x, y: q.y - p.y }; };
+        const cross = (u: { x: number; y: number }, w: { x: number; y: number }) => u.x * w.y - u.y * w.x;
+        const dot = (u: { x: number; y: number }, w: { x: number; y: number }) => u.x * w.x + u.y * w.y;
+        const out = dir(leave.end, leave.next);
+        const other = entById.get(c.other);
+        const line = ends.get(c.other);
+        const round = centerPoint(c.other);
+        if (line) {
+          // a joint at one of the line's ends: carry on past it, so 0 when
+          // the line runs INTO the joint (its second end), PI out of its first.
+          // Anywhere else along it, whichever way the spline already leaves.
+          const [a, b] = line;
+          const nearB = atJoint(leave.end, b), nearA = atJoint(leave.end, a);
+          const value = nearB && !nearA ? 0 : nearA && !nearB ? Math.PI
+            : dot(dir(a, b), out) >= 0 ? 0 : Math.PI;
+          cons.push({ id, type: "angleLL", l1: c.other, l2: along, value });
+        } else if (round) {
+          // square to the radius at E: a quarter turn CCW from it at the end
+          // an arc sweeps INTO (its CCW end), a quarter turn back at its start,
+          // and on a circle the way the spline already turns
+          const radial = `${id}~r`;
+          addHelperLine(radial, round, leave.end);
+          const arc = arcs.find((x) => x.id === c.other);
+          const atEnd = !!arc && atJoint(leave.end, arc.end), atStart = !!arc && atJoint(leave.end, arc.start);
+          const ccw = atEnd && !atStart ? true : atStart && !atEnd ? false : cross(dir(round, leave.end), out) >= 0;
+          cons.push({ id, type: "angleLL", l1: radial, l2: along, value: ccw ? Math.PI / 2 : -Math.PI / 2 });
+        } else if (other?.type === "spline") {
+          // two splines leave a shared joint in OPPOSITE directions
+          const end2 = c.otherEnd ?? nearerEnd(c.other, leave.end);
+          const leave2 = end2 === undefined ? null : splineLeave(c.other, end2);
+          if (leave2) {
+            const along2 = `${id}~o`;
+            addHelperLine(along2, leave2.end, leave2.next);
+            cons.push({ id, type: "angleLL", l1: along2, l2: along, value: Math.PI });
+          }
+        }
+      }
+    }
     else if (c.type === "offset") {
       // One composite over N source→copy pairs, all governed by c.value.
       // Sub-ids append a LETTER before the pair number so constraintKey's
@@ -1008,6 +1099,8 @@ export async function compileAndSolve(
   //                            of its own; a mover arc, whose points are free by
   //                            definition, does. See below.)
   const anchors: { point: string; x: number; y: number }[] = [];
+  /** the spline tangency joints among `anchors` (splineJoints, below) */
+  const jointPts = new Set<string>();
   const radiusAnchors: { id: string; radius: number; arc?: boolean }[] = [];
   if (bias?.moves.length) {
     // A mover spelled as a rectangle EDGE (`R~3`) is the rectangle. `own()`
@@ -1117,6 +1210,25 @@ export async function compileAndSolve(
       const ow = owners.get(p.id);
       if (ow && [...ow].some((id) => movers.has(id))) continue;
       anchors.push({ point: p.id, x: p.x, y: p.y });
+    }
+    // What is made tangent at a JOINT turns about it, whichever of the two
+    // was picked first. The joint is the mover's own point (the spline's end,
+    // and the line's or arc's too where the two ends merge), so the rule above
+    // leaves it free, and the solve paid by moving it: the spline picked
+    // first, a 40 mm line it was made tangent to turned 11 degrees about its
+    // far end, and a spline's end On a circle slid 4.7 mm round it; a slanted
+    // line picked first, the joint slid 5.9 mm up the spline. Either can turn
+    // about the joint (the spline by its neighbouring fit point alone), so
+    // holding it costs neither anything it needs. A T-joint, the spline's end
+    // On the middle of what it meets, is the spline's point alone: held when
+    // the spline moves, and by the rule above when the other does.
+    for (const j of splineJoints) {
+      if (!movers.has(j.spline) && !movers.has(shapeOf(j.other) ?? j.other)) continue;
+      if (fixedPts.has(j.joint)) continue;
+      jointPts.add(j.joint);
+      if (anchors.some((a) => a.point === j.joint)) continue; // a T-joint, owned by the spline alone
+      const at = pointAt(j.joint);
+      anchors.push({ point: j.joint, x: at.x, y: at.y });
     }
     // No `some`/`every` question here, unlike the points: a radius belongs to
     // exactly one entity, so "owned by a mover" is a plain id compare. A
@@ -2105,6 +2217,39 @@ export async function compileAndSolve(
     // finish(plain) again, not `pass`: every finish() rewrites the
     // tangent-root list read below, and the seed's tries ran theirs since
     pass = held && held.ok && held.conflicts.length === 0 ? held : finish(plain);
+  }
+  // A spline tangency's JOINT is held softly, like every anchor, so where
+  // what was picked first cannot turn about it, the solve splits the
+  // difference: a line with Horizontal on it, picked first and made tangent to
+  // a spline leaving its end at 58 degrees, slid 6.5 mm up the spline while
+  // the spline's first span turned half way. Held HARD the spline gives
+  // instead, as it has to: one more solve with those joints fixed, kept only
+  // if it comes back clean (where something else has to move a joint, a
+  // dimension say, it conflicts and the soft answer stands), then a free solve
+  // from its geometry, which finds nothing to do and is the one whose
+  // diagnostics count. Not beside a shape's holds (the seed above decides
+  // those), nor on a drag frame or a body drag's pins.
+  const joints = anchors.slice(0, biasAnchorCount).filter((a) => jointPts.has(a.point));
+  const jointMoved = joints.some((a) => {
+    const q = plain.points[a.point];
+    return !q || Math.hypot(q.x - a.x, q.y - a.y) > 1e-7;
+  });
+  if (jointMoved && seed === undefined && !drag && !pins?.length && pass.ok && pass.conflicts.length === 0) {
+    const pin = new Set(joints.map((a) => a.point));
+    try {
+      const held = await solveSketch({
+        ...model,
+        points: model.points.map((p) => (pin.has(p.id) ? { ...p, fixed: true } : p)),
+        anchors: anchors.filter((a) => !pin.has(a.point)),
+        radiusAnchors,
+      });
+      if (held.ok && held.conflicts.length === 0) {
+        const alt = finish(await solveSketch(startedAt(model, held)));
+        if (alt.ok && alt.conflicts.length === 0) pass = alt;
+      }
+    } catch {
+      // the heap: the soft answer stands
+    }
   }
   if (biased && !(pass.ok && pass.conflicts.length === 0)) pass = finish(await solveSketch(model));
 

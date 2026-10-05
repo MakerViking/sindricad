@@ -32,6 +32,7 @@ import type { ResolvedEntity } from "./snap";
 import type { SketchTool } from "./sketchMode";
 import { SKETCH, leavesOf } from "../ui/ribbon";
 import { dimRefPoints, lineOperand, lineOperandAt } from "./entityDims";
+import { splineTangentFor } from "./constraintTools";
 import { isOriginGeometry } from "./origin";
 import { selPart } from "./selection";
 
@@ -46,14 +47,17 @@ for (const g of SKETCH) for (const it of g.items) for (const leaf of leavesOf(it
 export const constraintLabel = (t: SketchTool): string => LABELS.get(t) ?? t;
 
 /** The operand kind an entity contributes, or null when it is ambiguous. */
-export type OperandKind = "line" | "round" | "point";
+export type OperandKind = "line" | "round" | "point" | "spline";
 
 export function soleOperand(e: ResolvedEntity): OperandKind | null {
   if (e.type === "line") return "line";
   if (e.type === "circle" || e.type === "arc") return "round";
   if (e.type === "point") return "point"; // the origin is one too
+  // a spline is an operand of Tangent alone, at the end where it meets the
+  // other member (splineTangentFor)
+  if (e.type === "spline") return "spline";
   // rectangle / polygon / slot: several operands, none of them the entity
-  // (operandUnder names one); spline / text / projected: no operand at all
+  // (operandUnder names one); text / projected: no operand at all
   return null;
 }
 
@@ -145,6 +149,14 @@ function pairConstraints(a: MenuOperand, b: MenuOperand): SketchTool[] {
     const adjacent = a.ent.type === "rectangle" && a.kind === "line" && b.kind === "line" &&
       Math.abs(sideIndex(a.id) - sideIndex(b.id)) % 2 === 1;
     return adjacent ? ["equal"] : [];
+  }
+  // A spline only goes Tangent, and only where one of its ends already meets
+  // the other curve: offered when the tool would make it, not to be refused.
+  if (a.kind === "spline" || b.kind === "spline") {
+    const [sp, other] = a.kind === "spline" ? [a, b] : [b, a];
+    const pick = (o: MenuOperand) => ({ id: o.id, ent: o.ent, at: dimRefPoints(o.ent)[0]?.pos ?? { x: 0, y: 0 } });
+    const made = splineTangentFor(pick(sp), pick(other), [a.ent, b.ent]);
+    return "c" in made ? ["tangent"] : [];
   }
   // two points join; a point and a curve: the point goes ON it, or, on a
   // line, to its middle

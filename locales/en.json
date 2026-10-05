@@ -1531,6 +1531,10 @@
       "radius": "Radius",
       "samePointTwice": "That is the same point twice — Coincident joins two DIFFERENT points.",
       "sameShape": "Those are two points of the same shape — joining them would collapse it.",
+      "splineTangentClosed": "A closed spline has no end, so there is nothing of it to make tangent.",
+      "splineTangentNoJoint": "A spline goes tangent where one of its ends meets the other curve. Put that end on the curve first: snap it there, or use Coincident.",
+      "splineTangentOld": "This spline was drawn in an older version, and I build it as a slightly different curve from the one on screen, so a tangency would not hold in the model. Draw it again to make it tangent.",
+      "splineTangentSelf": "A spline cannot be tangent to itself. Pick the curve its end meets.",
       "symmetric": "Symmetric",
       "tangent": "Tangent",
       "tangentSpan": "I could not keep that circle touching the edge it is tangent to, so this constraint was not applied. The only solutions I found move the touch point off that edge.",
@@ -1547,7 +1551,7 @@
         "parallel": "two lines (a side of a rectangle, polygon or slot counts)",
         "perpendicular": "two lines (a side of a rectangle, polygon or slot counts)",
         "symmetric": "two points, endpoints or centres, then the axis line",
-        "tangent": "a circle or arc, then the line or curve it should touch",
+        "tangent": "a circle, arc or spline, then the line or curve it should touch",
         "vertical": "a line, or a side of a rectangle, polygon or slot"
       }
     },
@@ -1861,9 +1865,9 @@
       "scaleChoose": "Scale: click what to scale · Shift or Ctrl-click adds more · Enter to continue · Esc",
       "select": "Select: click a curve, an end, a corner, a centre or one side of a shape to pick it · double-click for the whole shape or chain · Shift- or Ctrl-click (Cmd on a Mac) adds or removes · drag a box to select several · right-click to constrain what is picked · drag to move · Delete to remove · while drawing, hold Ctrl to place without snapping · or pick a tool: Line (L) · Rectangle (R) · Circle (C) · Arc (A)",
       "slot": "Slot: click the two arc centers, then a point for the width · Esc",
-      "spline": "Spline: click to place fit points · click the last point or press Enter to finish · Esc to cancel",
+      "spline": "Spline: click to place fit points · click the first point to close it, or the last point or Enter to finish · Esc to cancel",
       "symmetric": "Symmetric: click two endpoints, then the symmetry axis line · Esc",
-      "tangent": "Tangent: click two curves (line, circle or arc) to make them tangent · Esc",
+      "tangent": "Tangent: click two curves (line, circle, arc, or a spline where its end meets one) to make them tangent · Esc",
       "trim": "Trim: click a curve (line/arc/circle) to remove it up to the nearest crossings · Esc",
       "vertical": "Vertical: click a line to make it vertical · Esc"
     },

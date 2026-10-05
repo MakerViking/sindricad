@@ -46,6 +46,7 @@ import {
   type ArcPoints, type LineInference,
 } from "./autoConstrain";
 import { detectRegions, entityPolyline, EPS, pointInLoop, resolveRegionRef, sameRegionIds, twinRegion, type Region } from "./region";
+import { splineFlags } from "./spline";
 import { worldPointInRegion } from "./regionSelect";
 import { setSpaceMouseOrbitLocked } from "../input/spacemouse";
 import { stepDoublePress, type PressRecord } from "../input/doublePress";
@@ -60,7 +61,7 @@ import { isOriginGeometry, originGeometry } from "./origin";
 import { boxFromDrag, entitiesInBox } from "./boxSelect";
 import { applicableConstraints, constraintLabel, menuOperands, operandUnder, symmetricOperands, type MenuOperand } from "./constraintMenu";
 import { addKey, additiveClick, clickKey, dropOwner, pointKey, selOwner, selOwners, selPart } from "./selection";
-import { ConstraintTools, CONSTRAINT_TOOLS, type ConstraintHost } from "./constraintTools";
+import { ConstraintTools, CONSTRAINT_TOOLS, splineTangentFor, type ConstraintHost } from "./constraintTools";
 import { PatternFlow, PATTERN_TOOLS, ENTITY_PATTERNS, type PatternHost } from "./patternFlow";
 import { ProjectPanel } from "./projectPanel";
 import { checkSketch } from "./check";
@@ -141,6 +142,10 @@ const MODIFY_TOOLS = new Set<SketchTool>([
 ]);
 
 const GRID_STEP = 5;
+
+/** A spline closes round on its first point only with this many points placed:
+ *  two would make a closed curve with no area, there and back along itself. */
+const MIN_CLOSED_SPLINE_POINTS = 3;
 
 /** Cell size and centre for the sketch grid at a given zoom, in PLANE-LOCAL mm.
  *
@@ -602,12 +607,7 @@ export class SketchMode {
       getFilletFirst: () => this.filletFirst,
       setFilletFirst: (v) => { this.filletFirst = v; },
       requestSolve: () => this.requestSolve(),
-      addConstraint: (c, moves) => {
-        this.constraints.push(c);
-        this.trial = { cons: [c], msg: SketchMode.CONSTRAINT_CONFLICT_MSG }; // withdrawn again if this solve conflicts
-        if (moves) this.pendingBias = { moves: [moves] }; // before requestSolve — pump reads it synchronously
-        this.requestSolve();
-      },
+      addConstraint: (c, moves, holds) => this.addTrialConstraint(c, moves, holds),
       warn: (msg) => toast(msg),
       // Mark the endpoint a constraint flow is holding. Coincident's first click
       // used to leave no trace at all, so the tool looked dead until the second
@@ -2582,22 +2582,60 @@ export class SketchMode {
   }
 
   // MCAD-style fit-point spline: click to drop points; click the last point
-  // again (or press Enter) to finish, Escape to cancel.
+  // again (or press Enter) to finish, Escape to cancel. Click the FIRST point
+  // once there are three to close it on itself, with no kink where it joins.
   private splineClick(p: THREE.Vector2) {
     const last = this.splinePts[this.splinePts.length - 1];
     if (last && last.distanceTo(p) < 1e-3) {
       this.finishSpline();
       return;
     }
+    if (this.splineClosesAt(p)) {
+      this.finishSpline(true);
+      return;
+    }
     this.splinePts.push(p.clone());
   }
 
-  private finishSpline() {
+  /** Whether a click at `p` closes the spline being drawn: it lands on the
+   *  first point (which the snap offers, splineSnapCandidates) and there are
+   *  enough points to close round, three. */
+  private splineClosesAt(p: THREE.Vector2): boolean {
+    const first = this.splinePts[0];
+    return this.splinePts.length >= MIN_CLOSED_SPLINE_POINTS && !!first && first.distanceTo(p) < 1e-3;
+  }
+
+  /** The in-progress spline's first point as a snap target, once a click there
+   *  would close it. Snapping only ever offered COMMITTED geometry, so closing
+   *  a spline on itself took a click that happened to land exactly on its
+   *  start, and then it closed with a kink (TA 848b5ed1). Stronger than any
+   *  point already in the sketch: this one is what a click there means.
+   *
+   *  The LAST point is how an open spline finishes, and where it sits within
+   *  reach of the first, one click can be near both: then it is offered too,
+   *  at the same strength, and the snap takes the nearer (snap() breaks a tie
+   *  in priority by distance). Offered always, it would finish a spline at any
+   *  click near its last point, where a point close to the last one used to be
+   *  placed. */
+  private splineSnapCandidates(): SnapCandidate[] {
+    if (this.tool !== "spline") return this.candidates;
+    const first = this.splinePts[0], last = this.splinePts[this.splinePts.length - 1];
+    if (!first || !last || this.splinePts.length < MIN_CLOSED_SPLINE_POINTS) return this.candidates;
+    const out: SnapCandidate[] = [...this.candidates, { p: first.clone(), kind: "endpoint", priority: 200 }];
+    if (last.distanceTo(first) <= 2 * this.pickTol()) out.push({ p: last.clone(), kind: "endpoint", priority: 200 });
+    return out;
+  }
+
+  /** Commit the spline being drawn: built as drawn (types.ts asDrawn), and
+   *  `closed` when it was finished on its first point. */
+  private finishSpline(closed = false) {
     if (this.splinePts.length >= 2) {
       const ent: ResolvedEntity = {
         type: "spline",
         id: newEntityId(),
         points: this.splinePts.map((q) => ({ x: q.x, y: q.y })),
+        asDrawn: true,
+        ...(closed ? { closed: true as const } : {}),
       };
       if (this.constructionMode) ent.construction = true;
       this.entities.push(ent);
@@ -2611,8 +2649,12 @@ export class SketchMode {
 
   private splinePreview(cursor: THREE.Vector2) {
     if (!this.splinePts.length) return this.overlay.setPreview([]);
-    const pts = [...this.splinePts.map((q) => ({ x: q.x, y: q.y })), { x: cursor.x, y: cursor.y }];
-    this.overlay.setPreview([this.entityCurve({ type: "spline", id: "", points: pts })]);
+    const placed = this.splinePts.map((q) => ({ x: q.x, y: q.y }));
+    // on the first point the preview closes, as the click there would
+    const ent: ResolvedEntity = this.splineClosesAt(cursor)
+      ? { type: "spline", id: "", points: placed, closed: true }
+      : { type: "spline", id: "", points: [...placed, { x: cursor.x, y: cursor.y }] };
+    this.overlay.setPreview([this.entityCurve(ent)]);
   }
 
   /** rubber-band preview for the multi-click primitive tools */
@@ -3341,7 +3383,7 @@ export class SketchMode {
       return { type: "arc", id, x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y, mx: m.x, my: m.y, ...c };
     }
     if (e.type === "spline") {
-      return { type: "spline", id, points: e.points.map((q) => rp(q.x, q.y)), ...c };
+      return { type: "spline", id, points: e.points.map((q) => rp(q.x, q.y)), ...splineFlags(e), ...c };
     }
     if (e.type === "text") {
       const at = rp(e.x, e.y); // reflect the anchor; keep the string/style (glyphs aren't mirrored)
@@ -4410,7 +4452,7 @@ export class SketchMode {
     if (noSnap) return { p: p2d, kind: "free" as SnapKind, world, ref: undefined as PointRef | undefined };
     const res = snap(
       p2d,
-      this.candidates, // cached; rebuilt only when entities change
+      this.splineSnapCandidates(), // the cached candidates, plus a spline being drawn's own start
       (q) => this.viewport.projectToScreen(this.plane.to3D(q.x, q.y)),
       this.gridSnap ? this.gridCell : 0,
     );
@@ -4675,6 +4717,17 @@ export class SketchMode {
 
   /** Right-click in select mode: select the entity under the cursor (if any) and
    *  offer Delete. Leaves camera navigation alone when nothing is hit/selected. */
+  /** Push a constraint a constraint tool or the right-click menu made, with
+   *  the `holds` it needs (ConstraintHost.addConstraint), and solve, as one
+   *  TRIAL: withdrawn together if that solve conflicts. `moves` arms the
+   *  mover bias for that solve. */
+  private addTrialConstraint(c: SketchConstraint, moves?: string, holds: readonly SketchConstraint[] = []) {
+    this.constraints.push(...holds, c);
+    this.trial = { cons: [...holds, c], msg: SketchMode.CONSTRAINT_CONFLICT_MSG }; // withdrawn again if this solve conflicts
+    if (moves) this.pendingBias = { moves: [moves] }; // before requestSolve — pump reads it synchronously
+    this.requestSolve();
+  }
+
   /** Apply a constraint straight to an already-chosen selection, as the
    *  operands constraintMenu read off it (menuOperands): whole lines and
    *  rounds, sketch points, and a shape's side or corner the right-click named.
@@ -4693,7 +4746,7 @@ export class SketchMode {
    *  line-only `equal` and the circle-only `tangent` this used to emit
    *  compiled to nothing on circles and arcs, and were dropped by the next
    *  edit. */
-  private applyConstraintToSelection(t: SketchTool, ops: MenuOperand[], named: MenuOperand | null = null) {
+  private applyConstraintToSelection(t: SketchTool, ops: MenuOperand[], named: MenuOperand | null = null, at: { x: number; y: number } | null = null) {
     const a = ops[0], b = ops[1];
     if (!a) return;
     const mover = (named && ops.find((o) => o !== named)) || a;
@@ -4704,7 +4757,13 @@ export class SketchMode {
       this.requestSolve();
       this.onState?.();
     };
-    const push = (c: SketchConstraint, moves = mover.ent.id) => pushAll([c], [moves]);
+    // the single-constraint path also carries `holds` (constraints a spline's
+    // partial-curve tangency needs alongside it, e.g. an On to pin the point),
+    // which addTrialConstraint pushes together with `c` as one withdrawable trial
+    const push = (c: SketchConstraint, moves = mover.ent.id, holds?: readonly SketchConstraint[]) => {
+      this.addTrialConstraint(c, moves, holds);
+      this.onState?.();
+    };
     if (t === "horizontal") return push({ type: "horizontal", line: a.id });
     if (t === "vertical") return push({ type: "vertical", line: a.id });
     if (t === "fix") return push({ type: "fix", e: a.id, p: a.p });
@@ -4734,6 +4793,16 @@ export class SketchMode {
     if (t === "concentric") return push({ type: "concentric", c1: a.id, c2: b.id });
     if (t === "equal") {
       return push(a.kind === "line" ? { type: "equal", l1: a.id, l2: b.id } : { type: "equalRadius", a: a.id, b: b.id });
+    }
+    if (t === "tangent" && (a.kind === "spline" || b.kind === "spline")) {
+      // at the joint nearer the right-click, when both of the spline's ends
+      // meet the other curve; the SPLINE turns to the curve it meets, as a
+      // point put On a curve is what moves (a selection has no pick order)
+      const [sp, other] = a.kind === "spline" ? [a, b] : [b, a];
+      const pick = (o: MenuOperand) => ({ id: o.id, ent: o.ent, at: at ?? dimRefPoints(o.ent)[0]?.pos ?? { x: 0, y: 0 } });
+      const made = splineTangentFor(pick(sp), pick(other), this.entities, this.constraints);
+      if ("why" in made) return void toast(made.why);
+      return push(made.c, sp.ent.id, made.hold ? [made.hold] : []);
     }
     if (t === "tangent") return push({ type: "tangent2", a: a.id, b: b.id });
     const point = a.kind === "point" ? a : b;
@@ -4827,7 +4896,7 @@ export class SketchMode {
         : []),
       ...cons.map((tool) => ({
         label: constraintLabel(tool),
-        onClick: () => this.applyConstraintToSelection(tool, ops, named),
+        onClick: () => this.applyConstraintToSelection(tool, ops, named, raw),
       })),
       ...(dimensionable ? [{ label: constraintLabel("dimension"), onClick: () => this.setTool("dimension") }] : []),
       ...(lockable
@@ -6207,6 +6276,9 @@ export class SketchMode {
     // constraint the solver honours is the silent-drop failure again, one layer
     // up.
     const hasPointOperand = (id: string) => refIds.has(id) || hasLineOperand(id);
+    // A spline with ENDS, the only kind a tangency can leave (a closed one has
+    // none); its other curve may be one of those too, a line operand or a round.
+    const openSplineIds = ids((e) => e.type === "spline" && !e.closed && e.points.length >= 2);
     this.constraints = this.constraints.filter((c) => {
       switch (c.type) {
         case "horizontal": case "vertical": case "distance": return hasLineOperand(c.line);
@@ -6215,6 +6287,9 @@ export class SketchMode {
         case "diameter": return roundIds.has(c.circle);
         case "tangent": return hasLineOperand(c.line) && circleIds.has(c.circle);
         case "tangent2": return hasCurveOperand(c.a) && hasCurveOperand(c.b);
+        case "splineTangent":
+          return openSplineIds.has(c.spline) && c.other !== c.spline
+            && (openSplineIds.has(c.other) || hasLineOperand(c.other) || roundIds.has(c.other));
         case "equalRadius": return roundIds.has(c.a) && roundIds.has(c.b);
         case "coincident": return hasPointOperand(c.e1) && hasPointOperand(c.e2);
         case "concentric": return roundIds.has(c.c1) && roundIds.has(c.c2);

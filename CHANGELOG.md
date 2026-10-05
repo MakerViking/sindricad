@@ -623,6 +623,40 @@ This file starts on 2026-08-03. For anything before that, see the
   where two curves held by a Tangent touch show as dots, because a trim stops
   there too, and the drawing tools snap to them.
 
+- **Join two lines back into one.** Join, next to Break in the sketch ribbon,
+  makes two lines that meet end to end in a straight line one line again: click
+  one of them where they meet. It takes back a Break, also one made before the
+  sketch was closed and saved. What held the two outer ends stays on them, a
+  Horizontal or a tangency holds the whole line, and a curve that ended where
+  the two met stays on the line. A length on one of the two, or a dimension to
+  the point where they met, no longer applies and is removed, and a note says
+  how many. An extrude built on the area beside them, or one that starts from
+  or runs up to one of the two lines or an outer end, follows the new line.
+  Lines that meet at an angle, run back over each other, or where only one is
+  construction geometry are left as they are, and I say why.
+
+- **Close a spline on itself.** Once a spline has three points, click its
+  first point again: the click snaps there and the spline closes round with no
+  corner where it joins, ready to extrude like a circle. Clicking the last
+  point again or pressing Enter still finishes an open spline. A closed spline
+  opens in an older beta as an open curve.
+
+- **Make a spline tangent where it meets a line, circle, arc or another
+  spline.** With Tangent, click a spline and the curve its end sits on, in
+  either order: the spline leaves that curve smoothly, carrying on the way it
+  runs instead of folding back over it. Whichever you click first is what
+  turns, about the joint, which stays where it is; when that one cannot turn,
+  like a line held Horizontal, the other one does. The end has to be on the
+  curve already, snapped there or joined with Coincident, and I say so when it
+  is not. When it sits partway along the curve rather than on its end, I hold
+  it there with an On constraint as well (the ∈ badge), so it cannot slide
+  off. With both selected, the right-click menu offers Tangent too, and turns
+  the spline. A T badge beside the joint marks it; right-click it to delete
+  it. It works on splines drawn from this version on, since an older spline
+  builds as a slightly different curve; I say to draw it again. A sketch that
+  uses it still opens in an older beta, which just does not hold the
+  tangency.
+
 ## 0.1.232 (2026-10-02)
 
 ### Changed
@@ -910,6 +944,19 @@ This file starts on 2026-08-03. For anything before that, see the
   the offset could not follow. A polygon whose offset was turned into lines
   keeps its side count, because its lines cannot take another. A slot's offset
   is still a free copy.
+
+- **A spline builds exactly as you drew it.** The solid a spline made followed
+  a slightly different curve from the one drawn in the sketch: a few
+  millimetres off on a long spline, and leaving its ends at a different angle.
+  A spline you draw now builds as the very curve you see. Splines already in
+  your documents keep building as they did, so nothing you have made changes
+  shape.
+
+- **Opening a STEP or mesh file no longer asks you to save first.** File > Open
+  adds those to the document you have open, so it now asks "Save your changes
+  before opening another document?" only when you pick a SindriCAD document,
+  the one thing Open replaces. Before, answering Discard also threw away the
+  recovery copy of a document that was never closed.
 
 - **The Sketch Palette's switches do what they say.** Sketch Grid and Show
   Profile change the screen as soon as you click them: the grid used to stay
@@ -1214,18 +1261,6 @@ This file starts on 2026-08-03. For anything before that, see the
   for are unchanged. Panning still moves the centre freely, and Fit resets it.
 
 ### Added
-
-- **Join two lines back into one.** Join, next to Break in the sketch ribbon,
-  makes two lines that meet end to end in a straight line one line again: click
-  one of them where they meet. It takes back a Break, also one made before the
-  sketch was closed and saved. What held the two outer ends stays on them, a
-  Horizontal or a tangency holds the whole line, and a curve that ended where
-  the two met stays on the line. A length on one of the two, or a dimension to
-  the point where they met, no longer applies and is removed, and a note says
-  how many. An extrude built on the area beside them, or one that starts from
-  or runs up to one of the two lines or an outer end, follows the new line.
-  Lines that meet at an angle, run back over each other, or where only one is
-  construction geometry are left as they are, and I say why.
 
 - **Center Arc.** The Arc button in the sketch ribbon has a second arc: click
   the center, click the start (that sets the radius), then sweep to the end

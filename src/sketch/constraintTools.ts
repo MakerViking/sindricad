@@ -11,8 +11,10 @@ import type { ResolvedEntity } from "./snap";
 import type { SketchConstraint } from "../types";
 import { pickEntity, PROJECTED_FIXED_MSG } from "./modify";
 import { coincKey } from "./sketchSolve";
-import { POLYGON_CENTRE, RECT_CENTRE, curveKind, dimRefPoints, lineOperand, lineOperandAt, refPoint, refPointNear, slotAxisAt } from "./entityDims";
+import { POLYGON_CENTRE, RECT_CENTRE, asRound, curveKind, dimRefPoints, lineOperand, lineOperandAt, refPoint, refPointNear, slotAxisAt } from "./entityDims";
+import { distToSeg } from "./geom2d";
 import { isOriginGeometry } from "./origin";
+import { splineEndIndices } from "./spline";
 import type { SketchTool } from "./sketchMode";
 
 export const CONSTRAINT_TOOLS = new Set<SketchTool>([
@@ -38,7 +40,8 @@ export const CONSTRAINT_TOOLS = new Set<SketchTool>([
 interface Operand {
   /** the id to put in the constraint — a rect EDGE, not the rectangle */
   id: string;
-  kind: "line" | "circle" | "arc";
+  /** "spline" only where a flow asks for one (pickOperand's `splines`): Tangent */
+  kind: "line" | "circle" | "arc" | "spline";
   /** the entity it came from: needed for the projected-is-fixed message, and to
    *  tell "another edge of the same rectangle" from "the same operand twice" */
   ent: ResolvedEntity;
@@ -101,8 +104,12 @@ export interface ConstraintHost {
    *  `moves` names the ENTITY that solve should move — the first-picked operand
    *  of a two-pick flow (bug #86; see DimPlan.moves for why the geometry cannot
    *  answer this on its own). A one-pick flow has no second operand to hold
-   *  still and passes nothing. */
-  addConstraint(c: SketchConstraint, moves?: string): void;
+   *  still and passes nothing.
+   *
+   *  `holds` are constraints `c` needs to mean what it says (a spline
+   *  tangency's On, splineTangentFor): pushed with it, in the one undo step,
+   *  and withdrawn with it if that solve conflicts. */
+  addConstraint(c: SketchConstraint, moves?: string, holds?: readonly SketchConstraint[]): void;
 }
 
 
@@ -132,6 +139,121 @@ const pts = (...ps: ({ x: number; y: number } | null)[]): { x: number; y: number
   ps.filter((q): q is { x: number; y: number } => q !== null);
 
 
+
+/** One pick a spline tangency is made from: the operand id the constraint
+ *  names, the entity it belongs to, and where it was clicked. */
+export interface TangentPick {
+  id: string;
+  ent: ResolvedEntity;
+  at: { x: number; y: number };
+}
+
+/** How far a spline's end may sit from the curve it meets and still be a
+ *  JOINT a tangency can be made at: a micron, so an end snapped there or
+ *  joined by Coincident always is one, and an end left loose beside the curve
+ *  is not. Being this close is not the same as being HELD there (the solver
+ *  merges by coincKey's rounded position, and only the curve's own ends), so
+ *  splineTangentFor adds the hold whenever the end is not one point with the
+ *  curve's. */
+const JOINT_TOL = 1e-3;
+
+type SplineTangent = Extract<SketchConstraint, { type: "splineTangent" }>;
+
+/** The `splineTangent` a spline pick and an `other` pick make, or the message
+ *  saying why there is none.
+ *
+ *  The tangency is made at a JOINT: an end of the spline that sits on the
+ *  other curve (a line operand's segment, a circle's or an arc's whole circle,
+ *  or another spline's end). The constraint holds the direction only
+ *  (types.ts), so with no joint it would turn the spline's end to a curve it
+ *  does not touch, which is no tangency anyone asked for. When both ends of
+ *  the spline sit on the curve, the one nearer where it was clicked.
+ *
+ *  And because it holds the direction only, the end has to be KEPT on the
+ *  curve by something else, or the first solve swings it off: a spline
+ *  snapped onto a line's middle came out running beside the line, 3.8 mm off
+ *  it, and one on a circle 2.8 mm outside it. An end the solver merges with
+ *  the curve's own end (same coincKey, the curve's ends mergeable) is one
+ *  point with it and needs nothing. Any other joint comes with `hold`: an On
+ *  (pointOn) for a line, circle or arc, a Coincident between two splines'
+ *  ends, the constraint the snap that put the end there never recorded. None
+ *  when `constraints` already holds the end there.
+ *
+ *  Refused for a closed spline (it has no end) and for one drawn before
+ *  splines were built as drawn: the model builds that one as a different curve
+ *  from the one the tangency would hold, so the model would not be tangent.
+ *  Pure, so the Tangent tool and the right-click menu make the same one. */
+export function splineTangentFor(
+  spline: TangentPick,
+  other: TangentPick,
+  entities: readonly ResolvedEntity[],
+  constraints: readonly SketchConstraint[] = [],
+): { c: SplineTangent; hold?: SketchConstraint } | { why: string } {
+  const s = spline.ent;
+  if (s.type !== "spline") return { why: t("sketch.constraint.splineTangentNoJoint") };
+  const o = other.ent;
+  const unusable = (e: ResolvedEntity) =>
+    e.type !== "spline" ? null
+    : e.closed ? t("sketch.constraint.splineTangentClosed")
+    : !e.asDrawn ? t("sketch.constraint.splineTangentOld")
+    : null;
+  const why = unusable(s) ?? unusable(o);
+  if (why) return { why };
+  if (o.id === s.id) return { why: t("sketch.constraint.splineTangentSelf") };
+  type XY = { x: number; y: number };
+  const endsOf = (e: Extract<ResolvedEntity, { type: "spline" }>) =>
+    splineEndIndices(e).map((k, end) => ({ end: end as 0 | 1, pos: e.points[k]! }));
+  const dist = (a: XY, b: XY) => Math.hypot(a.x - b.x, a.y - b.y);
+  const merged = (a: XY, b: XY) => coincKey(a.x, a.y) === coincKey(b.x, b.y);
+  const joints: { end: 0 | 1; otherEnd?: 0 | 1; score: number; held: boolean }[] = [];
+  if (o.type === "spline") {
+    for (const a of endsOf(s)) {
+      for (const b of endsOf(o)) {
+        if (dist(a.pos, b.pos) <= JOINT_TOL) {
+          joints.push({ end: a.end, otherEnd: b.end, score: dist(a.pos, spline.at) + dist(b.pos, other.at), held: merged(a.pos, b.pos) });
+        }
+      }
+    }
+  } else {
+    const seg = lineOperand(new Map(entities.map((e) => [e.id, e])), other.id);
+    const round = seg ? null : asRound(o);
+    // the curve's own ends, where the solver merges a spline end with it; a
+    // slot's sides and axis are not mergeable there (sketchSolve), a circle
+    // has none
+    const arc = o.type === "arc" ? o : o.type === "projected" && o.curve.kind === "arc" ? o.curve : null;
+    const curveEnds: XY[] = seg ? (o.type === "slot" ? [] : [{ x: seg.x1, y: seg.y1 }, { x: seg.x2, y: seg.y2 }])
+      : arc ? [{ x: arc.x1, y: arc.y1 }, { x: arc.x2, y: arc.y2 }]
+      : [];
+    for (const a of endsOf(s)) {
+      const off = seg ? distToSeg({ x: seg.x1, y: seg.y1 }, { x: seg.x2, y: seg.y2 }, a.pos)
+        : round ? Math.abs(dist(a.pos, round) - round.r)
+        : Infinity;
+      if (off <= JOINT_TOL) joints.push({ end: a.end, score: dist(a.pos, spline.at), held: curveEnds.some((q) => merged(a.pos, q)) });
+    }
+  }
+  const best = joints.reduce<(typeof joints)[number] | null>((x, y) => (!x || y.score < x.score ? y : x), null);
+  if (!best) return { why: t("sketch.constraint.splineTangentNoJoint") };
+  const c: SplineTangent = {
+    type: "splineTangent", spline: s.id, end: best.end, other: other.id,
+    ...(best.otherEnd !== undefined ? { otherEnd: best.otherEnd } : {}),
+  };
+  if (best.held) return { c };
+  // a point index names a spline's first point by 0 and its last by any other
+  const isEnd = (e: string, p: number, id: string, end: 0 | 1 | undefined) =>
+    e === id && (end === undefined || (p === 0 ? 0 : 1) === end);
+  const mine = (e: string, p: number) => isEnd(e, p, s.id, best.end);
+  const theirs = (e: string, p: number) => isEnd(e, p, o.id, best.otherEnd);
+  const holds = constraints.some((k) =>
+    k.type === "coincident" ? (mine(k.e1, k.p1) && theirs(k.e2, k.p2)) || (mine(k.e2, k.p2) && theirs(k.e1, k.p1))
+    : k.type === "pointOn" ? mine(k.e, k.p) && k.curve === other.id
+    : k.type === "midpoint" ? mine(k.e, k.p) && k.line === other.id
+    : false);
+  if (holds) return { c };
+  const hold: SketchConstraint = best.otherEnd !== undefined
+    ? { type: "coincident", e1: s.id, p1: best.end, e2: o.id, p2: best.otherEnd }
+    : { type: "pointOn", e: s.id, p: best.end, curve: other.id };
+  return { c, hold };
+}
 
 export class ConstraintTools {
   constructor(private host: ConstraintHost) {}
@@ -228,7 +350,7 @@ export class ConstraintTools {
    *
    *  A slot's AXIS is inside the slot, where no curve is, so it is taken only
    *  when the click found nothing else of the user's (slotAxisAt). */
-  private pickOperand(p: THREE.Vector2, skip: string | null = null): Operand | null {
+  private pickOperand(p: THREE.Vector2, skip: string | null = null, splines = false): Operand | null {
     const all = this.host.entities();
     const entities = skip == null ? all : all.filter((e) => e.id !== skip);
     const tol = this.host.pickTol();
@@ -242,6 +364,7 @@ export class ConstraintTools {
       if (!ent) return null;
     }
     const index = all.indexOf(ent);
+    if (ent.type === "spline") return splines ? { id: ent.id, kind: "spline", ent, index } : null;
     const lineId = lineOperandAt(ent, p);
     if (lineId) return { id: lineId, kind: "line", ent, index };
     const k = curveKind(ent);
@@ -608,27 +731,39 @@ export class ConstraintTools {
    *  affordance pass exists to remove, reading out loud on a tool that worked.
    *
    *  `holdPair` above already had this shape; this brings the two into line. */
-  private pickPair(p: THREE.Vector2, ok: (o: Operand) => boolean): [Operand, Operand] | null {
-    const op = this.pickOperand(p);
+  private pickPair(p: THREE.Vector2, ok: (o: Operand) => boolean, splines = false): [Operand, Operand, THREE.Vector2] | null {
+    const op = this.pickOperand(p, null, splines);
     if (!op || !ok(op)) { this.missed(); return null; }
     if (this.host.getFilletFirst() == null) {
       this.host.setFilletFirst(op.index);
       this.firstOperand = op;
+      this.firstAt = p.clone();
       return null; // armed, not missed: say nothing
     }
     const first = this.firstOperand;
+    const firstAt = this.firstAt ?? p;
     this.host.setFilletFirst(null);
     this.firstOperand = null;
+    this.firstAt = null;
     if (!first || first.id === op.id) { this.missed(); return null; }
-    return [first, op];
+    return [first, op, firstAt];
   }
 
   /** tangent between two curves: line/circle/arc, in any mix except line+line.
-   *  Emits the general `tangent2`; the compiler picks the right planegcs variant. */
+   *  Emits the general `tangent2`; the compiler picks the right planegcs variant.
+   *  A SPLINE goes tangent at its end, to the curve that end meets
+   *  (splineTangentFor), in either pick order; the first pick still moves. */
   private tangentClick(p: THREE.Vector2) {
-    const pair = this.pickPair(p, () => true); // every operand is a tangency-capable curve
+    const pair = this.pickPair(p, () => true, true); // every operand is a tangency-capable curve
     if (!pair) return; // pickPair already said whatever needed saying
-    const [first, e] = pair;
+    const [first, e, firstAt] = pair;
+    if (first.kind === "spline" || e.kind === "spline") {
+      const a = { id: first.id, ent: first.ent, at: firstAt }, b = { id: e.id, ent: e.ent, at: p };
+      const ents = this.host.entities(), cons = this.host.constraints();
+      const r = first.kind === "spline" ? splineTangentFor(a, b, ents, cons) : splineTangentFor(b, a, ents, cons);
+      if ("why" in r) return this.host.warn(r.why);
+      return this.addConstraint(r.c, first.ent.id, r.hold ? [r.hold] : undefined);
+    }
     // two lines cannot be tangent — say so rather than swallowing the pick
     if (first.kind === "line" && e.kind === "line") return this.missed();
     this.addConstraint({ type: "tangent2", a: first.id, b: e.id }, first.ent.id);
@@ -683,7 +818,7 @@ export class ConstraintTools {
     return this.missed();
   }
 
-  private addConstraint(c: SketchConstraint, moves?: string) {
-    this.host.addConstraint(c, moves);
+  private addConstraint(c: SketchConstraint, moves?: string, holds?: readonly SketchConstraint[]) {
+    this.host.addConstraint(c, moves, holds);
   }
 }

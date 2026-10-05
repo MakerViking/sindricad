@@ -61,7 +61,8 @@ export function entityPolyline(e: ResolvedEntity): THREE.Vector2[] {
     case "arc":
       return arcPolyline(v(e.x1, e.y1), v(e.x2, e.y2), v(e.mx, e.my), ARC_SEGS);
     case "spline":
-      return splinePolyline(e.points, SPLINE_SEGS);
+      // a closed one ends on its first point again, like the closed primitives
+      return splinePolyline(e.points, SPLINE_SEGS, e.closed === true);
     case "point":
       return [v(e.x, e.y)]; // a point has no extent: a single vertex, no segments
     case "polygon":

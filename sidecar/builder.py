@@ -6528,7 +6528,8 @@ def _sketch_ref_xy(e, p, val):
         pts = e.get("points") or []
         if p == 0 and pts:
             return (val(pts[0]["x"]), val(pts[0]["y"]))
-        if p == 1 and len(pts) > 1:
+        # a closed spline has no ends: its first point is its only one
+        if p == 1 and len(pts) > 1 and not e.get("closed"):
             return (val(pts[-1]["x"]), val(pts[-1]["y"]))
         return None
     if t == "projected":
@@ -16578,8 +16579,14 @@ def _translate_entity(e, dx, dy, eid, val):
     if t == "arc":
         return {"type": "arc", "id": eid, "x1": val(e["x1"]) + dx, "y1": val(e["y1"]) + dy, "x2": val(e["x2"]) + dx, "y2": val(e["y2"]) + dy, "mx": val(e["mx"]) + dx, "my": val(e["my"]) + dy, **c}
     if t == "spline":
-        return {"type": "spline", "id": eid, "points": [{"x": val(p["x"]) + dx, "y": val(p["y"]) + dy} for p in e.get("points", [])], **c}
+        return {"type": "spline", "id": eid, "points": [{"x": val(p["x"]) + dx, "y": val(p["y"]) + dy} for p in e.get("points", [])], **_spline_flags(e), **c}
     return {"type": "point", "id": eid, "x": val(e["x"]) + dx, "y": val(e["y"]) + dy, **c}
+
+
+def _spline_flags(e):
+    """A spline's build flags, for a patterned copy of it to build the way its
+    source does (mirrors src/sketch/spline.ts splineFlags)."""
+    return {k: True for k in ("asDrawn", "closed") if e.get(k)}
 
 
 def _rotate_entity(e, cx, cy, ang, eid, val):
@@ -16607,7 +16614,7 @@ def _rotate_entity(e, cx, cy, ang, eid, val):
         mx, my = R(val(e["mx"]), val(e["my"]))
         return [{"type": "arc", "id": eid, "x1": x1, "y1": y1, "x2": x2, "y2": y2, "mx": mx, "my": my, **c}]
     if t == "spline":
-        return [{"type": "spline", "id": eid, "points": [dict(zip(("x", "y"), R(val(p["x"]), val(p["y"])))) for p in e.get("points", [])], **c}]
+        return [{"type": "spline", "id": eid, "points": [dict(zip(("x", "y"), R(val(p["x"]), val(p["y"])))) for p in e.get("points", [])], **_spline_flags(e), **c}]
     # rectangle can't carry rotation (axis-aligned) -> a 4-line loop
     hw, hh = val(e["width"]) / 2, val(e["height"]) / 2
     ex, ey = val(e.get("x", 0)), val(e.get("y", 0))
@@ -16723,6 +16730,12 @@ def _entity_edges(e, val):
     if t == "circle":
         return [Pos(val(e.get("x", 0)), val(e.get("y", 0))) * Edge.make_circle(val(e["radius"]))]
     if t == "spline":
+        if _spline_as_drawn(e):
+            pts = [(val(p["x"]), val(p["y"])) for p in e.get("points", [])]
+            return [_catmull_rom_edge(pts, bool(e.get("closed")))] if len(pts) >= 2 else []
+        # A spline drawn before 2026-10: the kernel's own interpolation, a
+        # DIFFERENT curve from the one the sketch draws, kept so that a document
+        # made then rebuilds byte-identically (see _catmull_rom_edge).
         pts = [(val(p["x"]), val(p["y"]), 0) for p in e.get("points", [])]
         return [Edge.make_spline(pts)] if len(pts) >= 2 else []
     if t == "rectangle":
@@ -16793,6 +16806,68 @@ def _entity_edges(e, val):
             return list(Polyline(*[(p[0], p[1], 0) for p in dedup]).edges())
         return []
     return []
+
+
+def _spline_as_drawn(e):
+    """Whether a spline entity builds as the curve the sketch draws: one drawn
+    since 2026-10 (`asDrawn`), and every closed one (`closed` came with it)."""
+    return bool(e.get("asDrawn") or e.get("closed"))
+
+
+def _catmull_rom_edge(pts, closed):
+    """The Catmull-Rom curve the sketch draws through `pts` (src/sketch/spline.ts
+    splinePolyline), as ONE exact cubic B-spline edge in the sketch's XY frame.
+
+    Each Catmull-Rom span from P1 to P2, with neighbours P0 and P3, IS the
+    cubic Bezier P1, P1 + (P2 - P0) / 6, P2 - (P3 - P1) / 6, P2, so the spans
+    can be handed to OCCT as they are, with no fitting. Neighbouring spans share
+    a tangent at their joint, which is what lets the joint knot carry
+    multiplicity 2 (C1) instead of 3, its point being the midpoint of the two
+    control points either side of it: one smooth edge, so an extruded side is
+    one face, not a face per span.
+
+    Open, an end span reuses its end point as the missing neighbour, as the
+    sketch does. `closed` wraps the neighbours round, adds the span from the
+    last point back to the first, and builds the curve PERIODIC, so there is no
+    seam kink and no end. The periodic pole list starts at span n-1's second
+    control point, which is where OCCT puts a periodic curve's parameter 0 for
+    these knots (measured: every other rotation of the list is a different
+    curve, up to 27 mm off on a test spline 25 mm across).
+
+    Replaces Edge.make_spline (GeomAPI_Interpolate) for splines drawn since
+    2026-10: through the same fit points that is a different curve, measured
+    24.75 mm off on a 577 mm field spline and 17 degrees off at an end, so the
+    model was not the drawn shape and no tangency set on screen could hold.
+    """
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge
+    from OCP.Geom import Geom_BSplineCurve
+    from OCP.TColgp import TColgp_Array1OfPnt
+    from OCP.TColStd import TColStd_Array1OfInteger, TColStd_Array1OfReal
+    from OCP.gp import gp_Pnt
+
+    n = len(pts)
+    spans = n if closed else n - 1
+
+    def at(k):
+        return pts[k % n] if closed else pts[min(n - 1, max(0, k))]
+
+    inner = []  # each span's two inner Bezier control points, in span order
+    for i in range(spans):
+        p0, p1, p2, p3 = at(i - 1), at(i), at(i + 1), at(i + 2)
+        inner.append((p1[0] + (p2[0] - p0[0]) / 6, p1[1] + (p2[1] - p0[1]) / 6))
+        inner.append((p2[0] - (p3[0] - p1[0]) / 6, p2[1] - (p3[1] - p1[1]) / 6))
+    poles = [inner[-1]] + inner[:-1] if closed else [pts[0]] + inner + [pts[-1]]
+
+    arr = TColgp_Array1OfPnt(1, len(poles))
+    for k, (x, y) in enumerate(poles):
+        arr.SetValue(k + 1, gp_Pnt(x, y, 0))
+    knots = TColStd_Array1OfReal(1, spans + 1)
+    mults = TColStd_Array1OfInteger(1, spans + 1)
+    for k in range(spans + 1):
+        knots.SetValue(k + 1, float(k))
+        mults.SetValue(k + 1, 4 if not closed and k in (0, spans) else 2)
+    curve = Geom_BSplineCurve(arr, knots, mults, 3, closed)
+    return Edge(BRepBuilderAPI_MakeEdge(curve).Edge())
 
 
 def _entity_edge(e, val):
@@ -17846,7 +17921,18 @@ def _build_sketch(f, val, datums=None):
             # fine, while two points in a row at the same place raise. `<=`
             # because a gap of EXACTLY _SPLINE_MIN_GAP is refused by the kernel
             # too — see that constant.
-            for i in range(1, len(pts)):
+            #
+            # A CLOSED spline also runs from its last point back to its first,
+            # so that pair is consecutive too, and it needs three points to
+            # enclose anything (the sketch closes one only from three).
+            closed = bool(e.get("closed"))
+            if closed and len(pts) < 3:
+                x0, y0 = _entity_anchor(e, val)
+                raise ValueError(
+                    f"a closed spline in this sketch has fewer than 3 points (near "
+                    f"{x0:g}, {y0:g}); draw it again, or delete it"
+                )
+            for i in range(0 if closed else 1, len(pts)):
                 if math.hypot(pts[i][0] - pts[i - 1][0],
                               pts[i][1] - pts[i - 1][1]) <= _SPLINE_MIN_GAP:
                     raise ValueError(

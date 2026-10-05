@@ -12,6 +12,7 @@ import { isOriginGeometry } from "./origin";
 import { newEntityId } from "./id";
 import { arcCenterRadius } from "./arc";
 import { translated } from "./pattern";
+import { splineEndIndices, splineFlags } from "./spline";
 import { coincKey } from "./sketchSolve";
 import {
   circleLineIntersect,
@@ -80,10 +81,7 @@ export function attachmentPoints(e: ResolvedEntity, cons: readonly SketchConstra
   if ((e.type === "polygon" || e.type === "slot") && !namedEntityIds(cons).has(e.id)) return [];
   if (e.type === "polygon") return polygonPoints(e.x, e.y, e.radius, e.sides, (e.angle * Math.PI) / 180);
   if (e.type === "slot") return [v(e.x1, e.y1), v(e.x2, e.y2)];
-  if (e.type === "spline") {
-    const a = e.points[0], b = e.points[e.points.length - 1];
-    return a && b ? [v(a.x, a.y), v(b.x, b.y)] : [];
-  }
+  if (e.type === "spline") return splineEndIndices(e).map((k) => v(e.points[k]!.x, e.points[k]!.y));
   if (e.type === "circle" || e.type === "point") return [v(e.x, e.y)];
   return [];
 }
@@ -176,8 +174,7 @@ export function bodyDragFrame(
       };
     }
     if (e.type === "spline") {
-      const last = e.points.length - 1;
-      const hit = [0, last].filter((k) => { const q = e.points[k]; return !!q && near(q.x, q.y); });
+      const hit = splineEndIndices(e).filter((k) => { const q = e.points[k]; return !!q && near(q.x, q.y); });
       if (!hit.length) return e;
       return { ...e, points: e.points.map((q, k) => (hit.includes(k) ? { x: q.x + dx, y: q.y + dy } : q)) };
     }
@@ -267,7 +264,8 @@ export function breakLink(ents: ResolvedEntity[], ids: ReadonlySet<string>): Res
       case "circle":
         return { type: "circle", ...base, x: cv.x, y: cv.y, radius: cv.r };
       case "poly":
-        return { type: "spline", ...base, points: cv.pts.map(([x, y]) => ({ x, y })) };
+        // a spline made now builds as it is drawn (types.ts asDrawn)
+        return { type: "spline", ...base, points: cv.pts.map(([x, y]) => ({ x, y })), asDrawn: true };
     }
   });
 }
@@ -993,6 +991,12 @@ function remapTrimmed(
         const a = point(c.e1, c.p1), b = point(c.e2, c.p2);
         return a && b ? [{ ...c, e1: a.e, p1: a.p, e2: b.e, p2: b.p }] : [];
       }
+      // A trim deletes a spline whole, which drops this. A trimmed `other`
+      // hands it to the piece at the joint, the one nearest the spline's end.
+      case "splineTangent": {
+        const spline = curve(c.spline), other = nearestTo(c.other, { e: c.spline, p: c.end });
+        return spline && other ? [{ ...c, spline, other }] : null;
+      }
       case "p2pDistance": case "p2pDistanceX": case "p2pDistanceY": {
         const a = point(c.e1, c.p1), b = point(c.e2, c.p2);
         return a && b ? [{ ...c, e1: a.e, p1: a.p, e2: b.e, p2: b.p }] : null;
@@ -1389,6 +1393,8 @@ export function explodeCompound(
       }
       case "tangent": { const l = side(k.line); return l && !names(k.circle) ? { ...k, line: l } : null; }
       case "tangent2": { const a = side(k.a), b = side(k.b); return a && b ? { ...k, a, b } : null; }
+      // a spline is never the shape; the side it is tangent to becomes a line
+      case "splineTangent": { const o = side(k.other); return o ? { ...k, other: o } : null; }
       case "coincident": {
         const a = point(k.e1, k.p1), b = point(k.e2, k.p2);
         return a && b ? { ...k, e1: a.e, p1: a.p, e2: b.e, p2: b.p } : null;
@@ -1678,7 +1684,9 @@ export function translationTie(
     return !!seg && along(seg.x2 - seg.x1, seg.y2 - seg.y1);
   };
   switch (c.type) {
+    // a spline's tangency holds a direction only; the joint is its coincident's
     case "horizontal": case "vertical": case "parallel": case "perpendicular": case "angle":
+    case "splineTangent":
       return false;
     case "pointOn": return !alongLine(c.curve);
     case "collinear": return !alongLine(c.l1);
@@ -1800,8 +1808,12 @@ export function signedOffsetAt(e: ResolvedEntity, p: THREE.Vector2): number | nu
     // nearest segment decides both distance and side (same left-normal
     // convention offsetEntity pushes the points along)
     let best: number | null = null;
-    for (let i = 0; i + 1 < e.points.length; i++) {
-      const a = v(e.points[i]!.x, e.points[i]!.y), b = v(e.points[i + 1]!.x, e.points[i + 1]!.y);
+    const n = e.points.length;
+    // a closed spline's last span runs back to its first point
+    const spans = e.closed && n > 2 ? n : n - 1;
+    for (let i = 0; i < spans; i++) {
+      const q = e.points[(i + 1) % n]!;
+      const a = v(e.points[i]!.x, e.points[i]!.y), b = v(q.x, q.y);
       const d = distToSeg(a, b, p);
       if (best === null || d < Math.abs(best)) best = Math.sign(leftOf(a, b) || 1) * d;
     }
@@ -2096,13 +2108,15 @@ export function offsetEntity(
   } else if (e.type === "spline") {
     // push each point along its local normal — the perpendicular to the chord
     // through its neighbours, so an interior corner offsets to the miter
-    // direction and the ends use their own single segment.
+    // direction and the ends use their own single segment. A closed spline has
+    // no ends: its neighbours wrap round.
     const pts = e.points;
-    if (pts.length >= 2) {
+    const n = pts.length;
+    if (n >= 2) {
       copy = {
-        type: "spline", id, ...constr(e),
+        type: "spline", id, ...constr(e), ...splineFlags(e),
         points: pts.map((p, i) => {
-          const prev = pts[i - 1] ?? p, next = pts[i + 1] ?? p;
+          const prev = pts[i - 1] ?? (e.closed ? pts[n - 1]! : p), next = pts[i + 1] ?? (e.closed ? pts[0]! : p);
           const dx = next.x - prev.x, dy = next.y - prev.y;
           const len = Math.hypot(dx, dy) || 1;
           return { x: p.x + (-dy / len) * dist, y: p.y + (dx / len) * dist };
@@ -2545,8 +2559,7 @@ export function detachableEnd(
   const ends = (e: ResolvedEntity): { end: number; x: number; y: number }[] => {
     if (e.type === "line" || e.type === "arc") return [{ end: 0, x: e.x1, y: e.y1 }, { end: 1, x: e.x2, y: e.y2 }];
     if (e.type === "spline") {
-      const a = e.points[0], b = e.points[e.points.length - 1];
-      return a && b && e.points.length > 1 ? [{ end: 0, ...a }, { end: 1, ...b }] : [];
+      return e.points.length > 1 ? splineEndIndices(e).map((k, end) => ({ end, ...e.points[k]! })) : [];
     }
     if (e.type === "point") return [{ end: 0, x: e.x, y: e.y }];
     if (e.type === "rectangle") return rectCorners(e.x, e.y, e.width, e.height).map((q, k) => ({ end: k, x: q.x, y: q.y }));

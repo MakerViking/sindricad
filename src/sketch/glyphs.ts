@@ -7,6 +7,10 @@ import * as THREE from "three";
 import type { ResolvedEntity } from "./snap";
 import type { SketchConstraint } from "../types";
 import { asRound, lineOperand, operandPoint } from "./entityDims";
+import { entityPolyline } from "./region";
+
+/** a quarter of a spline span, in entityPolyline's 16 samples per span */
+const SPLINE_GLYPH_STEP = 4;
 
 const V = (x: number, y: number) => new THREE.Vector2(x, y);
 
@@ -114,6 +118,20 @@ export function constraintGlyphs(ents: ResolvedEntity[], constraints: SketchCons
   const refPos = (id: string, p: number): THREE.Vector2 | null => operandPoint(byId, id, p);
   const mid2 = (a: THREE.Vector2 | null, b: THREE.Vector2 | null) => (a && b ? a.clone().add(b).multiplyScalar(0.5) : null);
   const push = (i: number, label: string, pos: THREE.Vector2 | null) => { if (pos) out.push({ cIndex: i, label, pos }); };
+  /** On the spline a quarter of the way along its end span: by the joint the
+   *  tangency is about, but clear of the Coincident badge that usually sits
+   *  on the joint itself. */
+  const nearEnd = (id: string, end: number): THREE.Vector2 | null => {
+    const e = byId.get(id);
+    if (e?.type !== "spline") return null;
+    const poly = entityPolyline(e);
+    const fromEnd = end === 0 ? poly : [...poly].reverse();
+    const [a, b] = fromEnd;
+    if (!a || !b) return null;
+    // two fit points are drawn as one straight segment, not 16 samples
+    if (fromEnd.length === 2) return a.clone().lerp(b, 0.25);
+    return fromEnd[Math.min(fromEnd.length - 1, SPLINE_GLYPH_STEP)] ?? null;
+  };
 
   constraints.forEach((c, i) => {
     switch (c.type) {
@@ -128,6 +146,7 @@ export function constraintGlyphs(ents: ResolvedEntity[], constraints: SketchCons
       // to find (an operand that does not resolve, two concentric rounds).
       case "tangent": push(i, "T", tangencyPoint(byId, c.line, c.circle) ?? mid2(center(c.line), center(c.circle))); break;
       case "tangent2": push(i, "T", tangencyPoint(byId, c.a, c.b) ?? mid2(center(c.a), center(c.b))); break;
+      case "splineTangent": push(i, "T", nearEnd(c.spline, c.end)); break;
       case "coincident": push(i, "⊙", refPos(c.e1, c.p1)); break;
       case "concentric": push(i, "◎", center(c.c1)); break;
       case "midpoint": push(i, "M", center(c.line)); break;

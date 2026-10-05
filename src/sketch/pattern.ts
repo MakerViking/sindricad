@@ -7,6 +7,7 @@ import type { Num, Params, SketchPattern } from "../types";
 import { dimPlaceOf } from "../types";
 import type { ResolvedEntity } from "./snap";
 import { resolveNum } from "./resolve";
+import { splineFlags } from "./spline";
 
 /** an entity translated by (dx,dy) as a fresh object — shared by pattern
  *  expansion (derived copies) and the select tool's whole-entity body drag */
@@ -27,7 +28,7 @@ export function translated(e: ResolvedEntity, dx: number, dy: number, id: string
     case "arc":
       return { type: "arc", id, x1: e.x1 + dx, y1: e.y1 + dy, x2: e.x2 + dx, y2: e.y2 + dy, mx: e.mx + dx, my: e.my + dy, ...c };
     case "spline":
-      return { type: "spline", id, points: e.points.map((p) => ({ x: p.x + dx, y: p.y + dy })), ...c };
+      return { type: "spline", id, points: e.points.map((p) => ({ x: p.x + dx, y: p.y + dy })), ...splineFlags(e), ...c };
     case "point":
       return { type: "point", id, x: e.x + dx, y: e.y + dy, ...c };
     case "polygon":
@@ -58,7 +59,7 @@ export function scaled(e: ResolvedEntity, cx: number, cy: number, f: number, id:
     case "circle": { const [x, y] = S(e.x, e.y); return { type: "circle", id, radius: e.radius * a, x, y, ...c }; }
     case "rectangle": { const [x, y] = S(e.x, e.y); return { type: "rectangle", id, width: e.width * a, height: e.height * a, x, y, ...c }; }
     case "arc": { const [x1, y1] = S(e.x1, e.y1), [x2, y2] = S(e.x2, e.y2), [mx, my] = S(e.mx, e.my); return { type: "arc", id, x1, y1, x2, y2, mx, my, ...c }; }
-    case "spline": return { type: "spline", id, points: e.points.map((p) => { const [x, y] = S(p.x, p.y); return { x, y }; }), ...c };
+    case "spline": return { type: "spline", id, points: e.points.map((p) => { const [x, y] = S(p.x, p.y); return { x, y }; }), ...splineFlags(e), ...c };
     case "point": { const [x, y] = S(e.x, e.y); return { type: "point", id, x, y, ...c }; }
     case "polygon": { const [x, y] = S(e.x, e.y); return { type: "polygon", id, x, y, radius: e.radius * a, sides: e.sides, angle: e.angle, ...c }; }
     case "slot": { const [x1, y1] = S(e.x1, e.y1), [x2, y2] = S(e.x2, e.y2); return { type: "slot", id, x1, y1, x2, y2, width: e.width * a, ...c }; }
@@ -94,7 +95,7 @@ export function rotated(e: ResolvedEntity, cx: number, cy: number, ang: number, 
       return [{ type: "arc", id, x1, y1, x2, y2, mx, my, ...c }];
     }
     case "spline":
-      return [{ type: "spline", id, points: e.points.map((p) => { const [x, y] = R(p.x, p.y); return { x, y }; }), ...c }];
+      return [{ type: "spline", id, points: e.points.map((p) => { const [x, y] = R(p.x, p.y); return { x, y }; }), ...splineFlags(e), ...c }];
     case "polygon": {
       const [x, y] = R(e.x, e.y);
       return [{ type: "polygon", id, x, y, radius: e.radius, sides: e.sides, angle: e.angle + (ang * 180) / Math.PI, ...c }];

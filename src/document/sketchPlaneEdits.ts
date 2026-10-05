@@ -67,6 +67,8 @@ function remapConstraint(c: SketchConstraint, op: (id: string) => string): Sketc
       return { ...c, e: op(c.e), line: op(c.line) };
     case "pointOn":
       return { ...c, e: op(c.e), curve: op(c.curve) };
+    case "splineTangent":
+      return { ...c, spline: op(c.spline), other: op(c.other) };
     case "symmetric":
       return { ...c, e1: op(c.e1), e2: op(c.e2), line: op(c.line) };
     case "radius": case "fix":

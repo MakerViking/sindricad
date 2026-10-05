@@ -381,12 +381,14 @@ describe("breakLink — projected → native, same id", () => {
       [proj("P", { kind: "poly", pts: open }), proj("Q", { kind: "poly", pts: closed })],
       new Set(["P", "Q"]),
     );
-    expect(out[0]).toEqual({ type: "spline", id: "P", points: [{ x: 0, y: 0 }, { x: 5, y: 1 }, { x: 10, y: 0 }] });
+    // a spline made now builds as it is drawn (types.ts asDrawn)
+    expect(out[0]).toEqual({ type: "spline", id: "P", points: [{ x: 0, y: 0 }, { x: 5, y: 1 }, { x: 10, y: 0 }], asDrawn: true });
     // C0-closed spline: first == last point survives, so the closed poly's one
     // addressable endpoint (index 0, projEndSamples) still resolves
     expect(out[1]).toEqual({
       type: "spline", id: "Q",
       points: [{ x: 0, y: 0 }, { x: 5, y: 5 }, { x: 10, y: 0 }, { x: 0, y: 0 }],
+      asDrawn: true,
     });
   });
 

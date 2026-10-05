@@ -44,6 +44,7 @@ export const CONSTRAINT_NAME_KEYS: Record<SketchConstraint["type"], string> = {
   p2cDistance: "sketch.constraint.p2cDistance",
   tangent: "sketch.constraint.tangent",
   tangent2: "sketch.constraint.tangent",
+  splineTangent: "sketch.constraint.tangent",
   coincident: "sketch.constraint.coincident",
   concentric: "sketch.constraint.concentric",
   midpoint: "sketch.constraint.midpoint",

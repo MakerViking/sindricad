@@ -147,8 +147,23 @@ export type SketchEntity =
   | { type: "circle"; id?: string; radius: Num; x?: Num; y?: Num; construction?: boolean; dimPlace?: DimPlace }
   | { type: "line"; id?: string; x1: Num; y1: Num; x2: Num; y2: Num; construction?: boolean; dimPlace?: DimPlace }
   | { type: "arc"; id?: string; x1: Num; y1: Num; x2: Num; y2: Num; mx: Num; my: Num; construction?: boolean }
-  // fit-point spline: interpolates a smooth curve through its points (≥2)
-  | { type: "spline"; id?: string; points: { x: Num; y: Num }[]; construction?: boolean }
+  // fit-point spline: interpolates a smooth curve through its points (≥2).
+  //
+  // The sketch draws it as a Catmull-Rom curve (sketch/spline.ts). `asDrawn`
+  // makes the kernel build exactly that curve, each span as the cubic Bezier
+  // it is; without it the kernel interpolates its own B-spline through the
+  // same points, a DIFFERENT curve (24.75 mm off on a 577 mm field spline, 17
+  // degrees at an end). Stamped on splines drawn from 2026-10 only: an older
+  // spline keeps building the old way, so a document you already have
+  // rebuilds byte-identically.
+  //
+  // `closed` joins the last point back to the first with no kink (a periodic
+  // Catmull-Rom); the first point is NOT repeated at the end, and a closed
+  // spline always builds as drawn. It has no ends: its one addressable point is
+  // its first (dimRefPoints), like a closed projected curve. Both flags are
+  // omitted when false (byte stability). An older build ignores both: it
+  // builds the spline its own way, and a closed one as an open curve.
+  | { type: "spline"; id?: string; points: { x: Num; y: Num }[]; asDrawn?: true; closed?: true; construction?: boolean }
   // a sketch point: reference/snap geometry only — never forms a profile
   | { type: "point"; id?: string; x: Num; y: Num; construction?: boolean }
   // parametric shapes: regular polygon (center/radius/sides + first-vertex
@@ -358,6 +373,27 @@ export type SketchConstraint =
   // tangent2: general tangency between two curves (line/circle/arc, not line+line).
   // The older { type:"tangent"; line; circle } form is still accepted (old files).
   | { type: "tangent2"; a: string; b: string }
+  // splineTangent: a spline leaves one of its ENDS (`end`, 0 = its first fit
+  // point, 1 = its last) tangent to `other`, smoothly, with no kink: a line
+  // operand (see LINE OPERAND above), a circle or an arc (native or
+  // projected), or another spline's end `otherEnd`. Only a spline drawn with
+  // `asDrawn` takes one: the tangency is the drawn curve's, and an older
+  // spline builds a different curve, so the model would not be tangent.
+  //
+  // The drawn curve's end tangent points from the end to its neighbouring fit
+  // point, so this holds THAT direction: along the line, square to the radius
+  // at the end, or in line with the other spline's last span. It is the
+  // DIRECTION only, and signed, so the spline carries on past the joint
+  // instead of folding back over what it meets. What keeps the end ON the
+  // other curve is something else: the solver merging it with the curve's own
+  // end, or the On (pointOn) or Coincident the tools add with this whenever
+  // it is not merged (splineTangentFor). The tools refuse an end that is not
+  // on the curve already.
+  //
+  // Added 2026-10. An older build compiles nothing for it, keeps it (the
+  // `satisfies never` prune default) and draws no glyph, so the end is just
+  // free to turn again there. Nothing throws.
+  | { type: "splineTangent"; spline: string; end: 0 | 1; other: string; otherEnd?: 0 | 1 }
   // --- OFFSET ----------------------------------------------------------------
   // The associative link the Offset tool creates: ONE constraint for the whole
   // operation, holding every source→copy pair it produced, governed by a SINGLE

@@ -295,7 +295,7 @@ export type ResolvedEntity =
   | { type: "rectangle"; id: string; width: number; height: number; x: number; y: number; construction?: boolean; dimPlace?: DimPlace }
   | { type: "circle"; id: string; radius: number; x: number; y: number; construction?: boolean; dimPlace?: DimPlace }
   | { type: "arc"; id: string; x1: number; y1: number; x2: number; y2: number; mx: number; my: number; construction?: boolean }
-  | { type: "spline"; id: string; points: { x: number; y: number }[]; construction?: boolean }
+  | { type: "spline"; id: string; points: { x: number; y: number }[]; asDrawn?: true; closed?: true; construction?: boolean }
   | { type: "point"; id: string; x: number; y: number; construction?: boolean }
   // parametric shapes (rigid: the solver skips them; edited via their params)
   | { type: "polygon"; id: string; x: number; y: number; radius: number; sides: number; angle: number; construction?: boolean; dimPlace?: DimPlace }
