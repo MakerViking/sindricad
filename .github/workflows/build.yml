@@ -690,6 +690,17 @@ jobs:
               section 2 > changes.md
             fi
             if [ -s changes.md ]; then
+              # GitHub refuses a release body over 125000 characters, and a
+              # failed edit here publishes nothing (run 37350172644: an Unreleased
+              # left uncut since 0.1.128 reached 145k). Past ~110k keep whole lines
+              # up to it and point at the changelog for the rest.
+              if [ "$(wc -c < changes.md)" -gt 110000 ]; then
+                echo "WARNING: changes are $(wc -c < changes.md) chars, trimming to fit the release body"
+                awk '{ n += length($0) + 1; if (n > 110000) exit; print }' changes.md > changes.trim
+                printf '\nThe rest of this list is in [CHANGELOG.md](https://github.com/%s/blob/main/CHANGELOG.md).\n' \
+                  '${{ github.repository }}' >> changes.trim
+                mv changes.trim changes.md
+              fi
               printf '\n## Changes in this build\n\n' >> notes.md
               cat changes.md >> notes.md
             fi

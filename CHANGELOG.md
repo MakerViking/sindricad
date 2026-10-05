@@ -27,253 +27,6 @@ This file starts on 2026-08-03. For anything before that, see the
   its name and now explains itself in its tooltip: it brings edges of bodies
   and other sketches into the sketch, linked so they follow their source.
 
-- **Section remembers where you left it.** While the document stays open,
-  Section keeps the last axis, the cut's position and which side was flipped,
-  and offers that axis first, so one Enter puts the cut back where it was. A new
-  or reopened document starts fresh.
-
-- **Error messages stay up long enough to read.** An error or a warning now
-  stays up longer the longer it is, up to 30 seconds, and any message stays
-  while your pointer is on it. When a feature you just made fails, its message
-  stays until you close it. Show now selects the failing feature, flashes it in
-  the timeline and leaves the message up, and the Inspector shows the full
-  message for the selected feature, where you can select and copy it.
-
-- **Dragging in a sketch keeps up with the pointer better.** Each mouse move
-  does less work and reaches the screen sooner. Dimension badges and constraint
-  glyphs now move with the geometry instead of jumping when you let go, and the
-  armed tool's icon is part of the mouse pointer, so it no longer trails behind
-  it. Reported in [#17](https://github.com/MakerViking/sindricad/issues/17).
-
-- **Inch values show four decimals.** A length in inches now reads to
-  0.0001", so 1/16" reads 0.0625 and 1/32" reads 0.0313, where they used to
-  read 0.063 and 0.031. Millimetres and centimetres still show three.
-
-- **Dimensioning one slanted line follows the cursor, like two points do.**
-  Pick a slanted line with Dimension and drag the label: above or below the
-  line gives its horizontal extent (DX), beside it gives its vertical extent
-  (DY), and off to its side gives its length. A horizontal or vertical line
-  always gives its length. Pick, type a value and Enter still sets the length,
-  and once you have typed a value, placing the label anywhere keeps it a length.
-
-- **Selected construction geometry shows that it is selected.** A selected
-  construction line, arc or circle draws solid in the selection colour instead
-  of staying dashed orange, and a selected construction point gets a square
-  around it.
-
-- **The hint at the top of the view no longer blocks clicks.** It is text only,
-  and a click on it now reaches whatever it covers, such as a dimension or a
-  line drawn under it.
-
-- **Snapping a line or arc end onto a point joins them.** When you snap an end
-  onto an existing point, I now add a real Coincident constraint, so the join
-  holds when you move, dimension or re-solve either side. This works on line and
-  arc ends, circle centres and projected edges, a rectangle corner started on a
-  point, the start of a centre-point arc, and the closing corner of a closed line
-  chain. Pressing on a join's Coincident badge still drags the join. The other corners inside one chain of lines are placed on
-  each other but not constrained yet, so moving a single segment of a polyline
-  can still open those corners.
-
-- **Right-clicking a construction plane no longer cuts every visible body in
-  one click.** Cut all bodies is now Split bodies with this plane…, which opens
-  the Split Body panel with that plane as the tool, so you say which bodies to
-  cut. Selecting a plane and pressing Split Body used to make the same instant
-  cut; now it fills the panel too. The list of every body by name and the
-  "keep which side?" question are gone.
-
-- **A split that only separates parts, or leaves damaged parts whole, says so.**
-  If the plane lies between the parts of a body and cuts none of them through,
-  the parts on each side still become separate bodies, and a yellow note names
-  the body and says nothing was cut through. With Above or Below it says the
-  parts on the other side were removed. If some of the parts it crosses are
-  imported parts too damaged to cut, it cuts the rest and the note says how
-  many were left whole. Damaged parts are never repaired behind your back. A
-  body you picked that the plane leaves as it was gets a note too, naming it.
-  A split across many bodies gives one note that counts them and names the
-  first few, like "2 in Skjermdeksel, 1 in Bolt, 3 in Nut, and 59 more", and
-  the split's timeline chip names every one of them.
-
-- **Keep Both gives one body per piece, and parts that touch stay one piece.**
-  A plate and the pin through it come out as one body on each side of the cut,
-  not four. On the Ender 3 assembly, splitting Skjermdeksel at its datum now
-  gives 19 bodies.
-
-- **Undo and redo on a heavy model are about eleven times faster.** On a
-  100 feature plate with 49 through holes, undoing a radius change took 717 ms
-  of engine time and now takes 64 ms; redo went from 722 ms to 65 ms. The engine
-  used to consult its saved history only when nothing in memory matched, so a
-  short match in memory could force it to replay 38 features it had already
-  built and stored. It now prefers whichever of the two goes deeper. This is
-  engine time on one machine and one model, not the whole round trip to the
-  screen, and the gain needs a usable saved checkpoint to exist.
-
-- **A diameter change that would break the part is refused in words, not built
-  quietly.** Over the 2,009 part import, changing a diameter used to hand back
-  nine broken bodies with no error at all: six that fail a validity check
-  outright, one where an 89 face part came back as 2 faces with 96% of its
-  volume gone, and two where moving one 4.85 mm wall also moved nine unrelated
-  cylinders elsewhere in the part. All nine are now refused with a sentence, and
-  your model is left as it was. Nothing that worked before stopped working: the
-  count of walls handled by the two exact paths is identical, 59 and 61 of 183,
-  and not one correct answer was lost.
-
-- **Offsetting one wall no longer quietly offsets the rest of the part.** Pick
-  one wall of a slot and ask for 0.15 mm, and what you used to get was both
-  walls and both end radii moved, four times the change you asked for, reported
-  as a success. Any wall that is not a full circle went down this path, which is
-  a third of the round faces in a typical import. The result is now checked
-  against the part it came from: the face you picked may move, and a chamfer or
-  fillet along its edge may follow it, and anything else moving means you get a
-  sentence instead of a model.
-
-- **A pin standing in a bore is seen even when it sticks out of the bore.** The
-  check that stops a wall being driven through a neighbouring part needed the
-  neighbour to sit entirely inside the bore's depth, which a dowel in an
-  assembly almost never does. Growing a 3 mm bore by 0.6 mm around a 2.6 mm pin
-  gave two parts overlapping by 31 mm³, with every other check green.
-
-- **Kernel failures now say something.** Four of those 183 attempts used to
-  surface as `Standard_ConstructionError` with nothing after the colon. And the
-  message for a face the sandbox refuses no longer claims the amount is
-  irrelevant: sweeping one face over six distances at both signs shows the same
-  face passing at 0.05 mm and crashing at 0.15, and another crashing at 0.15 and
-  passing at 0.30, so the amount does matter and the sentence no longer pretends
-  otherwise. A ring cut that would delete a solid also stopped telling Offset
-  Face users to "pick a target inside it", which is Press/Pull's advice for a
-  control Offset Face does not have.
-
-- **Changing a plain diameter got about a fifth cheaper.** The same body was
-  being handed to the validity checker three times per edit; one of those was
-  redundant and is gone. On a 1,433 face part that is 0.47 seconds of a cost you
-  pay on every keystroke of a drag.
-
-- **Press/Pull on a round wall and Offset Face now work on imported parts,
-  including bores and bosses with a chamfer or a fillet on the rim.** The
-  entries below give the detail; the short version is that everything about
-  changing a diameter on a STEP import is different. The test part I use is a
-  4 mm chamfered bushing lifted straight out of a vendor's file: before this,
-  changing either of its diameters killed the geometry engine, and the session
-  went with it. Now both build in a few milliseconds, and the 0.3 mm chamfers
-  come back at 0.3 mm. Where a face genuinely cannot be served, you get a
-  sentence naming what is in the way, your model is left exactly as it was, and
-  the app is still running. Two answers that used to look completely fine are
-  now caught: a chamfer that quietly resized itself from 0.3 mm to 0.45 mm while
-  the opening it belongs to stayed put, and an offset that reported success
-  having moved every face of the part, adding 67.17 mm³ of material where the
-  change you asked for was 3.90 mm³. One thing worth saying plainly, because it
-  surprised me: a part read in from a file and the same part built inside
-  SindriCAD are not interchangeable here. Identical face count, identical volume
-  to nine decimal places, and only the imported one crashed. So the tests for
-  this run against real imported files rather than against shapes I build to
-  match them.
-
-- **Changing a diameter now refuses the changes that would quietly break the
-  part, and checks that far faster than before.** Moving a round wall and its
-  chamfer together is exact, but "exact" is not the same as "safe", and I found
-  four ways it could hand back a body that passes every arithmetic check and is
-  still wrong. A chamfer sitting on a counterbore floor only 0.2 mm wide walks
-  off the outer edge of that floor once you grow the bore 0.25 mm, leaving an
-  inward overhanging knife edge that no machine can cut; the result is a valid,
-  watertight, single solid with the right volume and a perfectly preserved
-  chamfer. A bore grown 0.2 mm into a cross hole that was 0.2 mm clear of it
-  produces a solid that self intersects, and because the face layout never
-  changes, every face still meets its own edges and the volume still agrees with
-  what the change should have produced. A bore in one part of an assembly can be
-  driven straight through a neighbouring part, which is invisible to any check
-  that looks at one solid at a time. And a long shallow taper looks exactly like
-  a chamfer to every test I had: coaxial, fully round, meeting the wall at the
-  right radius, one flat face beyond it. On a 22 mm eight degree taper that
-  meant its wide end silently moved from 6.09 mm to 5.94 mm, which is not a
-  change of bore diameter, it is a redesign. Three of the four are now refused
-  by name, with a sentence saying what is in the way rather than a kernel
-  message, and the model is left alone. The taper is the exception and it turned
-  out to be good news: the fallback path holds the taper's angle and its wide
-  end where they were and just lengthens it, which is the answer you want, so
-  that one builds. Nothing that used to work stopped working: over the same
-  2,009 part import the number of round walls handled is unchanged at 119
-  of 183.
-
-- **The safety checking behind that is between 3 and 19 times cheaper on a real
-  import.** It matters because the whole model rebuilds on every frame while you
-  drag a distance, so this is a cost per keystroke, not per edit. Proving a
-  change clears the rest of the body used to mean measuring the distance from
-  the moving faces to every face whose bounding box was anywhere near them, and
-  on a threaded part that came to 1.7 seconds for an edit that itself takes
-  three milliseconds. Now the region a wall actually sweeps through is worked
-  out first, as a ring around its own axis, and almost everything is ruled out
-  by comparing two numbers. What survives is measured against the axis, which is
-  nine times cheaper than measuring it against the moving faces and is usually
-  enough to settle it. That threaded part is now half a second, a 148 face
-  casting went from 92 to 5 milliseconds, and across the whole import the
-  typical edit is 5 milliseconds. One body of the 2,009 got slower, by about a
-  seventh of a second, because its eight large freeform panels defeat every
-  cheap test and end up measured anyway.
-
-- **Changing the diameter of a plain bore or boss is now exact, and an offset
-  that would crash the geometry kernel is caught before it reaches your model.**
-  Press/Pull on a round wall, and Offset Face, used to hand the whole job to
-  OCCT's surface offsetter. On imported STEP geometry that is broadly broken:
-  over 198 bodies of a real import I measured 17 of them crashing the kernel
-  outright, five running for 29 seconds or more, and most of the rest simply
-  refusing. Worse, two came back reporting success having quietly moved every
-  face of the solid, or having grown a chamfer from 0.3 mm to 0.45 mm while the
-  opening it belongs to stayed put. A straight bore or boss, meaning a full
-  round wall whose neighbours are flat and square to it, now changes radius by a
-  direct boolean instead. That is exact to the last digit, takes about ten
-  milliseconds, and is checked against the radius the kernel actually produced
-  rather than against a volume that can look right for the wrong reason.
-  Anything else is tried in a throwaway process first, so a face that would take
-  the kernel down gets you a sentence about what is actually wrong instead of a
-  dead session.
-
-- **A bore or boss with a chamfer or a fillet on the rim now keeps that chamfer
-  or fillet when you change its diameter.** This was the worst of the offset
-  bugs because it looked like it worked. Growing a 1.3 mm chamfered bore by
-  0.15 mm gave back a perfectly valid solid in which the chamfer had silently
-  grown from 0.3 mm to 0.45 mm, while the opening it belongs to had not moved at
-  all. The fillet version was worse again: on one imported part it reported
-  success having thickened the entire solid, and on another it replaced the
-  fillet with a surface that is no longer a torus, so nothing downstream could
-  read its radius any more. A round wall and the chamfers or fillets sitting on
-  it are now moved together as one feature, by changing their radius directly
-  rather than by rebuilding the body. The chamfer keeps its angle and its size,
-  the fillet keeps its radius and its sweep, and the face count comes back
-  identical, so selections and later features still point at the same faces.
-  Measured over every body of a 2,009 part import, it handles 119 of the 183
-  round walls I tried, all of them valid, in about 5 milliseconds each. It also
-  checks its own answer three ways before handing it back, including against the
-  volume the change should have produced worked out in closed form, and hands
-  the job back to the old path if any of them disagrees. Walls it cannot take,
-  such as a half cylinder or one whose neighbour is a freeform surface, are
-  unchanged from before.
-
-- **A dirty mesh export is rebuilt from its real planes instead of imported
-  facet by facet.** Some STL exports shatter every flat surface into thousands
-  of slivers whose normals are off by a fraction of a degree, which is enough to
-  defeat the exact-coplanar merge, so a building made of a few hundred walls
-  arrived as a hundred thousand faces that took minutes to open and crawled in
-  the viewport. Those files now come in rebuilt: I find the planes the triangles
-  actually lie on, snap the vertices onto them and build one face per plane. The
-  architectural STL that started this went from 102,618 faces in about four
-  minutes to 404 faces in under four seconds. This only runs on files that
-  today already fail to import as something editable, and only when the mesh
-  really is made of planes. A curved or scanned mesh is left alone, because
-  flattening a sphere into plates would be a worse answer than the one it gets
-  now. It is an approximation, not a faithful copy: vertices move up to
-  0.36 mm to land on clean planes.
-
-- **A mesh that is too detailed to edit now imports as reference geometry
-  instead of being refused.** If a file had more detail than I can turn into an
-  editable model, the import failed and you got nothing: a message explaining
-  why, and no geometry. Now the body comes in read-only, the way a
-  non-watertight mesh already did, with a note saying which limit it passed and
-  that Thicken turns it into a solid you can model with. You can measure it,
-  sketch against it and export it. Reported on an architectural STL that had
-  21,326 distinct facet directions; the limits themselves have not moved, only
-  what happens when a file exceeds one. Files too large to read at all are still
-  refused up front, because that guard protects against a crash rather than
-  judging how editable the result would be.
-
 - **3D Mouse Settings says whether it found your 3D mouse.** A line at the top
   names the device it is reading, says that no 3D mouse was found, or names one
   it found but can't open and points to the fix. The test cube moves only with
@@ -333,50 +86,11 @@ This file starts on 2026-08-03. For anything before that, see the
   double-click to edit. Changing the text or the font tries again, and so does a
   text that failed because the geometry engine could not be reached.
 
-- **Break keeps the constraints of the curve it splits.** A Coincident at either
-  end, and Horizontal or Vertical, now carry over to the two halves instead of
-  disappearing. Length and Equal no longer apply to a half, so those are removed,
-  and I say how many.
-
-- **Pressing X in the middle of a drag no longer leaves an undo step that does
-  nothing.**
-
-- **Typing in the parameters panel while a tool is open no longer changes an
-  earlier feature.** The panel kept showing the last feature you clicked, so a
-  Start offset typed there while extruding a side face changed your first
-  extrude instead of the new one. While a modeling tool or a pick is running,
-  the panel is now read-only and says why, and starting a tool takes the last
-  feature out of it.
-
-- **The extrude preview no longer hides which areas you picked.** The selected
-  areas get an orange outline drawn on top, and the preview is fainter, with its
-  edges drawn, both when you create an extrude and when you edit one.
-
-- **Section closes with its document.** New, Open, Close and Recover now take
-  down the cut and its arrow, so the next document is never cut by a plane you
-  cannot see.
-
-- **Section's offset box sits beside the model instead of on the cut.** Its
-  buttons go with it, and flipping the side with F or typing an offset now shows
-  straight away instead of waiting for the mouse to move.
-
-- **The bug report button no longer covers Cancel.** It sat over Cancel, the
-  busy label and the failing-features badge in the bottom right corner, so a
-  click on Cancel could open a bug report instead of stopping the work.
-
-- **Sweeps and lofts no longer fail with "Standard_OutOfRange" when a line in
-  the profile overshoots the closed shape.** I ignore the loose ends now.
-
 - **Extruding an area with a loose line end in it gives a sound solid.** A line
   that overshoots into a closed shape left its end inside the area, and
   extruding that area made a damaged solid with extra faces in it. I ignore
   the loose ends for every area now, not only for sweep and loft profiles, and
   an extrude you already made picks the same area as before.
-
-- **Sketch geometry dimensioned to projected edges follows the body when it
-  changes size.** It used to jump to a mirror image on the far side of the edge.
-  If I cannot find a solution on the same side, I keep the sketch where it was
-  and say so, instead of moving it to the wrong side.
 
 - **Press/Pull works on a drafted body after you have pressed one of its
   sides.** A face that meets one neighbour at a shallow angle, like a draft or
@@ -439,81 +153,6 @@ This file starts on 2026-08-03. For anything before that, see the
   tiny hidden chip in a body, moving that body could draw it at its old place
   until the document was next rebuilt from scratch.
 
-- **Cancel stops an import.** Cancelling while an imported file is still being
-  built now takes the import back out, and a cancelled rebuild is no longer
-  shown as an error.
-
-- **Move keeps a distance you type before picking an arrow.** It asks which
-  direction you mean, and pressing Enter with nothing moved now says so instead
-  of closing without a word. A click in empty space with nothing moved still
-  closes Move.
-
-- **Pressing Enter on a value you did not change no longer changes it.** Values
-  are shown rounded, and opening one and pressing Enter used to save the
-  rounded number: in inches a 1/16" sketch dimension became 0.063" (1.6002 mm
-  instead of 1.5875 mm), and re-opening an extrude, a fillet, a chamfer or an
-  offset plane moved it slightly the same way. Now an untouched value keeps
-  its exact number, and so does a new dimension you accept without typing, so
-  accepting the measured length of a line does not move it. A number you type
-  is taken as typed, even when it is the number already shown.
-
-- **Dragging a rectangle that is constrained to the origin no longer drags the
-  origin along.** The origin slid away with the rectangle and could not be
-  picked at 0,0 again until the sketch was reopened. Now a fully dimensioned
-  rectangle stays put, and one with free sides stretches, with its corner held
-  on the origin.
-
-- **Trim lights up the piece it will remove, not the whole curve.** With Trim
-  picked, hovering a line lit the whole line red, which said the whole line was
-  about to go. Trim removes only the part between the nearest crossings, and
-  now only that part lights up, on lines, arcs, circles and the sides of a
-  rectangle. A curve nothing crosses still lights up whole, because Trim
-  deletes it whole.
-
-- **Trim cuts where a curve touches another one.** A tangent touch, like a belt
-  line meeting a pulley, was never a cut point, so Trim deleted the whole curve
-  instead of trimming it to the touch. A touch now counts as a crossing for Trim
-  and Extend. A line trimmed against an arc also ends exactly on the arc; it
-  could end up to 0.009 mm off it before.
-
-- **Trim keeps the constraints that still apply to what is left.** Trim treated
-  every piece it kept as a new curve, so every constraint on the old one was
-  deleted without a word: an offset link, a tangency, a horizontal. The pieces
-  now keep them. A constraint that can no longer apply, like a length on a line
-  that just got shorter or a Fix on an end that was cut off, is removed, and a
-  note says how many.
-
-- **The two halves of a Break can be pulled apart.** Break left the halves
-  joined at the cut, with nothing on screen to show the join or to delete, so
-  dragging the cut always moved both. In Select, Shift-drag from the cut toward
-  the half you want to move, or right-click the cut, pick Disconnect and drag,
-  and only that half's end leaves. Break now says how when it splits a curve.
-  Shift-drag does this anywhere the end of a line, arc or spline, or a sketch
-  point, shares a spot with another curve's end and no constraint holds it
-  there, not only at a cut: Shift-dragging a polyline corner now opens it. A
-  rectangle, polygon or slot corner, a centre or projected geometry is never the
-  part that moves. An end a Coincident constraint or a Fix holds stays put, and
-  that includes a line or arc end you snapped onto a point, which snapping now
-  joins with a Coincident: delete that constraint first (right-click its badge).
-
-- **Offset with Chain Selection takes the whole outline when construction lines
-  run to its corners.** They counted as part of the outline, so every corner
-  they reached stopped the chain. If three real curves meet and the chain has to
-  stop, I now say where, instead of quietly offsetting only the curve you
-  picked. Double-click chain select no longer picks up construction lines
-  either, unless you double-click a construction line.
-
-- **The distance you type after using the Offset right-click menu goes into the
-  box again.** Before, the menu took the typing away from the box, so the
-  distance went nowhere and Enter did nothing.
-
-- **Coincident can join two ends that sit a hair apart**, for example after a
-  trim: click the spot twice.
-
-- **Joins between points that already touch are no longer drawn amber.** A
-  Coincident between two ends at the same spot showed as if the sketch had too
-  many constraints.
-
 - **Fillet and Chamfer no longer ignore a click on a rectangle, polygon or
   slot.** These shapes are one piece, not separate lines, so the tools lit the
   whole outline red and then ignored the click. Now they light only the side
@@ -558,162 +197,6 @@ This file starts on 2026-08-03. For anything before that, see the
 - **An offset between two lines that are both Horizontal, or both Vertical, no
   longer shows amber.** The offset also told them to be parallel, which they
   already were.
-
-- **A polygon's side count shows in the preview as you type it**, before you
-  click the tick. Typed radius, width and diameter values redraw straight away
-  too.
-
-- **Chaining a line that snaps almost vertical or horizontal no longer opens a
-  tiny gap at the joint behind it.**
-
-- **Fillet and Chamfer no longer flip the line they shorten**, so constraints on
-  its far end stay on the right point. A coincident on the corner you round off
-  goes away with the corner instead of pulling the profile out of shape.
-
-- **Separate says when it drops loose surfaces.** A surface with no thickness
-  cannot become a body, and Separate dropped every one it found without a
-  word. A yellow note now says how many it dropped and from which body, and
-  that any part of the shape made only of those surfaces is now open or
-  missing. On a body made only of surfaces, Separate makes a body from each
-  of them, and the note is about the loose faces that belong to none. The
-  bodies it makes are the same as before.
-
-- **A note after an export no longer reads as a failed export.** The list
-  shown after an export put every note under the same line as a feature that
-  failed. So an STL written in full, with unmatched edges a slicer might
-  complain about, said a feature had failed and its result was not in the
-  export, and the title said the export had warnings. Notes now read
-  "Note: ..." and the title only says there are warnings when a feature really
-  is missing from the file. A feature that is missing is named the way the
-  timeline names it, like "12 · Extrude", instead of by an internal id, and its
-  reason is written the way the timeline writes it, with the body's name filled
-  in. The same goes for the print project export and for publishing to
-  TinkerAtlas.
-
-- **Split Body cuts an imported assembly kept as one body.** It used to hand
-  the whole body to the geometry kernel in one go. On the Ender 3 assembly's
-  Skjermdeksel (908 parts) that failed with "Null TopoDS_Shape object" or ran
-  for over 13 minutes, and a failed cut of all bodies left the bodies before
-  the failing one cut. Now each part is cut on its own (about 9 seconds for
-  Skjermdeksel), and if one body fails nothing is changed. Splits saved before
-  this build still cut the way they did, so the bodies after them keep their
-  numbers. Where that old way fails, such a split stays red and says so: edit
-  it and press OK to cut it part by part. Where it cut damaged parts and the
-  pieces do not add up to the body, a yellow note says that too.
-
-- **A split that changes nothing says so.** If the plane misses the body, lies
-  on one of its faces, or crosses only damaged parts, the split is red with a
-  message saying which, instead of looking done. Older files can have such a
-  split, saved as if it worked: it shows red now. A body the plane does not
-  reach is also no longer broken up into one body per part. And a split whose
-  bodies were removed earlier in the timeline says so, instead of cutting fewer
-  of them without a word.
-
-- **Redo after adding a feature to a large model no longer re-meshes all of
-  it.** On the Ender 3 assembly, redoing a split rebuilt the display of all 340
-  bodies (over 2 minutes, one part alone 55 seconds), long enough for the app to
-  report that the geometry engine stopped responding. It now takes 8 seconds.
-
-- **"N bodies selected" clears when the selection does.** After an undo the
-  prompt could go on counting bodies that were no longer selected.
-
-- **An error about a body calls it by the name you gave it.** Rename a body in
-  the Browser and a failed feature's message still used the name it was built
-  with, for an import the product name inside the file, which appears nowhere
-  on screen. Messages and the timeline's notes now use your name.
-
-- **A model with a few unusual imported surfaces no longer blanks the whole
-  view.** On a 340 body Ender 3 assembly, seven imported parts each had a
-  cone-shaped face that was never cut into triangles, and the size reported for
-  the model came back as effectively infinite. The 3D view believed it: Fit and
-  every window resize threw the camera so far away that nothing was left on
-  screen, not even the grid, and pressing Fit again could not bring it back.
-  The view now measures the model from what it actually draws whenever a
-  reported size is not believable, and Fit always puts the camera back where the
-  model is. Three related changes came with it. Opening or recovering a document
-  frames it again: since early August an opened document came up wherever the
-  camera happened to be, often showing nothing at all. File > New and Close now
-  come back to the origin, instead of framing the document you just closed. Fit
-  frames the bodies you can see, so after Isolate it goes to that one body
-  instead of the whole assembly. And a document that opens with most or all of
-  its bodies hidden now says so, with a Show all button, instead of leaving an
-  empty view to puzzle over.
-
-- **The installers now include the full license texts of the libraries inside
-  them.** NOTICE.md has always said these texts ship under `LICENSES/`, and no
-  build before this one actually included them. Every build now collects 61
-  texts from the libraries it bundles, plus the Open CASCADE license and
-  exception, and the build fails if a required text is missing.
-
-- **A 3MF with colours in it opens again, including the ones SindriCAD writes.**
-  Any 3MF carrying colour or material information failed to import at all, with
-  a raw "Resource not found" or "unknown error" from the mesh library. That is
-  most files a slicer saves, and it was every coloured project file SindriCAD
-  exports, so the multicolour export wrote files the app itself could not
-  reopen. Ten of ten real 3MF files on my machine failed. They now open, and the
-  colour comes with them and lands on the nearest slot in your palette instead
-  of being thrown away. A 3MF that already opened is read exactly as before.
-
-- **A sketch you renamed keeps its name when you edit it.** Renaming a sketch in
-  the Browser and then opening it to change something put the generic
-  "Sketch3" name back the moment you pressed Finish. Editing a sketch rebuilds
-  it from what the sketcher is holding, and the name was the one thing the
-  sketcher never held, so it was dropped on every edit. Reported by Doug Smith.
-
-- **Closing or replacing a document no longer leaves a phantom recovery
-  prompt.** Starting a new document offered only "discard", with no way to save
-  first, and opening another document replaced the current one with no warning
-  at all. Either way the autosave snapshot of the abandoned work stayed on
-  disk, so the next launch offered to recover a document you had deliberately
-  walked away from. New, Open and the new Close all ask whether to save first,
-  and discarding clears the snapshot, so a recovery prompt again means what it
-  says: the app stopped with work you never saved. Reported by Doug Smith.
-
-- **A text height of zero could take the geometry engine down.** Zero or a
-  negative size crashes the kernel outright, and the live preview reaches it on
-  every keystroke, so typing "0" as the first character of "0.5" was enough. It
-  is refused now, both in the app and in the geometry engine itself.
-
-- **"Open in OrcaSlicer" lands on your U1 preset again.** If your active
-  Orca printer preset was made from scratch rather than copied from the
-  Snapmaker one, the handoff silently gave up and Orca opened the file on a
-  throwaway printer named after it, with a blank process and zero line widths.
-  Such a preset now flattens like any other, its process and filament are
-  matched by what the printer is rather than what the preset is called, and if
-  Orca's active printer is itself one of those throwaways the handoff picks
-  your newest U1 preset instead. When the preset cannot be read at all,
-  SindriCAD now says so in a warning instead of only in the console.
-- **Body colours now survive opening a 3MF project in PrusaSlicer.** A body
-  assigned to a palette slot other than the first came into PrusaSlicer on
-  extruder 1, while painted faces on it kept their colour. PrusaSlicer ignores
-  the per-object extruder that Orca and Bambu Studio read, but it honours
-  per-triangle paint just like they do, so a body on any other slot now carries
-  its slot on every triangle. Verified on PrusaSlicer 2.9.6; Orca reads the
-  file the same as before.
-- **A tapered extrude no longer takes fifteen seconds to rebuild.** Reported
-  from Windows: the taper appeared about twenty seconds after typing the angle.
-  Every change to the taper angle or the distance was starting a fresh Python
-  process just to safety-check the shape against a kernel hang, and that
-  process start-up was the entire wait; the taper itself takes about six
-  milliseconds. The check now runs only on the profiles it was built for
-  (curved or many-edged ones), and the geometry is unchanged.
-
-- **The grid no longer floats up with an extrude's start offset.** Reported
-  from Windows: with a start offset the grid plane moved up by the offset,
-  leaving the origin hanging in space, and showing the sketch moved it back.
-  The grid stays on the XY plane where the origin is, and only drops below it
-  to stay under a model that sits under the origin.
-
-- **Orbit no longer swings around a point far from the model after zooming
-  out.** Reported on a long imported laptop stand: after a few wheel notches
-  the view orbited around empty space instead of the part. Zooming toward the
-  cursor pins the point under it by scaling the camera and the orbit centre
-  about that point; over empty space that point is invented at orbit distance,
-  so every zoom-out notch with the cursor off the model carried the orbit centre
-  further away, and nothing ever brought it back. The orbit centre now stays
-  within a ball around the model; when a zoom would push it out, it is pulled
-  back and the camera moves with it, so the zoom and view direction you asked
-  for are unchanged. Panning still moves the centre freely, and Fit resets it.
 
 ### Added
 
@@ -968,6 +451,538 @@ This file starts on 2026-08-03. For anything before that, see the
   Coincident asked for a second endpoint, and there was no way to do this at
   all. A sketch that uses it still opens in an older beta, which just does not
   hold the point there.
+
+## 0.1.232 (2026-10-02)
+
+### Changed
+
+- **Section remembers where you left it.** While the document stays open,
+  Section keeps the last axis, the cut's position and which side was flipped,
+  and offers that axis first, so one Enter puts the cut back where it was. A new
+  or reopened document starts fresh.
+
+- **Error messages stay up long enough to read.** An error or a warning now
+  stays up longer the longer it is, up to 30 seconds, and any message stays
+  while your pointer is on it. When a feature you just made fails, its message
+  stays until you close it. Show now selects the failing feature, flashes it in
+  the timeline and leaves the message up, and the Inspector shows the full
+  message for the selected feature, where you can select and copy it.
+
+- **Dragging in a sketch keeps up with the pointer better.** Each mouse move
+  does less work and reaches the screen sooner. Dimension badges and constraint
+  glyphs now move with the geometry instead of jumping when you let go, and the
+  armed tool's icon is part of the mouse pointer, so it no longer trails behind
+  it. Reported in [#17](https://github.com/MakerViking/sindricad/issues/17).
+
+- **Inch values show four decimals.** A length in inches now reads to
+  0.0001", so 1/16" reads 0.0625 and 1/32" reads 0.0313, where they used to
+  read 0.063 and 0.031. Millimetres and centimetres still show three.
+
+- **Dimensioning one slanted line follows the cursor, like two points do.**
+  Pick a slanted line with Dimension and drag the label: above or below the
+  line gives its horizontal extent (DX), beside it gives its vertical extent
+  (DY), and off to its side gives its length. A horizontal or vertical line
+  always gives its length. Pick, type a value and Enter still sets the length,
+  and once you have typed a value, placing the label anywhere keeps it a length.
+
+- **Selected construction geometry shows that it is selected.** A selected
+  construction line, arc or circle draws solid in the selection colour instead
+  of staying dashed orange, and a selected construction point gets a square
+  around it.
+
+- **The hint at the top of the view no longer blocks clicks.** It is text only,
+  and a click on it now reaches whatever it covers, such as a dimension or a
+  line drawn under it.
+
+- **Snapping a line or arc end onto a point joins them.** When you snap an end
+  onto an existing point, I now add a real Coincident constraint, so the join
+  holds when you move, dimension or re-solve either side. This works on line and
+  arc ends, circle centres and projected edges, a rectangle corner started on a
+  point, the start of a centre-point arc, and the closing corner of a closed line
+  chain. Pressing on a join's Coincident badge still drags the join. The other corners inside one chain of lines are placed on
+  each other but not constrained yet, so moving a single segment of a polyline
+  can still open those corners.
+
+- **Right-clicking a construction plane no longer cuts every visible body in
+  one click.** Cut all bodies is now Split bodies with this plane…, which opens
+  the Split Body panel with that plane as the tool, so you say which bodies to
+  cut. Selecting a plane and pressing Split Body used to make the same instant
+  cut; now it fills the panel too. The list of every body by name and the
+  "keep which side?" question are gone.
+
+- **A split that only separates parts, or leaves damaged parts whole, says so.**
+  If the plane lies between the parts of a body and cuts none of them through,
+  the parts on each side still become separate bodies, and a yellow note names
+  the body and says nothing was cut through. With Above or Below it says the
+  parts on the other side were removed. If some of the parts it crosses are
+  imported parts too damaged to cut, it cuts the rest and the note says how
+  many were left whole. Damaged parts are never repaired behind your back. A
+  body you picked that the plane leaves as it was gets a note too, naming it.
+  A split across many bodies gives one note that counts them and names the
+  first few, like "2 in Skjermdeksel, 1 in Bolt, 3 in Nut, and 59 more", and
+  the split's timeline chip names every one of them.
+
+- **Keep Both gives one body per piece, and parts that touch stay one piece.**
+  A plate and the pin through it come out as one body on each side of the cut,
+  not four. On the Ender 3 assembly, splitting Skjermdeksel at its datum now
+  gives 19 bodies.
+
+- **Undo and redo on a heavy model are about eleven times faster.** On a
+  100 feature plate with 49 through holes, undoing a radius change took 717 ms
+  of engine time and now takes 64 ms; redo went from 722 ms to 65 ms. The engine
+  used to consult its saved history only when nothing in memory matched, so a
+  short match in memory could force it to replay 38 features it had already
+  built and stored. It now prefers whichever of the two goes deeper. This is
+  engine time on one machine and one model, not the whole round trip to the
+  screen, and the gain needs a usable saved checkpoint to exist.
+
+- **A diameter change that would break the part is refused in words, not built
+  quietly.** Over the 2,009 part import, changing a diameter used to hand back
+  nine broken bodies with no error at all: six that fail a validity check
+  outright, one where an 89 face part came back as 2 faces with 96% of its
+  volume gone, and two where moving one 4.85 mm wall also moved nine unrelated
+  cylinders elsewhere in the part. All nine are now refused with a sentence, and
+  your model is left as it was. Nothing that worked before stopped working: the
+  count of walls handled by the two exact paths is identical, 59 and 61 of 183,
+  and not one correct answer was lost.
+
+- **Offsetting one wall no longer quietly offsets the rest of the part.** Pick
+  one wall of a slot and ask for 0.15 mm, and what you used to get was both
+  walls and both end radii moved, four times the change you asked for, reported
+  as a success. Any wall that is not a full circle went down this path, which is
+  a third of the round faces in a typical import. The result is now checked
+  against the part it came from: the face you picked may move, and a chamfer or
+  fillet along its edge may follow it, and anything else moving means you get a
+  sentence instead of a model.
+
+- **A pin standing in a bore is seen even when it sticks out of the bore.** The
+  check that stops a wall being driven through a neighbouring part needed the
+  neighbour to sit entirely inside the bore's depth, which a dowel in an
+  assembly almost never does. Growing a 3 mm bore by 0.6 mm around a 2.6 mm pin
+  gave two parts overlapping by 31 mm³, with every other check green.
+
+- **Kernel failures now say something.** Four of those 183 attempts used to
+  surface as `Standard_ConstructionError` with nothing after the colon. And the
+  message for a face the sandbox refuses no longer claims the amount is
+  irrelevant: sweeping one face over six distances at both signs shows the same
+  face passing at 0.05 mm and crashing at 0.15, and another crashing at 0.15 and
+  passing at 0.30, so the amount does matter and the sentence no longer pretends
+  otherwise. A ring cut that would delete a solid also stopped telling Offset
+  Face users to "pick a target inside it", which is Press/Pull's advice for a
+  control Offset Face does not have.
+
+- **Changing a plain diameter got about a fifth cheaper.** The same body was
+  being handed to the validity checker three times per edit; one of those was
+  redundant and is gone. On a 1,433 face part that is 0.47 seconds of a cost you
+  pay on every keystroke of a drag.
+
+- **Press/Pull on a round wall and Offset Face now work on imported parts,
+  including bores and bosses with a chamfer or a fillet on the rim.** The
+  entries below give the detail; the short version is that everything about
+  changing a diameter on a STEP import is different. The test part I use is a
+  4 mm chamfered bushing lifted straight out of a vendor's file: before this,
+  changing either of its diameters killed the geometry engine, and the session
+  went with it. Now both build in a few milliseconds, and the 0.3 mm chamfers
+  come back at 0.3 mm. Where a face genuinely cannot be served, you get a
+  sentence naming what is in the way, your model is left exactly as it was, and
+  the app is still running. Two answers that used to look completely fine are
+  now caught: a chamfer that quietly resized itself from 0.3 mm to 0.45 mm while
+  the opening it belongs to stayed put, and an offset that reported success
+  having moved every face of the part, adding 67.17 mm³ of material where the
+  change you asked for was 3.90 mm³. One thing worth saying plainly, because it
+  surprised me: a part read in from a file and the same part built inside
+  SindriCAD are not interchangeable here. Identical face count, identical volume
+  to nine decimal places, and only the imported one crashed. So the tests for
+  this run against real imported files rather than against shapes I build to
+  match them.
+
+- **Changing a diameter now refuses the changes that would quietly break the
+  part, and checks that far faster than before.** Moving a round wall and its
+  chamfer together is exact, but "exact" is not the same as "safe", and I found
+  four ways it could hand back a body that passes every arithmetic check and is
+  still wrong. A chamfer sitting on a counterbore floor only 0.2 mm wide walks
+  off the outer edge of that floor once you grow the bore 0.25 mm, leaving an
+  inward overhanging knife edge that no machine can cut; the result is a valid,
+  watertight, single solid with the right volume and a perfectly preserved
+  chamfer. A bore grown 0.2 mm into a cross hole that was 0.2 mm clear of it
+  produces a solid that self intersects, and because the face layout never
+  changes, every face still meets its own edges and the volume still agrees with
+  what the change should have produced. A bore in one part of an assembly can be
+  driven straight through a neighbouring part, which is invisible to any check
+  that looks at one solid at a time. And a long shallow taper looks exactly like
+  a chamfer to every test I had: coaxial, fully round, meeting the wall at the
+  right radius, one flat face beyond it. On a 22 mm eight degree taper that
+  meant its wide end silently moved from 6.09 mm to 5.94 mm, which is not a
+  change of bore diameter, it is a redesign. Three of the four are now refused
+  by name, with a sentence saying what is in the way rather than a kernel
+  message, and the model is left alone. The taper is the exception and it turned
+  out to be good news: the fallback path holds the taper's angle and its wide
+  end where they were and just lengthens it, which is the answer you want, so
+  that one builds. Nothing that used to work stopped working: over the same
+  2,009 part import the number of round walls handled is unchanged at 119
+  of 183.
+
+- **The safety checking behind that is between 3 and 19 times cheaper on a real
+  import.** It matters because the whole model rebuilds on every frame while you
+  drag a distance, so this is a cost per keystroke, not per edit. Proving a
+  change clears the rest of the body used to mean measuring the distance from
+  the moving faces to every face whose bounding box was anywhere near them, and
+  on a threaded part that came to 1.7 seconds for an edit that itself takes
+  three milliseconds. Now the region a wall actually sweeps through is worked
+  out first, as a ring around its own axis, and almost everything is ruled out
+  by comparing two numbers. What survives is measured against the axis, which is
+  nine times cheaper than measuring it against the moving faces and is usually
+  enough to settle it. That threaded part is now half a second, a 148 face
+  casting went from 92 to 5 milliseconds, and across the whole import the
+  typical edit is 5 milliseconds. One body of the 2,009 got slower, by about a
+  seventh of a second, because its eight large freeform panels defeat every
+  cheap test and end up measured anyway.
+
+- **Changing the diameter of a plain bore or boss is now exact, and an offset
+  that would crash the geometry kernel is caught before it reaches your model.**
+  Press/Pull on a round wall, and Offset Face, used to hand the whole job to
+  OCCT's surface offsetter. On imported STEP geometry that is broadly broken:
+  over 198 bodies of a real import I measured 17 of them crashing the kernel
+  outright, five running for 29 seconds or more, and most of the rest simply
+  refusing. Worse, two came back reporting success having quietly moved every
+  face of the solid, or having grown a chamfer from 0.3 mm to 0.45 mm while the
+  opening it belongs to stayed put. A straight bore or boss, meaning a full
+  round wall whose neighbours are flat and square to it, now changes radius by a
+  direct boolean instead. That is exact to the last digit, takes about ten
+  milliseconds, and is checked against the radius the kernel actually produced
+  rather than against a volume that can look right for the wrong reason.
+  Anything else is tried in a throwaway process first, so a face that would take
+  the kernel down gets you a sentence about what is actually wrong instead of a
+  dead session.
+
+- **A bore or boss with a chamfer or a fillet on the rim now keeps that chamfer
+  or fillet when you change its diameter.** This was the worst of the offset
+  bugs because it looked like it worked. Growing a 1.3 mm chamfered bore by
+  0.15 mm gave back a perfectly valid solid in which the chamfer had silently
+  grown from 0.3 mm to 0.45 mm, while the opening it belongs to had not moved at
+  all. The fillet version was worse again: on one imported part it reported
+  success having thickened the entire solid, and on another it replaced the
+  fillet with a surface that is no longer a torus, so nothing downstream could
+  read its radius any more. A round wall and the chamfers or fillets sitting on
+  it are now moved together as one feature, by changing their radius directly
+  rather than by rebuilding the body. The chamfer keeps its angle and its size,
+  the fillet keeps its radius and its sweep, and the face count comes back
+  identical, so selections and later features still point at the same faces.
+  Measured over every body of a 2,009 part import, it handles 119 of the 183
+  round walls I tried, all of them valid, in about 5 milliseconds each. It also
+  checks its own answer three ways before handing it back, including against the
+  volume the change should have produced worked out in closed form, and hands
+  the job back to the old path if any of them disagrees. Walls it cannot take,
+  such as a half cylinder or one whose neighbour is a freeform surface, are
+  unchanged from before.
+
+- **A dirty mesh export is rebuilt from its real planes instead of imported
+  facet by facet.** Some STL exports shatter every flat surface into thousands
+  of slivers whose normals are off by a fraction of a degree, which is enough to
+  defeat the exact-coplanar merge, so a building made of a few hundred walls
+  arrived as a hundred thousand faces that took minutes to open and crawled in
+  the viewport. Those files now come in rebuilt: I find the planes the triangles
+  actually lie on, snap the vertices onto them and build one face per plane. The
+  architectural STL that started this went from 102,618 faces in about four
+  minutes to 404 faces in under four seconds. This only runs on files that
+  today already fail to import as something editable, and only when the mesh
+  really is made of planes. A curved or scanned mesh is left alone, because
+  flattening a sphere into plates would be a worse answer than the one it gets
+  now. It is an approximation, not a faithful copy: vertices move up to
+  0.36 mm to land on clean planes.
+
+- **A mesh that is too detailed to edit now imports as reference geometry
+  instead of being refused.** If a file had more detail than I can turn into an
+  editable model, the import failed and you got nothing: a message explaining
+  why, and no geometry. Now the body comes in read-only, the way a
+  non-watertight mesh already did, with a note saying which limit it passed and
+  that Thicken turns it into a solid you can model with. You can measure it,
+  sketch against it and export it. Reported on an architectural STL that had
+  21,326 distinct facet directions; the limits themselves have not moved, only
+  what happens when a file exceeds one. Files too large to read at all are still
+  refused up front, because that guard protects against a crash rather than
+  judging how editable the result would be.
+
+### Fixed
+
+- **Break keeps the constraints of the curve it splits.** A Coincident at either
+  end, and Horizontal or Vertical, now carry over to the two halves instead of
+  disappearing. Length and Equal no longer apply to a half, so those are removed,
+  and I say how many.
+
+- **Pressing X in the middle of a drag no longer leaves an undo step that does
+  nothing.**
+
+- **Typing in the parameters panel while a tool is open no longer changes an
+  earlier feature.** The panel kept showing the last feature you clicked, so a
+  Start offset typed there while extruding a side face changed your first
+  extrude instead of the new one. While a modeling tool or a pick is running,
+  the panel is now read-only and says why, and starting a tool takes the last
+  feature out of it.
+
+- **The extrude preview no longer hides which areas you picked.** The selected
+  areas get an orange outline drawn on top, and the preview is fainter, with its
+  edges drawn, both when you create an extrude and when you edit one.
+
+- **Section closes with its document.** New, Open, Close and Recover now take
+  down the cut and its arrow, so the next document is never cut by a plane you
+  cannot see.
+
+- **Section's offset box sits beside the model instead of on the cut.** Its
+  buttons go with it, and flipping the side with F or typing an offset now shows
+  straight away instead of waiting for the mouse to move.
+
+- **The bug report button no longer covers Cancel.** It sat over Cancel, the
+  busy label and the failing-features badge in the bottom right corner, so a
+  click on Cancel could open a bug report instead of stopping the work.
+
+- **Sweeps and lofts no longer fail with "Standard_OutOfRange" when a line in
+  the profile overshoots the closed shape.** I ignore the loose ends now.
+
+- **Sketch geometry dimensioned to projected edges follows the body when it
+  changes size.** It used to jump to a mirror image on the far side of the edge.
+  If I cannot find a solution on the same side, I keep the sketch where it was
+  and say so, instead of moving it to the wrong side.
+
+- **Cancel stops an import.** Cancelling while an imported file is still being
+  built now takes the import back out, and a cancelled rebuild is no longer
+  shown as an error.
+
+- **Move keeps a distance you type before picking an arrow.** It asks which
+  direction you mean, and pressing Enter with nothing moved now says so instead
+  of closing without a word. A click in empty space with nothing moved still
+  closes Move.
+
+- **Pressing Enter on a value you did not change no longer changes it.** Values
+  are shown rounded, and opening one and pressing Enter used to save the
+  rounded number: in inches a 1/16" sketch dimension became 0.063" (1.6002 mm
+  instead of 1.5875 mm), and re-opening an extrude, a fillet, a chamfer or an
+  offset plane moved it slightly the same way. Now an untouched value keeps
+  its exact number, and so does a new dimension you accept without typing, so
+  accepting the measured length of a line does not move it. A number you type
+  is taken as typed, even when it is the number already shown.
+
+- **Dragging a rectangle that is constrained to the origin no longer drags the
+  origin along.** The origin slid away with the rectangle and could not be
+  picked at 0,0 again until the sketch was reopened. Now a fully dimensioned
+  rectangle stays put, and one with free sides stretches, with its corner held
+  on the origin.
+
+- **Trim lights up the piece it will remove, not the whole curve.** With Trim
+  picked, hovering a line lit the whole line red, which said the whole line was
+  about to go. Trim removes only the part between the nearest crossings, and
+  now only that part lights up, on lines, arcs, circles and the sides of a
+  rectangle. A curve nothing crosses still lights up whole, because Trim
+  deletes it whole.
+
+- **Trim cuts where a curve touches another one.** A tangent touch, like a belt
+  line meeting a pulley, was never a cut point, so Trim deleted the whole curve
+  instead of trimming it to the touch. A touch now counts as a crossing for Trim
+  and Extend. A line trimmed against an arc also ends exactly on the arc; it
+  could end up to 0.009 mm off it before.
+
+- **Trim keeps the constraints that still apply to what is left.** Trim treated
+  every piece it kept as a new curve, so every constraint on the old one was
+  deleted without a word: an offset link, a tangency, a horizontal. The pieces
+  now keep them. A constraint that can no longer apply, like a length on a line
+  that just got shorter or a Fix on an end that was cut off, is removed, and a
+  note says how many.
+
+- **The two halves of a Break can be pulled apart.** Break left the halves
+  joined at the cut, with nothing on screen to show the join or to delete, so
+  dragging the cut always moved both. In Select, Shift-drag from the cut toward
+  the half you want to move, or right-click the cut, pick Disconnect and drag,
+  and only that half's end leaves. Break now says how when it splits a curve.
+  Shift-drag does this anywhere the end of a line, arc or spline, or a sketch
+  point, shares a spot with another curve's end and no constraint holds it
+  there, not only at a cut: Shift-dragging a polyline corner now opens it. A
+  rectangle, polygon or slot corner, a centre or projected geometry is never the
+  part that moves. An end a Coincident constraint or a Fix holds stays put, and
+  that includes a line or arc end you snapped onto a point, which snapping now
+  joins with a Coincident: delete that constraint first (right-click its badge).
+
+- **Offset with Chain Selection takes the whole outline when construction lines
+  run to its corners.** They counted as part of the outline, so every corner
+  they reached stopped the chain. If three real curves meet and the chain has to
+  stop, I now say where, instead of quietly offsetting only the curve you
+  picked. Double-click chain select no longer picks up construction lines
+  either, unless you double-click a construction line.
+
+- **The distance you type after using the Offset right-click menu goes into the
+  box again.** Before, the menu took the typing away from the box, so the
+  distance went nowhere and Enter did nothing.
+
+- **Coincident can join two ends that sit a hair apart**, for example after a
+  trim: click the spot twice.
+
+- **Joins between points that already touch are no longer drawn amber.** A
+  Coincident between two ends at the same spot showed as if the sketch had too
+  many constraints.
+
+- **Fillet and Chamfer say why they can't use a rectangle, polygon or slot.**
+  These shapes are one piece, not separate lines, so the tools lit the whole
+  outline red and then ignored the click. Now they light only lines, and a click
+  on one of these shapes says what to do instead: draw the sides with the Line
+  tool. A click right next to a corner now also takes the line that is
+  highlighted, instead of doing nothing.
+
+- **A polygon's side count shows in the preview as you type it**, before you
+  click the tick. Typed radius, width and diameter values redraw straight away
+  too.
+
+- **Chaining a line that snaps almost vertical or horizontal no longer opens a
+  tiny gap at the joint behind it.**
+
+- **Fillet and Chamfer no longer flip the line they shorten**, so constraints on
+  its far end stay on the right point. A coincident on the corner you round off
+  goes away with the corner instead of pulling the profile out of shape.
+
+- **Separate says when it drops loose surfaces.** A surface with no thickness
+  cannot become a body, and Separate dropped every one it found without a
+  word. A yellow note now says how many it dropped and from which body, and
+  that any part of the shape made only of those surfaces is now open or
+  missing. On a body made only of surfaces, Separate makes a body from each
+  of them, and the note is about the loose faces that belong to none. The
+  bodies it makes are the same as before.
+
+- **A note after an export no longer reads as a failed export.** The list
+  shown after an export put every note under the same line as a feature that
+  failed. So an STL written in full, with unmatched edges a slicer might
+  complain about, said a feature had failed and its result was not in the
+  export, and the title said the export had warnings. Notes now read
+  "Note: ..." and the title only says there are warnings when a feature really
+  is missing from the file. A feature that is missing is named the way the
+  timeline names it, like "12 · Extrude", instead of by an internal id, and its
+  reason is written the way the timeline writes it, with the body's name filled
+  in. The same goes for the print project export and for publishing to
+  TinkerAtlas.
+
+- **Split Body cuts an imported assembly kept as one body.** It used to hand
+  the whole body to the geometry kernel in one go. On the Ender 3 assembly's
+  Skjermdeksel (908 parts) that failed with "Null TopoDS_Shape object" or ran
+  for over 13 minutes, and a failed cut of all bodies left the bodies before
+  the failing one cut. Now each part is cut on its own (about 9 seconds for
+  Skjermdeksel), and if one body fails nothing is changed. Splits saved before
+  this build still cut the way they did, so the bodies after them keep their
+  numbers. Where that old way fails, such a split stays red and says so: edit
+  it and press OK to cut it part by part. Where it cut damaged parts and the
+  pieces do not add up to the body, a yellow note says that too.
+
+- **A split that changes nothing says so.** If the plane misses the body, lies
+  on one of its faces, or crosses only damaged parts, the split is red with a
+  message saying which, instead of looking done. Older files can have such a
+  split, saved as if it worked: it shows red now. A body the plane does not
+  reach is also no longer broken up into one body per part. And a split whose
+  bodies were removed earlier in the timeline says so, instead of cutting fewer
+  of them without a word.
+
+- **Redo after adding a feature to a large model no longer re-meshes all of
+  it.** On the Ender 3 assembly, redoing a split rebuilt the display of all 340
+  bodies (over 2 minutes, one part alone 55 seconds), long enough for the app to
+  report that the geometry engine stopped responding. It now takes 8 seconds.
+
+- **"N bodies selected" clears when the selection does.** After an undo the
+  prompt could go on counting bodies that were no longer selected.
+
+- **An error about a body calls it by the name you gave it.** Rename a body in
+  the Browser and a failed feature's message still used the name it was built
+  with, for an import the product name inside the file, which appears nowhere
+  on screen. Messages and the timeline's notes now use your name.
+
+- **A model with a few unusual imported surfaces no longer blanks the whole
+  view.** On a 340 body Ender 3 assembly, seven imported parts each had a
+  cone-shaped face that was never cut into triangles, and the size reported for
+  the model came back as effectively infinite. The 3D view believed it: Fit and
+  every window resize threw the camera so far away that nothing was left on
+  screen, not even the grid, and pressing Fit again could not bring it back.
+  The view now measures the model from what it actually draws whenever a
+  reported size is not believable, and Fit always puts the camera back where the
+  model is. Three related changes came with it. Opening or recovering a document
+  frames it again: since early August an opened document came up wherever the
+  camera happened to be, often showing nothing at all. File > New and Close now
+  come back to the origin, instead of framing the document you just closed. Fit
+  frames the bodies you can see, so after Isolate it goes to that one body
+  instead of the whole assembly. And a document that opens with most or all of
+  its bodies hidden now says so, with a Show all button, instead of leaving an
+  empty view to puzzle over.
+
+- **The installers now include the full license texts of the libraries inside
+  them.** NOTICE.md has always said these texts ship under `LICENSES/`, and no
+  build before this one actually included them. Every build now collects 61
+  texts from the libraries it bundles, plus the Open CASCADE license and
+  exception, and the build fails if a required text is missing.
+
+- **A 3MF with colours in it opens again, including the ones SindriCAD writes.**
+  Any 3MF carrying colour or material information failed to import at all, with
+  a raw "Resource not found" or "unknown error" from the mesh library. That is
+  most files a slicer saves, and it was every coloured project file SindriCAD
+  exports, so the multicolour export wrote files the app itself could not
+  reopen. Ten of ten real 3MF files on my machine failed. They now open, and the
+  colour comes with them and lands on the nearest slot in your palette instead
+  of being thrown away. A 3MF that already opened is read exactly as before.
+
+- **A sketch you renamed keeps its name when you edit it.** Renaming a sketch in
+  the Browser and then opening it to change something put the generic
+  "Sketch3" name back the moment you pressed Finish. Editing a sketch rebuilds
+  it from what the sketcher is holding, and the name was the one thing the
+  sketcher never held, so it was dropped on every edit. Reported by Doug Smith.
+
+- **Closing or replacing a document no longer leaves a phantom recovery
+  prompt.** Starting a new document offered only "discard", with no way to save
+  first, and opening another document replaced the current one with no warning
+  at all. Either way the autosave snapshot of the abandoned work stayed on
+  disk, so the next launch offered to recover a document you had deliberately
+  walked away from. New, Open and the new Close all ask whether to save first,
+  and discarding clears the snapshot, so a recovery prompt again means what it
+  says: the app stopped with work you never saved. Reported by Doug Smith.
+
+- **A text height of zero could take the geometry engine down.** Zero or a
+  negative size crashes the kernel outright, and the live preview reaches it on
+  every keystroke, so typing "0" as the first character of "0.5" was enough. It
+  is refused now, both in the app and in the geometry engine itself.
+
+- **"Open in OrcaSlicer" lands on your U1 preset again.** If your active
+  Orca printer preset was made from scratch rather than copied from the
+  Snapmaker one, the handoff silently gave up and Orca opened the file on a
+  throwaway printer named after it, with a blank process and zero line widths.
+  Such a preset now flattens like any other, its process and filament are
+  matched by what the printer is rather than what the preset is called, and if
+  Orca's active printer is itself one of those throwaways the handoff picks
+  your newest U1 preset instead. When the preset cannot be read at all,
+  SindriCAD now says so in a warning instead of only in the console.
+- **Body colours now survive opening a 3MF project in PrusaSlicer.** A body
+  assigned to a palette slot other than the first came into PrusaSlicer on
+  extruder 1, while painted faces on it kept their colour. PrusaSlicer ignores
+  the per-object extruder that Orca and Bambu Studio read, but it honours
+  per-triangle paint just like they do, so a body on any other slot now carries
+  its slot on every triangle. Verified on PrusaSlicer 2.9.6; Orca reads the
+  file the same as before.
+- **A tapered extrude no longer takes fifteen seconds to rebuild.** Reported
+  from Windows: the taper appeared about twenty seconds after typing the angle.
+  Every change to the taper angle or the distance was starting a fresh Python
+  process just to safety-check the shape against a kernel hang, and that
+  process start-up was the entire wait; the taper itself takes about six
+  milliseconds. The check now runs only on the profiles it was built for
+  (curved or many-edged ones), and the geometry is unchanged.
+
+- **The grid no longer floats up with an extrude's start offset.** Reported
+  from Windows: with a start offset the grid plane moved up by the offset,
+  leaving the origin hanging in space, and showing the sketch moved it back.
+  The grid stays on the XY plane where the origin is, and only drops below it
+  to stay under a model that sits under the origin.
+
+- **Orbit no longer swings around a point far from the model after zooming
+  out.** Reported on a long imported laptop stand: after a few wheel notches
+  the view orbited around empty space instead of the part. Zooming toward the
+  cursor pins the point under it by scaling the camera and the orbit centre
+  about that point; over empty space that point is invented at orbit distance,
+  so every zoom-out notch with the cursor off the model carried the orbit centre
+  further away, and nothing ever brought it back. The orbit centre now stays
+  within a ball around the model; when a zoom would push it out, it is pulled
+  back and the camera moves with it, so the zoom and view direction you asked
+  for are unchanged. Panning still moves the centre freely, and Fit resets it.
+
+### Added
 
 - **Center Arc.** The Arc button in the sketch ribbon has a second arc: click
   the center, click the start (that sets the radius), then sweep to the end
