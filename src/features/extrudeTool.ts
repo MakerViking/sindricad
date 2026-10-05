@@ -29,7 +29,9 @@ import type { DocumentStore } from "../document/store";
 import type { EdgeFingerprint, ExtrudeRef, ExtrudeStart, FaceFingerprint, Feature, Num, Plane3, Selector } from "../types";
 import type { EdgeRef } from "../viewport/render";
 import { edgeSelectorFrom } from "../viewport/edgeMatch";
-import { dimRefPoints } from "../sketch/entityDims";
+import { lineOperand, refPoint } from "../sketch/entityDims";
+import { distToSeg, paramOnSeg } from "../sketch/geom2d";
+import type { SketchPlane } from "../sketch/plane";
 import type { ResolvedEntity } from "../sketch/snap";
 import { pointInRegion } from "../sketch/region";
 import { DimInput } from "../sketch/dimInput";
@@ -159,26 +161,42 @@ type CarriedRegion = RegionRef & {
   holeEntityIds: string[][];
 };
 
-/** The two ends of a straight sketch entity (a line, or a projected line), in
- *  its sketch's 2-D frame; null for every other kind. dimRefPoints' 0 and 1,
- *  the numbering the sidecar reads a line by too. */
-function straightEnds(e: ResolvedEntity): [THREE.Vector2, THREE.Vector2] | null {
-  const straight = e.type === "line" || (e.type === "projected" && e.curve.kind === "line");
-  if (!straight) return null;
-  const pts = dimRefPoints(e);
-  const a = pts.find((q) => q.p === 0)?.pos;
-  const b = pts.find((q) => q.p === 1)?.pos;
-  return a && b ? [a, b] : null;
-}
-
-/** Why a sketch curve that is not a straight line cannot be a start or an
- *  end. A rectangle's, polygon's or slot's sides are straight, but the
- *  document cannot name one side of a shape yet (only the shape, and a
- *  rectangle's corners), so those are said apart from a curve. */
-function notLineWhy(e: ResolvedEntity | undefined): string {
-  if (e?.type === "rectangle") return t("feature.extrude.ref.rectSide");
-  if (e?.type === "polygon" || e?.type === "slot") return t("feature.extrude.ref.shapeSide");
-  return t("feature.extrude.ref.notStraight");
+/** The straight line a sketch curve presents to a click at (`cx`, `cy`) on
+ *  screen, as the id a `sketchLine` reference stores and its two ends in the
+ *  world: a line or a projected line is itself, and a rectangle, polygon or
+ *  slot is the SIDE nearest the cursor, `<shapeId>~<k>`, the way its sketch's
+ *  constraints name that side (entityDims.lineOperand, which numbers the sides
+ *  and which the sidecar reads in step). Null for a curve that is not
+ *  straight, and on a slot's round end, which is no side: no side then comes
+ *  within `maxPx`. A side hidden behind a body at this pixel (`hidden`) is
+ *  not one, as committedCurveAt has it. */
+function lineUnderCursor(
+  e: ResolvedEntity,
+  plane: SketchPlane,
+  cx: number,
+  cy: number,
+  project: (w: THREE.Vector3) => { x: number; y: number },
+  maxPx: number,
+  hidden: (w: THREE.Vector3) => boolean,
+): { entity: string; a: THREE.Vector3; b: THREE.Vector3 } | null {
+  const one = new Map([[e.id, e]]);
+  const sides = e.type === "rectangle" ? 4 : e.type === "polygon" ? Math.max(3, Math.round(e.sides)) : e.type === "slot" ? 2 : 0;
+  const ids = sides ? Array.from({ length: sides }, (_, k) => `${e.id}~${k}`) : [e.id];
+  const q = { x: cx, y: cy };
+  let best: { entity: string; a: THREE.Vector3; b: THREE.Vector3 } | null = null;
+  let bestD = sides ? maxPx : Infinity; // a line was already found near the cursor
+  for (const id of ids) {
+    const seg = lineOperand(one, id);
+    if (!seg) continue;
+    const a = plane.to3D(seg.x1, seg.y1), b = plane.to3D(seg.x2, seg.y2);
+    const sa = project(a), sb = project(b);
+    const d = distToSeg(sa, sb, q);
+    if (d >= bestD) continue;
+    if (sides && hidden(a.clone().lerp(b, Math.max(0, Math.min(1, paramOnSeg(sa, sb, q)))))) continue;
+    best = { entity: id, a, b };
+    bestD = d;
+  }
+  return best;
 }
 
 /** Where end `end` of an edge is, read off its fingerprint the way the sidecar
@@ -693,10 +711,12 @@ export class ExtrudeTool {
    *  Sketch points and curves hidden behind a body at this pixel are not
    *  candidates, as a corner behind the surface is not: they rank ahead of the
    *  body, so a sketch behind it would otherwise take a click aimed at its
-   *  face. A sketch curve that cannot be a line (an arc, a circle, a side of a
-   *  rectangle) gives way to the body behind it, and is refused only on a click
-   *  that has no body behind it: a rectangle drawn on a face must not stop the
-   *  face being picked, and a plane behind the curve is not what was aimed at.
+   *  face. A side of a rectangle, polygon or slot is a line like one drawn
+   *  with the Line tool (lineUnderCursor). A sketch curve that cannot be a
+   *  line (an arc, a circle, a slot's round end) gives way to the body behind
+   *  it, and is refused only on a click that has no body behind it: a circle
+   *  drawn on a face must not stop the face being picked, and a plane behind
+   *  the curve is not what was aimed at.
    *
    *  The profile's OWN sketch, and any plane level with the profile, are left
    *  out: they are neither a start nor an end, and skipping them lets a click
@@ -721,14 +741,9 @@ export class ExtrudeTool {
     const curve = this.overlay.committedCurveAt(cx, cy, project, CURVE_PX, own, hidden);
     if (curve) {
       const found = this.overlay.sketchEntity(this.store.document, curve.sketchId, curve.entityId);
-      const ends = found ? straightEnds(found.entity) : null;
-      if (found && ends) {
-        return {
-          kind: "sketchLine", sketch: curve.sketchId, entity: curve.entityId,
-          a: found.plane.to3D(ends[0].x, ends[0].y), b: found.plane.to3D(ends[1].x, ends[1].y),
-        };
-      }
-      notLine = notLineWhy(found?.entity);
+      const line = found ? lineUnderCursor(found.entity, found.plane, cx, cy, project, CURVE_PX, hidden) : null;
+      if (line) return { kind: "sketchLine", sketch: curve.sketchId, ...line };
+      notLine = t("feature.extrude.ref.notStraight");
     }
     const hit = this.viewport.pickEntity(cx, cy);
     if (hit?.kind === "edge") return { kind: "edge", edge: hit.edge, selector: hit.selector };
@@ -1480,13 +1495,17 @@ export class ExtrudeTool {
         const fp = (ref.face as { fp?: FaceFingerprint }).fp;
         return at(fp ? new THREE.Vector3(...fp.centroid) : null);
       }
-      case "sketchPoint":
-      case "sketchLine": {
+      case "sketchPoint": {
         const found = this.overlay.sketchEntity(this.store.document, ref.sketch, ref.entity);
-        if (!found) return 0;
-        const pts = dimRefPoints(found.entity);
-        const p = ref.kind === "sketchPoint" ? pts.find((q) => q.p === ref.pointIndex)?.pos : pts[0]?.pos;
-        return at(p ? found.plane.to3D(p.x, p.y) : null);
+        const p = found ? refPoint(found.entity, ref.pointIndex) : null;
+        return at(found && p ? found.plane.to3D(p.x, p.y) : null);
+      }
+      case "sketchLine": {
+        // a side of a shape is `<shapeId>~<k>`, read off the shape (lineOperand)
+        const cut = ref.entity.indexOf("~");
+        const found = this.overlay.sketchEntity(this.store.document, ref.sketch, cut < 0 ? ref.entity : ref.entity.slice(0, cut));
+        const seg = found ? lineOperand(new Map([[found.entity.id, found.entity]]), ref.entity) : null;
+        return at(found && seg ? found.plane.to3D(seg.x1, seg.y1) : null);
       }
       case "edge": {
         const fp = (ref.edge as { fp?: EdgeFingerprint }).fp;

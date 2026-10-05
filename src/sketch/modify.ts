@@ -565,8 +565,20 @@ export function trimEntity(
 }
 
 /** A trim's entities, the constraints rewritten for what it left, and how many
- *  constraints could no longer apply and were removed (the caller says so). */
-export type TrimResult = { entities: ResolvedEntity[]; constraints: SketchConstraint[]; dropped: number };
+ *  constraints could no longer apply and were removed (the caller says so).
+ *  `points` and `lines` say where what an extrude's start or up-to reference
+ *  can name on the trimmed entity went (types.ts ExtrudeRef), for the caller
+ *  to re-point those: each of its points (by dimRefPoints index) to the piece
+ *  that still has it, or else to another curve's end at that spot, and its
+ *  line operands (its own id for a line, a rectangle's `<rectId>~<k>`) to the
+ *  piece that keeps that line. What the trim took away is in neither. */
+export type TrimResult = {
+  entities: ResolvedEntity[];
+  constraints: SketchConstraint[];
+  dropped: number;
+  points: Record<number, { e: string; p: number }>;
+  lines: Record<string, string>;
+};
 
 /** Trim, keeping every constraint that still applies to what is left.
  *
@@ -590,7 +602,7 @@ export function trimWithConstraints(
 ): TrimResult {
   const e = ents[index];
   const plan = planTrim(ents, index, click);
-  if (!e || !plan) return { entities: ents, constraints: cons, dropped: 0 };
+  if (!e || !plan) return { entities: ents, constraints: cons, dropped: 0, points: {}, lines: {} };
   const start = dimRefPoints(e).find((r) => r.p === 0)?.pos;
   const lead = e.type === "rectangle"
     ? null
@@ -643,7 +655,8 @@ function touchPoint(
   return miss(near) <= miss(far) ? near : far;
 }
 
-/** Rewrite the constraints that named a trimmed entity for the pieces it left.
+/** Rewrite the constraints that named a trimmed entity for the pieces it left,
+ *  and say where its points and lines went (TrimResult).
  *
  *  Trim shortens a curve; it does not change what the curve IS. So a constraint
  *  about the CARRIER (the infinite line, the full circle) still holds and stays:
@@ -662,7 +675,7 @@ function remapTrimmed(
   pieces: TrimPiece[],
   cons: SketchConstraint[],
   after: ResolvedEntity[],
-): { constraints: SketchConstraint[]; dropped: number } {
+): Omit<TrimResult, "entities"> {
   const names = (id: string) => id === e.id || (e.type === "rectangle" && id.startsWith(`${e.id}~`));
   const byId = new Map(after.map((x) => [x.id, x]));
   const cutFrom = (id: string) => pieces.filter((pc) => pc.from === id);
@@ -840,7 +853,34 @@ function remapTrimmed(
     if (next) constraints.push(...next);
     else dropped++;
   }
-  return { constraints, dropped: dropped + lostLinks };
+  // Where an extrude's reference on it goes: by the same rules as a
+  // constraint's point and curve operands, except that a point no piece has
+  // goes to another curve's end still drawn there. Two ends at one position
+  // are one point to the solver (coincKey), so that is the same point; it is
+  // how a corner a first trim put on one side survives a second trim that
+  // takes that side's end away.
+  const pieceIds = new Set(pieces.map((pc) => pc.geom.id));
+  const sharedEnd = (at: THREE.Vector2): { e: string; p: number } | null => {
+    const key = coincKey(at.x, at.y);
+    for (const o of after) {
+      if (pieceIds.has(o.id) || isOriginGeometry(o.id)) continue;
+      const r = dimRefPoints(o).find((x) => coincKey(x.pos.x, x.pos.y) === key);
+      if (r) return { e: o.id, p: r.p };
+    }
+    return null;
+  };
+  const points: Record<number, { e: string; p: number }> = {};
+  for (const { p, pos } of dimRefPoints(e)) {
+    const q = point(e.id, p) ?? sharedEnd(pos);
+    if (q) points[p] = q;
+  }
+  const lines: Record<string, string> = {};
+  const ownLines = e.type === "rectangle" ? [0, 1, 2, 3].map((k) => `${e.id}~${k}`) : e.type === "line" ? [e.id] : [];
+  for (const id of ownLines) {
+    const to = curve(id);
+    if (to) lines[id] = to;
+  }
+  return { constraints, dropped: dropped + lostLinks, points, lines };
 }
 
 /** What Explode made of a rectangle, polygon or slot. */
@@ -857,8 +897,8 @@ export type ExplodeResult = {
   outline: string[];
   /** the construction geometry that holds it in shape: a polygon's two
    *  circles, a slot's two end diameters, a rectangle's centre point and the
-   *  two lines that hold it (only when a constraint names that centre). Not
-   *  part of the outline. */
+   *  two lines that hold it (only when a constraint names that centre, or the
+   *  caller asks: `centre`). Not part of the outline. */
   helpers: string[];
   /** the constraints that hold it in shape, the last ones in `constraints`
    *  (the same objects): the explode's own, not anything the user made */
@@ -868,9 +908,10 @@ export type ExplodeResult = {
   /** where each of the shape's own points went, by its dimRefPoints index:
    *  corner k to the start of side k's line, a polygon's centre to its ring's,
    *  a slot's centres to its end arcs', a rectangle's centre to its centre
-   *  point when it has one. An extrude's start or up-to point names a shape's
-   *  point by that index (types.ts ExtrudeRef), and a line has only ends 0
-   *  and 1, so the caller re-points those references with this. */
+   *  point when it has one (`helpers`). An extrude's start or up-to point
+   *  names a shape's point by that index (types.ts ExtrudeRef), and a line
+   *  has only ends 0 and 1, so the caller re-points those references with
+   *  this. */
   points: Record<number, { e: string; p: number }>;
 };
 
@@ -919,7 +960,7 @@ export function explodeCompound(
   ents: ResolvedEntity[],
   cons: SketchConstraint[],
   idx: number,
-  opts: { square?: "axes" | "perpendicular" } = {},
+  opts: { square?: "axes" | "perpendicular"; centre?: boolean } = {},
 ): ExplodeResult | null {
   const e = ents[idx];
   if (!e) return null;
@@ -958,8 +999,10 @@ export function explodeCompound(
     // corners: a fillet or chamfer moves the corners off the corner, while
     // the sides' lines stay where they were, so this keeps the centre where
     // it was after one. Rotate needs it most, turning a rectangle about its
-    // centre on the origin.
-    const namesCentre = cons.some((k) => {
+    // centre on the origin. `centre` asks for it when no constraint names it:
+    // an extrude that starts from or runs up to it does (types.ts ExtrudeRef),
+    // and without the point it had nowhere to go.
+    const namesCentre = opts.centre || cons.some((k) => {
       const rec = k as unknown as Record<string, unknown>;
       return ([["e", "p"], ["e1", "p1"], ["e2", "p2"]] as const).some(([f, q]) => rec[f] === e.id && rec[q] === RECT_CENTRE);
     });
@@ -1984,7 +2027,7 @@ export function breakWithConstraints(
 ): TrimResult {
   const e = ents[index];
   const entities = breakAt(ents, index, click);
-  if (!e || entities === ents) return { entities: ents, constraints: cons, dropped: 0 };
+  if (!e || entities === ents) return { entities: ents, constraints: cons, dropped: 0, points: {}, lines: {} };
   const made = entities.slice(index, index + 1 + entities.length - ents.length);
   const start = dimRefPoints(e).find((r) => r.p === 0)?.pos;
   const lead = made.find((g) => start && endsAt(g, start)) ?? made[0];

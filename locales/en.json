@@ -479,8 +479,6 @@
         "noReply": "I couldn't read that pick. Is the geometry engine running? Try the click again.",
         "notStraight": "That sketch curve isn't a straight line. Pick a straight line or a point.",
         "planeTilted": "That plane is tilted to the sketch. For now an extrude can only start from a plane parallel to its sketch.",
-        "rectSide": "I can't use one side of a rectangle yet. Pick one of its corners, a line drawn with the Line tool, or a face.",
-        "shapeSide": "I can't use one side of a polygon or a slot yet. Pick a line drawn with the Line tool, a sketch point or a face.",
         "unsupported": "This geometry engine can't store a pick on a body. Pick a sketch point, a sketch line or a plane instead."
       },
       "startPrompt": "Click where the extrude STARTS: a flat face or a plane parallel to the sketch, a corner, a sketch point, or a line parallel to the sketch · Esc to go back",

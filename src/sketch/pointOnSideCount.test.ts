@@ -102,3 +102,41 @@ describe("a point on a polygon side, when the side count changes from a paramete
     expect(Math.hypot(p.x - P0.x, p.y - P0.y)).toBeLessThan(1);
   });
 });
+
+// An extrude that starts from or runs up to one of the polygon's corners or
+// sides, from any sketch, names it by its index the same way: corner 1 of a
+// hexagon is corner 2 of a dodecagon. It kept the index and moved to another
+// corner without a word, while the constraints were re-aimed.
+describe("an extrude up to a polygon's corner or side, when the side count changes from a parameter", () => {
+  it("closed sketch: the parameter commit re-aims it as it does a constraint, and one undo takes it back", async () => {
+    const backend = {
+      async rebuild(): Promise<RebuildReply> { return { ok: false, error: { message: "stub" } }; },
+      async init() {},
+      onStatus() { return () => {}; },
+      connected: true,
+    } as unknown as GeometryBackend;
+    const corner = (k: number) => ({ kind: "sketchPoint" as const, sketch: "f1", entity: "H", pointIndex: k });
+    const side = (k: number) => ({ kind: "sketchLine" as const, sketch: "f1", entity: `H~${k}` });
+    const doc: CadDocument = {
+      parameters: { n: 6 },
+      paramDefs: { n: { expr: "6", value: 6, unit: "count", target: { kind: "entity", sketch: "f1", entity: "H", field: "sides" } } },
+      features: [
+        { id: "f1", type: "sketch", plane: "XZ", name: "Sketch1", entities: [{ ...HEX }] as SketchEntity[] },
+        { id: "f0", type: "sketch", plane: "XY", name: "Sketch2", entities: [{ type: "circle", id: "c0", x: 0, y: 0, radius: 5 }] },
+        { id: "x1", type: "extrude", sketch: "f0", distance: 5, operation: "new", startFrom: side(1), upToRef: corner(1) },
+      ] as Feature[],
+    };
+    const store = new DocumentStore(backend, doc);
+    store.headlessSolve = solveSketchFeature;
+    const x1 = () => store.document.features.find((f) => f.id === "x1") as Extract<Feature, { type: "extrude" }>;
+    expect(store.setParamExpr("n", "12")).toBeNull();
+    for (let i = 0; i < 20; i++) await new Promise((r) => setTimeout(r, 0));
+    expect((store.document.features[0] as Extract<Feature, { type: "sketch" }>).entities[0], "precondition").toMatchObject({ sides: 12 });
+    // the hexagon's corner 1 is at 60 degrees, the dodecagon's corner 2
+    expect(x1().upToRef).toEqual(corner(2));
+    expect(x1().startFrom).toEqual(side(3));
+    store.undo();
+    expect(x1().upToRef).toEqual(corner(1));
+    expect(x1().startFrom).toEqual(side(1));
+  });
+});

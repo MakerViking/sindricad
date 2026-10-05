@@ -2004,8 +2004,9 @@ export class Viewport {
   }
 
   /** A body CORNER under the cursor within `maxPx` screen pixels, with every
-   *  visible edge that ends there (Picker.pickVertex). There was no corner
-   *  picking anywhere before Extrude's start and end objects (GH #41).
+   *  visible edge that ends there (Picker.pickVertex), as a section cut shows
+   *  them (pickClip). There was no corner picking anywhere before Extrude's
+   *  start and end objects (GH #41).
    *  `behind`: behindSurfaceAt's test for this pixel, if the caller has it. */
   pickVertexAt(
     clientX: number,
@@ -2015,17 +2016,18 @@ export class Viewport {
   ): { point: THREE.Vector3; edges: EdgeRef[] } | null {
     if (!this.model) return null;
     const rect = this.canvas.getBoundingClientRect();
-    return this.picker.pickVertex(clientX, clientY, rect, this.rig.active, this.model, maxPx, behind);
+    return this.picker.pickVertex(clientX, clientY, rect, this.rig.active, this.model, maxPx, this.pickClip(), behind);
   }
 
   /** A test for "this world point is hidden behind a body at this pixel"
    *  (Picker.occluderAt), for a pick that weighs things the ray cannot hit: a
    *  sketch point or a sketch curve, which would otherwise take a click aimed
-   *  at the body in front of them. */
+   *  at the body in front of them. The body as a section cut shows it
+   *  (pickClip): the removed half hides nothing, a cap does. */
   behindSurfaceAt(clientX: number, clientY: number): (world: THREE.Vector3) => boolean {
     if (!this.model) return () => false;
     const rect = this.canvas.getBoundingClientRect();
-    return this.picker.occluderAt(clientX, clientY, rect, this.rig.active, this.model);
+    return this.picker.occluderAt(clientX, clientY, rect, this.rig.active, this.model, this.pickClip());
   }
 
   /** Every plane under the cursor, nearest first, with its ray distance: the

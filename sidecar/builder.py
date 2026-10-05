@@ -6402,8 +6402,11 @@ def _sketch_ref_xy(e, p, val):
     THE SAME NUMBERING as dimRefPoints in src/sketch/entityDims.ts, which is
     what the app picks with: 0/1 the ends of a line, arc or spline, 2 an arc's
     centre, 0..3 a rectangle's corners (rectCorners order: -,- then +,- then
-    +,+ then -,+), 0 a circle's centre or a sketch point. A wrong index here
-    would still give a point, just the wrong one, so keep the two in step."""
+    +,+ then -,+) and 4 its centre, 0..n-1 a polygon's corners (polygonPoints
+    order, the order _entity_edges builds them in) and -1 its centre, 0/1 a
+    slot's centres (x1,y1)/(x2,y2), 0 a circle's centre or a sketch point. A
+    wrong index here would still give a point, just the wrong one, so keep the
+    two in step."""
     if not isinstance(p, int) or isinstance(p, bool):
         return None  # document text: 1.0 or "1" would index a list and throw
     t = e.get("type")
@@ -6419,8 +6422,21 @@ def _sketch_ref_xy(e, p, val):
     if t == "rectangle":
         x, y = val(e.get("x", 0)), val(e.get("y", 0))
         hw, hh = val(e["width"]) / 2, val(e["height"]) / 2
-        corners = [(x - hw, y - hh), (x + hw, y - hh), (x + hw, y + hh), (x - hw, y + hh)]
-        return corners[p] if p in (0, 1, 2, 3) else None
+        pts = [(x - hw, y - hh), (x + hw, y - hh), (x + hw, y + hh), (x - hw, y + hh), (x, y)]
+        return pts[p] if p in (0, 1, 2, 3, 4) else None
+    if t == "polygon":
+        cx, cy = val(e.get("x", 0)), val(e.get("y", 0))
+        if p == -1:
+            return cx, cy
+        r = val(e["radius"])
+        n = max(3, int(round(val(e["sides"]))))
+        ang = math.radians(val(e.get("angle", 0)))  # stored DEGREES, as _entity_edges reads it
+        if p not in range(n):
+            return None
+        return cx + math.cos(ang + p / n * 2 * math.pi) * r, cy + math.sin(ang + p / n * 2 * math.pi) * r
+    if t == "slot":
+        centres = [(val(e["x1"]), val(e["y1"])), (val(e["x2"]), val(e["y2"]))]
+        return centres[p] if p in (0, 1) else None
     if t == "spline":
         pts = e.get("points") or []
         if p == 0 and pts:
@@ -6450,8 +6466,47 @@ def _sketch_ref_xy(e, p, val):
     return None
 
 
-def _sketch_ref_line(e, val):
-    """The two ends of a straight sketch entity, 2-D; None for any other kind."""
+def _ref_side(eid):
+    """A sketch line reference's entity id split into the id to look up and
+    the SIDE it names: `"<shapeId>~<k>"` is side k of a rectangle, polygon or
+    slot (lineOperand in src/sketch/entityDims.ts, the form the app stores),
+    so (shapeId, k); any other id is (id, None)."""
+    if isinstance(eid, str) and "~" in eid:
+        base, _, k = eid.partition("~")
+        if re.fullmatch(r"[0-9]+", k):
+            return base, int(k)
+    return eid, None
+
+
+def _sketch_ref_line(e, val, side=None):
+    """The two ends of a straight sketch entity, 2-D, or of its side `side`;
+    None for any other kind, or a side the entity does not have.
+
+    THE SAME SIDES as lineOperand in src/sketch/entityDims.ts: side k of a
+    rectangle or a polygon runs from its corner k to corner k+1 (numbered as
+    _sketch_ref_xy numbers them), a slot's side 0 runs (x1,y1) to (x2,y2) half
+    its width out on the LEFT of that axis and side 1 back on the right, and
+    its side 2 is the axis itself."""
+    if side is not None:
+        t = e.get("type")
+        if t in ("rectangle", "polygon"):
+            n = 4 if t == "rectangle" else max(3, int(round(val(e["sides"]))))
+            if side >= n:
+                return None
+            return _sketch_ref_xy(e, side, val), _sketch_ref_xy(e, (side + 1) % n, val)
+        if t == "slot":
+            x1, y1, x2, y2 = val(e["x1"]), val(e["y1"]), val(e["x2"]), val(e["y2"])
+            length = math.hypot(x2 - x1, y2 - y1)
+            if not length > 0:
+                return None
+            if side == 2:
+                return (x1, y1), (x2, y2)
+            nx, ny = -(y2 - y1) / length * val(e["width"]) / 2, (x2 - x1) / length * val(e["width"]) / 2
+            if side == 0:
+                return (x1 + nx, y1 + ny), (x2 + nx, y2 + ny)
+            if side == 1:
+                return (x2 - nx, y2 - ny), (x1 - nx, y1 - ny)
+        return None
     if e.get("type") == "line":
         return (val(e["x1"]), val(e["y1"])), (val(e["x2"]), val(e["y2"]))
     cv = e.get("curve") or {}
@@ -6509,9 +6564,14 @@ def _extrude_ref_point(ref, f, ctx, sn, label, role):
     what = _ref_words(role)
     if kind in ("sketchPoint", "sketchLine"):
         sk, entry = _ref_sketch(ref, f, ctx, label, role)
-        e = _ref_entity(sk, ref.get("entity"), ctx.val)
+        # a line may be one side of a shape (`<shapeId>~<k>`); a point never is
+        eid, side = _ref_side(ref.get("entity")) if kind == "sketchLine" else (ref.get("entity"), None)
+        e = _ref_entity(sk, eid, ctx.val)
         noun = "point" if kind == "sketchPoint" else "line"
-        if e is None:
+        ends = _sketch_ref_line(e, ctx.val, side) if e is not None and kind == "sketchLine" else None
+        # a side the shape no longer has (fewer sides now, or turned into
+        # lines) is gone the same way a deleted line is
+        if e is None or (side is not None and ends is None):
             raise GeomError(f"{label}: the sketch {noun} {what} was deleted from its sketch. Pick again.",
                             errors_mod.REFERENCE_NOT_FOUND, subject=ref.get("sketch"))
         plane = entry["plane"]
@@ -6521,7 +6581,6 @@ def _extrude_ref_point(ref, f, ctx, sn, label, role):
                 raise GeomError(f"{label}: the sketch point {what} isn't on its curve any more. Pick again.",
                                 errors_mod.REFERENCE_NOT_FOUND, subject=ref.get("sketch"))
             return plane.from_local_coords(xy)
-        ends = _sketch_ref_line(e, ctx.val)
         if ends is None:
             raise ValueError(f"{label}: the sketch curve {what} isn't a straight line. "
                              "Pick a straight line or a point.")

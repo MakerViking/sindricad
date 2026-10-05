@@ -430,6 +430,67 @@ def test_sketch_point_indices_match_the_app():
         assert abs(hi - z) < 1e-4, f"{entity}[{point}] should stop at z={z}, stopped at {hi}"
 
 
+def test_shape_points_the_picker_offers_build():
+    """The Extrude picker offers every point dimRefPoints lists, and those
+    include a rectangle's centre (4), a polygon's corners (0..n-1, polygonPoints
+    order) and centre (-1), and a slot's two centres. Each built only as a
+    refusal before, 'isn't on its curve any more'. Pinned by height, as above:
+    a wrong index still builds, at the wrong point."""
+    ents = [
+        {"id": "r1", "type": "rectangle", "x": 30, "y": 20, "width": 4, "height": 6},
+        # corner k at 90 + 60k degrees round (0, 40), radius 4
+        {"id": "h1", "type": "polygon", "x": 0, "y": 40, "radius": 4, "sides": 6, "angle": 90},
+        {"id": "s1", "type": "slot", "x1": 10, "y1": 50, "x2": 20, "y2": 55, "width": 2},
+    ]
+    for entity, point, z in (("r1", 4, 20), ("h1", 0, 44), ("h1", 1, 42), ("h1", 3, 36), ("h1", -1, 40),
+                             ("s1", 0, 50), ("s1", 1, 55)):
+        ref = {"kind": "sketchPoint", "sketch": "s2", "entity": entity, "pointIndex": point}
+        part, errors, _ = _build([_sq(), _ref_sketch(ents), _ext(upToRef=ref)])
+        assert not errors, f"{entity}[{point}]: {errors}"
+        assert abs(_span(part, 2)[1] - z) < 1e-4, f"{entity}[{point}] should stop at z={z}, stopped at {_span(part, 2)[1]}"
+    for entity, point in (("r1", 5), ("h1", 6), ("h1", -2), ("s1", 2)):
+        ref = {"kind": "sketchPoint", "sketch": "s2", "entity": entity, "pointIndex": point}
+        _expect_error([_sq(), _ref_sketch(ents), _ext(upToRef=ref)], "isn't on its curve any more",
+                      f"{entity}[{point}], a point the shape does not have")
+
+
+def test_a_shape_side_is_a_line():
+    """A side of a rectangle, polygon or slot, named `<shapeId>~<k>` the way
+    the sketch's constraints name it (entityDims.lineOperand), is a line: one
+    parallel to the sketch gives its height, a tilted one is refused like a
+    tilted line, and a side the shape does not have is gone."""
+    ents = [
+        # corners (28,17) (32,17) (32,23) (28,23): side 0 the bottom, 1 the right
+        {"id": "r1", "type": "rectangle", "x": 30, "y": 20, "width": 4, "height": 6},
+        # corner k at 60k degrees round (0, 40): side 1 runs level across the top
+        {"id": "h1", "type": "polygon", "x": 0, "y": 40, "radius": 4, "sides": 6, "angle": 0},
+        # a level slot: side 0 on the left of its axis (above it), side 1 below
+        {"id": "s1", "type": "slot", "x1": 10, "y1": 50, "x2": 20, "y2": 50, "width": 4},
+    ]
+    top = 40 + 4 * math.sin(math.radians(60))
+    for entity, z in (("r1~0", 17), ("r1~2", 23), ("h1~1", top), ("h1~4", 80 - top),
+                      ("s1~0", 52), ("s1~1", 48), ("s1~2", 50)):
+        end = {"kind": "sketchLine", "sketch": "s2", "entity": entity}
+        part, errors, _ = _build([_sq(), _ref_sketch(ents), _ext(upToRef=end)])
+        assert not errors, f"{entity}: {errors}"
+        assert abs(_span(part, 2)[1] - z) < 1e-4, f"{entity} should stop at z={z}, stopped at {_span(part, 2)[1]}"
+    # as a START too, with the start offset riding on it
+    start = {"kind": "sketchLine", "sketch": "s2", "entity": "r1~2"}
+    part, errors, _ = _build([_sq(), _ref_sketch(ents), _ext(startFrom=start, startOffset=1)])
+    assert not errors, errors
+    lo, hi = _span(part, 2)
+    assert abs(lo - 24) < 1e-4 and abs(hi - 29) < 1e-4, f"start from r1's top side + 1: {lo}..{hi}"
+    for entity in ("r1~1", "h1~0"):
+        _expect_error([_sq(), _ref_sketch(ents), _ext(upToRef={"kind": "sketchLine", "sketch": "s2", "entity": entity})],
+                      "isn't parallel to the sketch", f"{entity}, a tilted side")
+    # no such side, and a rectangle Explode turned into lines (its id stays on
+    # its first line) without the reference being carried
+    lines = [{"id": "r1", "type": "line", "x1": 28, "y1": 17, "x2": 32, "y2": 17}]
+    for sketch, entity in ((ents, "r1~4"), (ents, "h1~6"), (ents, "s1~3"), (lines, "r1~2")):
+        _expect_error([_sq(), _ref_sketch(sketch), _ext(upToRef={"kind": "sketchLine", "sketch": "s2", "entity": entity})],
+                      "deleted from its sketch", f"{entity}, a side that is not there")
+
+
 def test_up_to_a_line_parallel_to_the_sketch():
     """A line parallel to the sketch names one height. A tilted one does not, and
     is refused rather than read at one of its ends."""
@@ -644,6 +705,8 @@ if __name__ == "__main__":
     test_up_to_an_origin_plane()
     test_up_to_a_sketch_point_follows_the_point()
     test_sketch_point_indices_match_the_app()
+    test_shape_points_the_picker_offers_build()
+    test_a_shape_side_is_a_line()
     test_up_to_a_line_parallel_to_the_sketch()
     test_up_to_a_body_edge_follows_the_body()
     test_up_to_a_body_corner()

@@ -3,7 +3,7 @@
 // client so any mutation re-runs the tree; results + errors are pushed to
 // listeners (viewport, timeline, tree).
 
-import type { CadDocument, DimField, ExtrudeStart, Feature, ParamTarget, PlaneDef, PlaneSpec, ProjectedSource, ProjectionUpdate, RebuildReply, RebuildResult, Selector, SketchConstraint, ViewCubeSide, ViewOverride } from "../types";
+import type { CadDocument, DimField, Feature, ParamTarget, PlaneDef, PlaneSpec, ProjectedSource, ProjectionUpdate, RebuildReply, RebuildResult, Selector, SketchConstraint, ViewCubeSide, ViewOverride } from "../types";
 import type { GeometryBackend, ProjectionResult, QueryResult } from "../geometry/client";
 import { featureErrorText } from "../geometry/featureErrorText";
 import { migrateDocument, savedVersion } from "./migrate";
@@ -15,6 +15,7 @@ import * as params from "../params/engine";
 import type { FieldKind } from "./numFields";
 import { DEFAULT_EXTRUDE_DISTANCE, boundShapeFields, hasUpToTarget, writeTarget } from "./numFields";
 import { p2lSideFlipped, paramStep, paramSteps, refreshStep, refreshSteps } from "./projectionWalk";
+import { applyPointCarry, type PointCarry } from "./pointCarry";
 import { copySketch, moveSketchPlane, ownDatumOf, type SketchPlaneMove, type SketchTarget } from "./sketchPlaneEdits";
 import { t } from "../i18n";
 
@@ -54,29 +55,6 @@ export function applyRegionCarry(d: CadDocument, sketchId: string, carry: Region
     }
     d.features[i] = next;
   }
-}
-
-/** The shapes an edit inside a sketch exploded into lines (modify.ts
- *  explodeCompound, `points`): shape id, then the index of one of its points,
- *  then the line end (or centre) that point is now. Travels with the sketch's
- *  commit like RegionCarry. */
-export type PointCarry = Record<string, Record<string, { entity: string; pointIndex: number }>>;
-
-/** Re-point every extrude that starts from or runs up to a point of a shape
- *  `carry` exploded in sketch `sketchId`. EVERY extrude in the document, not
- *  only those built on that sketch: the profile is usually on another one. */
-export function applyPointCarry(d: CadDocument, sketchId: string, carry: PointCarry) {
-  const moved = (ref: ExtrudeStart | undefined) => {
-    if (ref?.kind !== "sketchPoint" || ref.sketch !== sketchId) return null;
-    const to = carry[ref.entity]?.[String(ref.pointIndex)];
-    return to ? { ...ref, entity: to.entity, pointIndex: to.pointIndex } : null;
-  };
-  d.features = d.features.map((f) => {
-    if (f.type !== "extrude") return f;
-    const start = moved(f.startFrom), end = moved(f.upToRef);
-    if (!start && !end) return f;
-    return { ...f, ...(start ? { startFrom: start } : {}), ...(end ? { upToRef: end } : {}) };
-  });
 }
 
 /** An expression typed on a sketch dimension while the sketch was OPEN — the
@@ -1423,9 +1401,10 @@ export class DocumentStore {
   }
 
   /** `regionCarry`, from a sketch edit: the area references of the extrudes
-   *  on that sketch it had to re-point (applyRegionCarry). `pointCarry`: the
-   *  shapes it exploded, for the extrudes anywhere that start from or run up
-   *  to one of their points (applyPointCarry). */
+   *  on that sketch it had to re-point (applyRegionCarry). `pointCarry`: what
+   *  it renamed (a shape exploded or trimmed, a polygon's sides renumbered),
+   *  for the extrudes anywhere that start from or run up to one of its points
+   *  or lines (applyPointCarry). */
   replaceFeature(id: string, feature: Feature, bindings?: SketchBinding[], regionCarry?: RegionCarry, pointCarry?: PointCarry) {
     this.mutate((d) => {
       const i = d.features.findIndex((f) => f.id === id);

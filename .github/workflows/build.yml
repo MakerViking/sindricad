@@ -128,6 +128,11 @@ jobs:
           # weeks (see below).
           uv run python test_malformed_ops.py
           uv run python test_untrusted.py
+          # GH #41: extrude start/end references. The one place that holds the
+          # sidecar's numbering of a shape's corners, centres and sides to the
+          # app's (entityDims dimRefPoints/lineOperand): a drift there still
+          # builds, at the wrong height, so nothing else here would fail.
+          uv run python test_extrude_ends.py
           uv run python test_mass_properties.py
           uv run python test_query_op.py
           uv run python test_assembly.py

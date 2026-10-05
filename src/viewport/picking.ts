@@ -256,17 +256,27 @@ export class Picker {
   /** A test for "this world point lies BEHIND the first visible body surface
    *  at this pixel", by more than the two-pixel allowance pick() gives an
    *  edge: such a point is not drawn there, so it must not be pickable there.
-   *  With no body under the cursor nothing is behind anything. */
-  occluderAt(clientX: number, clientY: number, rect: DOMRect, camera: THREE.Camera, view: ModelView): (world: THREE.Vector3) => boolean {
+   *  With no body under the cursor nothing is behind anything. Under a
+   *  section cut (`clip`) the first surface is the one the cut shows: the
+   *  removed half hides nothing, and a cap hides what is behind it. */
+  occluderAt(
+    clientX: number,
+    clientY: number,
+    rect: DOMRect,
+    camera: THREE.Camera,
+    view: ModelView,
+    clip: PickClip | null = null,
+  ): (world: THREE.Vector3) => boolean {
     flushRaycastIndex();
     this.ndc.set(
       ((clientX - rect.left) / rect.width) * 2 - 1,
       -((clientY - rect.top) / rect.height) * 2 + 1,
     );
     this.raycaster.setFromCamera(this.ndc, camera);
-    const hit = this.raycaster.intersectObjects(visibleBodyMeshes(view), false)[0];
-    if (!hit) return () => false;
-    const limit = hit.distance + 2 * worldPerPixel(camera, hit.distance, rect.height);
+    const { hits, stop } = throughCut(this.raycaster.intersectObjects(visibleBodyMeshes(view), false), this.raycaster.ray, clip);
+    const front = hits[0]?.distance ?? stop;
+    if (!Number.isFinite(front)) return () => false;
+    const limit = front + 2 * worldPerPixel(camera, front, rect.height);
     const ray = this.raycaster.ray.clone();
     const v = new THREE.Vector3();
     return (world) => v.copy(world).sub(ray.origin).dot(ray.direction) > limit;
@@ -283,7 +293,9 @@ export class Picker {
    *  it, inside the raycast's grab radius, and on a large model the other way
    *  (projecting both ends of every visible edge, on every pointer move) was
    *  the cost the merged edge targets above exist to avoid. `behind` is
-   *  occluderAt's test, when the caller already has it for this pixel. */
+   *  occluderAt's test, when the caller already has it for this pixel. A
+   *  corner on the half a section cut removes (`clip`) is not drawn, so it is
+   *  not picked, as pickEdge does not pick an edge there. */
   pickVertex(
     clientX: number,
     clientY: number,
@@ -291,13 +303,15 @@ export class Picker {
     camera: THREE.Camera,
     view: ModelView,
     maxPx: number,
-    behind = this.occluderAt(clientX, clientY, rect, camera, view),
+    clip: PickClip | null = null,
+    behind = this.occluderAt(clientX, clientY, rect, camera, view, clip),
   ): { point: THREE.Vector3; edges: EdgeRef[] } | null {
     const near = new Set<EdgeRef>();
     for (const h of this.castEdges(clientX, clientY, rect, camera, view)) {
       const ref = (h.object.userData.edges as BodyEdges | undefined)?.refAtSegment(h.faceIndex ?? -1);
       if (ref) near.add(ref);
     }
+    const eye = this.raycaster.ray.origin;
     const w = new THREE.Vector3();
     let best: THREE.Vector3 | null = null;
     let bestD = maxPx;
@@ -305,6 +319,7 @@ export class Picker {
       for (const p of [e.points[0], e.points[e.points.length - 1]]) {
         if (!p) continue;
         w.set(p[0], p[1], p[2]);
+        if (clip && clip.plane.distanceToPoint(w) < -ON_CUT * w.distanceTo(eye)) continue;
         this.scratch.copy(w).project(camera);
         const sx = (this.scratch.x * 0.5 + 0.5) * rect.width + rect.left;
         const sy = (-this.scratch.y * 0.5 + 0.5) * rect.height + rect.top;

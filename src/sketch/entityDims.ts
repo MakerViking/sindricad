@@ -447,6 +447,20 @@ export function slotAxisAt(ents: ResolvedEntity[], p: { x: number; y: number }, 
   return best;
 }
 
+/** Where a polygon's side count going from `was` to `now` sends its side k and
+ *  its corner k: to the side whose middle is nearest the old one's, and to the
+ *  corner nearest the old one, by angle about the centre, which the count does
+ *  not move. What rebindPolygonSides re-aims a constraint by, and an extrude's
+ *  start or up-to reference (document/pointCarry.ts polygonSidesCarry). */
+export function polygonRenumber(was: number, now: number) {
+  const w = Math.max(3, Math.round(was)), n = Math.max(3, Math.round(now));
+  // side k's middle sits (k + 1/2) n-ths of a turn round, corner k at k n-ths
+  return {
+    side: (k: number) => ((Math.round(((k + 0.5) * n) / w - 0.5) % n) + n) % n,
+    corner: (k: number) => Math.round((k * n) / w) % n,
+  };
+}
+
 /** After polygon `polyId`'s side COUNT changed from `oldSides`: re-aim what
  *  names one of its sides or corners. Side k of a hexagon and side k of an
  *  octagon are different sides, so a stored k named somewhere else on the
@@ -473,9 +487,7 @@ export function rebindPolygonSides(
   const n = Math.max(3, Math.round(poly.sides));
   const was = oldSides === undefined ? null : Math.max(3, Math.round(oldSides));
   const renumber = was !== null && was !== n;
-  // side k's middle sits (k + 1/2) n-ths of a turn round, corner k at k n-ths
-  const sideTo = (k: number) => ((Math.round(((k + 0.5) * n) / was! - 0.5) % n) + n) % n;
-  const cornerTo = (k: number) => Math.round((k * n) / was!) % n;
+  const { side: sideTo, corner: cornerTo } = polygonRenumber(was ?? n, n);
   // `<polyId>~k` and nothing else: an id with no `~` cut at lastIndexOf
   // (-1) loses its last character, so polygon e1 claimed lines e10..e19 as
   // its side 0 and every constraint on them moved onto the polygon

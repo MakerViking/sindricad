@@ -11,7 +11,8 @@
 // point or re-arms `preEdit` first so it compares equal.
 
 import type { SketchConstraint, SketchPattern } from "../types";
-import type { PointCarry, RegionCarry } from "../document/store";
+import type { RegionCarry } from "../document/store";
+import type { PointCarry } from "../document/pointCarry";
 import type { ResolvedEntity } from "./snap";
 
 /** The editable state one undo step restores — the whole of what a sketch edit
@@ -23,7 +24,7 @@ export type SketchSnapshot = {
   /** the extrude area references an edit re-pointed (SketchMode.regionCarry);
    *  absent when there are none */
   regionCarry?: RegionCarry;
-  /** the shapes an edit exploded, for the extrude points that name them
+  /** what an edit renamed, for the extrude points and lines that name it
    *  (SketchMode.pointCarry); absent when there are none */
   pointCarry?: PointCarry;
 };

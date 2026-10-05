@@ -36,8 +36,8 @@ import { detectRegions, pointInRegion, rectCorners, regionsByEntities, resolveRe
 import { expandPattern, translated } from "./pattern";
 import { DimInput } from "./dimInput";
 import { liveSketch, PX } from "./liveSketch.testkit";
-import { dimRefPoints } from "./entityDims";
-import { ORIGIN_ID } from "./origin";
+import { dimRefPoints, lineOperand } from "./entityDims";
+import { ORIGIN_ID, isOriginGeometry } from "./origin";
 import { contextMenu, type CtxItem } from "../ui/menu";
 import { DocumentStore } from "../document/store";
 import { t } from "../i18n";
@@ -884,6 +884,176 @@ describe("an extrude that starts from or runs up to a corner of the shape keeps 
     doc.finish();
     expect(ext(doc, "x4").upToRef).toEqual(pointRef(3));
     expect(ext(doc, "x5").startFrom).toEqual(pointRef(2));
+  });
+
+  // A SIDE is named `R~k` (entityDims.lineOperand), and after an explode `R`
+  // is the bottom line, which has no side 2: the build said "the sketch line
+  // it runs up to was deleted from its sketch".
+  const sideRef = (k: number) => ({ kind: "sketchLine" as const, sketch: "f1", entity: `R~${k}` });
+  const onSides = (): Feature[] => [
+    { id: "f0", type: "sketch", plane: "XZ", entities: [{ type: "circle", id: "c0", x: 0, y: 0, radius: 5 }] },
+    { id: "x6", type: "extrude", sketch: "f0", distance: 5, operation: "new", startFrom: sideRef(0), upToRef: sideRef(2) },
+  ] as unknown as Feature[];
+  /** the line a sketchLine reference lies on in f1 as the document has it now,
+   *  as a point and a unit direction (a fillet trims a side, not its line) */
+  const lineOf = (doc: ReturnType<typeof onDocument>, ref: Extrude["upToRef"] | Extrude["startFrom"]) => {
+    if (ref?.kind !== "sketchLine") return null;
+    const f1 = doc.store.document.features.find((f) => f.id === "f1") as { entities: ResolvedEntity[] };
+    const seg = lineOperand(new Map(f1.entities.map((e) => [e.id, e])), ref.entity);
+    if (!seg) return null;
+    const n = Math.hypot(seg.x2 - seg.x1, seg.y2 - seg.y1);
+    const dx = (seg.x2 - seg.x1) / n, dy = (seg.y2 - seg.y1) / n;
+    const r6 = (v: number) => +v.toFixed(6) + 0; // + 0: no -0
+    // where the line crosses the axis it is not parallel to, and its direction up to sign
+    const at = Math.abs(dx) > Math.abs(dy) ? seg.y1 - (seg.x1 * dy) / dx : seg.x1 - (seg.y1 * dx) / dy;
+    return { at: r6(at), dir: [r6(Math.abs(dx)), r6(Math.abs(dy))] };
+  };
+
+  it("an extrude that starts from or runs up to a SIDE keeps that side through Explode and Fillet", async () => {
+    const before = onDocument([RECT()], {}, [], onSides());
+    const bottom = lineOf(before, sideRef(0)), top = lineOf(before, sideRef(2));
+    expect(top, "precondition: R~2 is the top side, y = 50").toEqual({ at: 50, dir: [1, 0] });
+    expect(bottom).toEqual({ at: 0, dir: [1, 0] });
+
+    const doc = onDocument([RECT()], {}, [], onSides());
+    rightClick(doc, 30, 0).find((i) => i.label === t("sketch.menu.explode"))!.onClick!();
+    await doc.settle();
+    doc.finish();
+    expect(lineOf(doc, ext(doc, "x6").upToRef), "x6 runs up to the top side").toEqual(top);
+    expect(lineOf(doc, ext(doc, "x6").startFrom), "x6 starts from the bottom side").toEqual(bottom);
+    expect((ext(doc, "x6").upToRef as { entity: string }).entity, "a line of its own, not a side of a shape").not.toContain("~");
+    doc.store.undo();
+    expect(ext(doc, "x6").upToRef).toEqual(sideRef(2));
+    expect(ext(doc, "x6").startFrom).toEqual(sideRef(0));
+
+    // Fillet rounds corner 1 between the bottom and the right side: both are
+    // trimmed, and stay on their lines
+    const filleted = onDocument([RECT()], {}, [], onSides());
+    const box = withBox(filleted);
+    filleted.s.tool = "fillet";
+    filleted.click(40, 0);
+    filleted.click(60, 30);
+    box.enter("radius", "5");
+    await filleted.settle();
+    filleted.finish();
+    expect(lineOf(filleted, ext(filleted, "x6").upToRef)).toEqual(top);
+    expect(lineOf(filleted, ext(filleted, "x6").startFrom)).toEqual(bottom);
+  });
+
+  const profile = { id: "f0", type: "sketch", plane: "XZ", entities: [{ type: "circle", id: "c0", x: 0, y: 0, radius: 5 }] };
+
+  // The CENTRE is point 4, and it is no end of any line the rectangle becomes.
+  // Explode made a point for it only when a CONSTRAINT named it, so an extrude
+  // up to it went red at Finish: "the sketch point it runs up to isn't on its
+  // curve any more".
+  it("an extrude that runs up to the CENTRE keeps it through Explode and Fillet, and nothing else gets a centre point", async () => {
+    const onCentre = (): Feature[] => [
+      profile,
+      { id: "x7", type: "extrude", sketch: "f0", distance: 5, operation: "new", upToRef: pointRef(4) },
+    ] as unknown as Feature[];
+    const doc = onDocument([RECT()], {}, [], onCentre());
+    rightClick(doc, 30, 0).find((i) => i.label === t("sketch.menu.explode"))!.onClick!();
+    await doc.settle();
+    doc.finish();
+    expect(landsAt(doc, ext(doc, "x7").upToRef), "x7 runs up to the centre").toEqual([30, 25]);
+    doc.store.undo();
+    expect(ext(doc, "x7").upToRef).toEqual(pointRef(4));
+
+    const filleted = onDocument([RECT()], {}, [], onCentre());
+    const box = withBox(filleted);
+    filleted.s.tool = "fillet";
+    filleted.click(40, 0);
+    filleted.click(60, 30);
+    box.enter("radius", "5");
+    await filleted.settle();
+    filleted.finish();
+    const c = landsAt(filleted, ext(filleted, "x7").upToRef)!;
+    expect(c[0]).toBeCloseTo(30, 6);
+    expect(c[1]).toBeCloseTo(25, 6);
+
+    // corners only: the explode is what it was, four lines and nothing more
+    const plain = onDocument([RECT()], {}, [], others());
+    rightClick(plain, 30, 0).find((i) => i.label === t("sketch.menu.explode"))!.onClick!();
+    await plain.settle();
+    expect(plain.s.entities.filter((e) => !isOriginGeometry(e.id)).map((e) => e.type)).toEqual(["line", "line", "line", "line"]);
+  });
+
+  // Trim gives every piece a new id, a rectangle's untouched sides too, so an
+  // extrude up to a side or a corner still drawn said "was deleted from its
+  // sketch" at Finish. Two trims in a row: the second retires a line the
+  // first one made, and takes away the end the first put corner 3 on.
+  it("an extrude that names a side or a corner keeps it through two Trims in a row, and one undo takes it back", async () => {
+    const CROSS = () => L("cross", 30, -10, 30, 60);
+    const refs = (): Feature[] => [
+      profile,
+      { id: "x8", type: "extrude", sketch: "f0", distance: 5, operation: "new", startFrom: pointRef(1), upToRef: sideRef(2) },
+      { id: "x9", type: "extrude", sketch: "f0", distance: 5, operation: "new", startFrom: sideRef(1), upToRef: pointRef(3) },
+    ] as unknown as Feature[];
+    const before = onDocument([RECT(), CROSS()], {}, [], refs());
+    const top = lineOf(before, sideRef(2)), right = lineOf(before, sideRef(1));
+    expect(right, "precondition: R~1 is the right side, x = 60").toEqual({ at: 60, dir: [0, 1] });
+
+    const doc = onDocument([RECT(), CROSS()], {}, [], refs());
+    doc.s.tool = "trim";
+    doc.click(15, 0); // the bottom side's left half
+    await doc.settle();
+    doc.click(15, 50); // the top side's left half: a line the first trim made
+    await doc.settle();
+    expect(doc.s.entities.some((e) => e.type === "rectangle"), "precondition: the rectangle is lines now").toBe(false);
+    doc.finish();
+    expect(lineOf(doc, ext(doc, "x8").upToRef), "x8 runs up to the top side").toEqual(top);
+    expect(landsAt(doc, ext(doc, "x8").startFrom), "x8 starts from corner 1").toEqual(corner(1));
+    expect(lineOf(doc, ext(doc, "x9").startFrom), "x9 starts from the right side").toEqual(right);
+    expect(landsAt(doc, ext(doc, "x9").upToRef), "x9 runs up to corner 3, the left side's end now").toEqual(corner(3));
+
+    doc.store.undo();
+    expect(ext(doc, "x8").upToRef).toEqual(sideRef(2));
+    expect(ext(doc, "x9").upToRef).toEqual(pointRef(3));
+  });
+
+  it("so does an extrude up to a line or its end through Break", async () => {
+    const lineRef = { kind: "sketchLine" as const, sketch: "f1", entity: "ln" };
+    const endRef = { kind: "sketchPoint" as const, sketch: "f1", entity: "ln", pointIndex: 1 };
+    const doc = onDocument([L("ln", 0, 10, 60, 10)], {}, [], [
+      profile,
+      { id: "x10", type: "extrude", sketch: "f0", distance: 5, operation: "new", startFrom: endRef, upToRef: lineRef },
+    ] as unknown as Feature[]);
+    doc.s.tool = "break";
+    doc.click(20, 10);
+    await doc.settle();
+    expect(doc.s.entities.filter((e) => !isOriginGeometry(e.id)), "precondition: two pieces").toHaveLength(2);
+    doc.finish();
+    expect(lineOf(doc, ext(doc, "x10").upToRef)).toEqual({ at: 10, dir: [1, 0] });
+    expect(landsAt(doc, ext(doc, "x10").startFrom)).toEqual([60, 10]);
+  });
+
+  // A new side count renumbers a polygon's corners and sides: a hexagon's
+  // corner 1 is a dodecagon's corner 2. A constraint on it is re-aimed
+  // (rebindPolygonSides); an extrude kept its index and went to whatever
+  // corner 1 was now, without a word.
+  it("an extrude that names a polygon's corner or side is re-aimed when its side count is edited, as a constraint is", async () => {
+    const cornerRef = (k: number) => ({ kind: "sketchPoint" as const, sketch: "f1", entity: "P", pointIndex: k });
+    const polySide = (k: number) => ({ kind: "sketchLine" as const, sketch: "f1", entity: `P~${k}` });
+    const was = dimRefPoints(HEX()).find((q) => q.p === 1)!.pos;
+    const doc = onDocument([HEX()], {}, [], [
+      profile,
+      { id: "x11", type: "extrude", sketch: "f0", distance: 5, operation: "new", startFrom: polySide(1), upToRef: cornerRef(1) },
+    ] as unknown as Feature[]);
+    const box = withBox(doc);
+    const [c0, c1] = dimRefPoints(HEX()).map((q) => q.pos);
+    rightClick(doc, (c0!.x + c1!.x) / 2, (c0!.y + c1!.y) / 2).find((i) => i.label === t("sketch.menu.editPolygon"))!.onClick!();
+    box.enter("sides", "12");
+    await doc.settle();
+    doc.finish();
+    expect(ext(doc, "x11").upToRef, "the corner at the same angle").toEqual(cornerRef(2));
+    const now = landsAt(doc, ext(doc, "x11").upToRef)!;
+    expect(now[0]).toBeCloseTo(was.x, 6);
+    expect(now[1]).toBeCloseTo(was.y, 6);
+    expect(ext(doc, "x11").startFrom, "the side rebindPolygonSides gives a constraint on side 1").toEqual(polySide(3));
+
+    doc.store.undo();
+    expect(ext(doc, "x11").upToRef).toEqual(cornerRef(1));
+    expect(ext(doc, "x11").startFrom).toEqual(polySide(1));
   });
 });
 

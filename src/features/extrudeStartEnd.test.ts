@@ -52,9 +52,15 @@ function doc(saved: Record<string, unknown> = {}): CadDocument {
           { id: "l1", type: "line", x1: 30, y1: 15, x2: 50, y2: 15 },
           { id: "l2", type: "line", x1: 60, y1: 10, x2: 70, y2: 30 },
           { id: "a1", type: "arc", x1: -60, y1: 40, x2: -40, y2: 40, mx: -50, my: 50 },
-          // a rectangle x 150..170, height 20..30 (x, y is its centre): its
-          // sides are straight, but the document cannot name one side of a shape
+          // a rectangle x 150..170, height 20..30 (x, y is its centre): side 0
+          // its bottom, 1 its right, 2 its top (rectCorners order)
           { id: "rq", type: "rectangle", x: 160, y: 25, width: 20, height: 10 },
+          // a hexagon round (220, 25) with corner 0 at 0 degrees: its side 1
+          // runs level across the top, at 25 + 10 sin 60
+          { id: "hx", type: "polygon", x: 220, y: 25, radius: 10, sides: 6, angle: 0 },
+          // a level slot x 260..290 at height 25, 10 wide: side 0 on the left of
+          // its axis (on top, at 30), side 1 below (20), round ends to x 255 and 295
+          { id: "sl", type: "slot", x1: 260, y1: 25, x2: 290, y2: 25, width: 10 },
         ],
       },
       { id: "d1", type: "datumPlane", plane: "XY", offset: 20 },
@@ -498,28 +504,64 @@ describe("what a click names, after review", () => {
     return nearest;
   };
 
-  it("a rectangle's side gives way to the face behind it, and with nothing behind says to pick a corner", () => {
+  it("a side of a rectangle, polygon or slot is a line, named the way its sketch's constraints name it (R3)", () => {
+    // the middle of each side, with no body behind it, and a plane far
+    // behind that is not what was aimed at
+    const sides: [[number, number, number], string][] = [
+      [[160, 0, 30], "rq~2"],
+      [[160, 0, 20], "rq~0"],
+      [[220, 0, 25 + 10 * Math.sin(Math.PI / 3)], "hx~1"],
+      [[275, 0, 30], "sl~0"],
+      [[275, 0, 20], "sl~1"],
+    ];
+    for (const [at, entity] of sides) {
+      const h = harness();
+      h.create();
+      h.internals.onKey(h.keyAt("t"));
+      h.viewport.planeHitsAt = () => [{ id: "d1", datum: true, distance: 200 }];
+      h.clickAt(at);
+      expect(h.box("Up to"), entity).toBe("Sketch line");
+      expect(h.warning(), entity).toBe("");
+      h.ok();
+      expect(h.added[0], entity).toMatchObject({ upToRef: { kind: "sketchLine", sketch: "s2", entity } });
+    }
+  });
+
+  it("a side square to the profile is refused like a tilted line, and a slot's round end is no line", () => {
     const h = harness();
     h.create();
     h.internals.onKey(h.keyAt("t"));
-    // the middle of the rectangle's top side, no body behind it: a plane far
-    // behind is not what was aimed at either
     h.viewport.planeHitsAt = () => [{ id: "d1", datum: true, distance: 200 }];
-    h.clickAt([160, 0, 30]);
-    expect(h.warning()).toContain("one side of a rectangle");
-    expect(h.warning(), "the side of a rectangle was called not straight").not.toContain("straight line");
+    h.clickAt([170, 0, 25]); // rq's right side
+    expect(h.warning()).toContain("isn't parallel");
+    h.clickAt([295, 0, 25]); // the tip of sl's round end
+    expect(h.warning()).toContain("isn't a straight line");
     expect(h.box("Up to")).toBe("Click a face, plane, point or line");
-
-    // the rectangle is drawn on a face: the click on its side is the face's
+    // a curve that is no line gives way to a face behind it
     const nearest = faceUnder(h);
-    h.clickAt([160, 0, 30]);
-    expect(h.box("Up to"), "the rectangle's side blocked the face behind it").toBe("Picked face");
-    // ...and a corner of the rectangle is a point, which wins over the face
-    h.clickAt([150, 0, 20]);
-    expect(h.box("Up to")).toBe("Sketch point");
-    h.clickAt([160, 0, 30]);
+    h.clickAt([295, 0, 25]);
+    expect(h.box("Up to"), "the round end blocked the face behind it").toBe("Picked face");
     h.ok();
     expect(h.added[0]).toMatchObject({ upTo: nearest });
+  });
+
+  it("a side as the start: the arrow starts on it, and an edit reopens it and writes it back untouched", () => {
+    const start = { kind: "sketchLine", sketch: "s2", entity: "rq~2" };
+    const h = harness();
+    h.create();
+    h.chip("Object").dispatch("click");
+    h.clickAt([160, 0, 30]);
+    expect(h.box("Start from")).toBe("Sketch line");
+    h.ok();
+    expect(h.added[0]).toMatchObject({ startFrom: start });
+
+    const e = harness({ saved: { startFrom: start, startOffset: 1 } });
+    expect(e.tool.startEdit("ex1", () => {})).toBe(true);
+    expect(e.box("Start from")).toBe("Sketch line");
+    // measured off the document before any build: the top side is at 30
+    expect((e.tool as unknown as { effectiveStart(): number }).effectiveStart()).toBe(31);
+    e.ok();
+    expect(e.added[0]).toMatchObject({ startFrom: start, startOffset: 1 });
   });
 
   it("a sketch point or line hidden behind a body does not take a click aimed at the body", async () => {

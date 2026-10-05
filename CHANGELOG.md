@@ -229,8 +229,10 @@ This file starts on 2026-08-03. For anything before that, see the
   arrow away and work inside the cut, and it follows the cut as you drag it,
   flip it or switch to orthographic. Pointing at the cut picks what you see
   there: the half the cut took away can no longer be hovered or clicked
-  through it. An open mesh, which I can't fill cleanly, keeps the hollow look,
-  and so does the model while you sketch, when it turns see-through.
+  through it, also when you pick a corner or a sketch point for where an
+  extrude starts or what it runs up to. An open mesh, which I can't fill
+  cleanly, keeps the hollow look, and so does the model while you sketch, when
+  it turns see-through.
 
 - **Copy a sketch onto another plane.** Right-click a sketch in the Browser or
   on the timeline and choose Copy sketch to plane…, then click a base plane, a
@@ -342,17 +344,20 @@ This file starts on 2026-08-03. For anything before that, see the
   a sketch line as well as a face or a plane, and the XY, XZ and YZ planes show
   while you pick so you can click them too. A line or a face has to be parallel
   to the sketch; a tilted or curved one is refused with the reason. A sketch
-  line here is one drawn with the Line tool: a side of a rectangle, polygon or
-  slot can't be picked yet, but a rectangle's corners can. The extrude follows
-  what you picked: make the box taller and the lid you started from its top
-  face moves up with it. After a change like that the timeline may mark the
-  extrude amber, saying it used the closest match to what you picked; the
-  extrude is in the right place, and picking the face again in the extrude's
-  panel clears it. Selecting a flat face and pressing Extrude now starts the
-  extrude from that face, once you pick a shown sketch profile parallel to it;
-  with no such profile, Extrude on a face still pushes the face as before. The
-  inspector shows where an extrude starts, with a button that puts it back on
-  its sketch. Asked for in
+  line can be one drawn with the Line tool or one side of a rectangle, polygon
+  or slot, and a sketch point can be a corner or the centre of one of those
+  shapes. It stays on what you picked when you trim, break or explode that line
+  or shape, or round or bevel its corner, as long as it is still drawn, and
+  when a polygon gets a new number of sides it goes to the nearest corner or
+  side, as a constraint on it does. The extrude follows what you picked: make
+  the box taller and the lid you started from its top face moves up with it.
+  After a change like that the timeline may mark the extrude amber, saying it
+  used the closest match to what you picked; the extrude is in the right place,
+  and picking the face again in the extrude's panel clears it. Selecting a flat
+  face and pressing Extrude now starts the extrude from that face, once you
+  pick a shown sketch profile parallel to it; with no such profile, Extrude on a
+  face still pushes the face as before. The inspector shows where an extrude
+  starts, with a button that puts it back on its sketch. Asked for in
   [#41](https://github.com/MakerViking/sindricad/issues/41).
 
 - **Symmetric extrude.** Choose Symmetric in the Extrude panel and the sketch
@@ -404,10 +409,11 @@ This file starts on 2026-08-03. For anything before that, see the
   constraints and dimensions move to the lines, and a pattern of it rounds every
   copy. An extrude made from it keeps the area it had when you finish the
   sketch, also where a line crosses the shape or another shape shares a side
-  with it, and an extrude that starts from or runs up to one of its corners
-  keeps that corner (the corner you round moves it to where the rounding
-  starts). Two sides that do not meet are refused at the second click. A polygon
-  or slot whose size comes from a parameter stays a shape, and I say why.
+  with it, and an extrude that starts from or runs up to one of its corners,
+  its sides or its centre keeps it (the corner you round moves it to where the
+  rounding starts). Two sides that do not meet are refused at the second click.
+  A polygon or slot whose size comes from a parameter stays a shape, and I say
+  why.
 
 - **Explode to lines.** Right-click a rectangle, polygon or slot and choose
   Explode to lines to turn it into the lines (and a slot's arcs) it is drawn
@@ -415,11 +421,11 @@ This file starts on 2026-08-03. For anything before that, see the
   circles, one through its corners and one touching its sides, and a slot a
   construction line across each end. Nothing about its size is fixed unless you
   had locked it. An extrude made from it keeps its area, and an extrude that
-  starts from or runs up to one of its corners, from any sketch, keeps that
-  corner. Where a later sketch
-  projects the shape, the projection of its first side follows that line, and
-  the other sides keep their last shape and say they lost their source, instead
-  of all landing on the first side.
+  starts from or runs up to one of its corners, its sides or its centre, from
+  any sketch, keeps it; a rectangle gets a construction point at its centre for
+  that. Where a later sketch projects the shape, the projection of its first
+  side follows that line, and the other sides keep their last shape and say
+  they lost their source, instead of all landing on the first side.
 
 - **Constrain and dimension the corners, centres and sides of rectangles,
   polygons and slots.** A rectangle's centre, a polygon's corners and centre

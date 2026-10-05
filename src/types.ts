@@ -443,9 +443,12 @@ export type PlaneSpec = Plane3 | PlaneDef;
  *
  *  Every form names live geometry and follows it: a sketch point or line by
  *  its stable entity id (`pointIndex` is the dimRefPoints index: 0/1 the ends of a
- *  line, arc or spline, 2 an arc's centre, 0..3 a rectangle's corners, 0 a
- *  circle's centre or a sketch point), a body edge by its by:"match"
- *  fingerprint with its body, and a body corner as one END of such an edge:
+ *  line, arc or spline, 2 an arc's centre, 0..3 a rectangle's corners and 4 its
+ *  centre, 0..n-1 a polygon's corners and -1 its centre, 0/1 a slot's centres,
+ *  0 a circle's centre or a sketch point; a line's `entity` may be a side of a
+ *  rectangle, polygon or slot, `<shapeId>~<k>` as entityDims.lineOperand reads
+ *  it), a body edge by its by:"match" fingerprint with its body, and a body
+ *  corner as one END of such an edge:
  *  end 1 is the end further along the fingerprint's sign-normalised direction
  *  (`EdgeFingerprint.dir`), so the index means the same corner however the
  *  kernel orients the rebuilt edge. Never by:"nearest", which binds the wrong

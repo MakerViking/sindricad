@@ -8,6 +8,7 @@ import type { CadDocument, Feature, ParamTarget, ParamUnit, SketchEntity, Sketch
 import { isDimConstraint } from "../sketch/id";
 import { rebindPolygonSides } from "../sketch/entityDims";
 import { resolveRealEntities } from "../sketch/resolve";
+import { applyPointCarry, polygonSidesCarry } from "./pointCarry";
 import { t } from "../i18n";
 
 /** What kind of quantity a numeric field holds — drives display-unit conversion
@@ -260,7 +261,7 @@ export function writeTarget(doc: CadDocument, target: ParamTarget, value: number
   if (was === v) return null;
   rt.holder[rt.field] = v;
   if (target.kind === "entity" && rt.field === "sides") {
-    rebindSketchSides(doc, target.sketch, target.entity, typeof was === "number" ? was : undefined);
+    rebindSketchSides(doc, target.sketch, target.entity, typeof was === "number" ? was : undefined, v);
   }
   const ownerId = target.kind === "feature" ? target.feature : target.sketch;
   const i = doc.features.findIndex((f) => f.id === ownerId);
@@ -269,15 +270,18 @@ export function writeTarget(doc: CadDocument, target: ParamTarget, value: number
 }
 
 /** A polygon's new side count renumbers its sides and corners, so what a
- *  constraint names on it is re-aimed (entityDims.rebindPolygonSides). Here,
- *  because every writer passes through writeTarget: the parameter recompute
- *  of a CLOSED sketch never reaches the sketch editor, and its headless solve
- *  would pull the geometry onto the wrong side. The open sketch re-aims its
- *  own session copy (syncParamValues). */
-function rebindSketchSides(doc: CadDocument, sketchId: string, entityId: string, oldSides?: number) {
+ *  constraint names on it is re-aimed (entityDims.rebindPolygonSides), and so
+ *  is an extrude, on any sketch, that starts from or runs up to one of them
+ *  (pointCarry.polygonSidesCarry). Here, because every writer passes through
+ *  writeTarget: the parameter recompute of a CLOSED sketch never reaches the
+ *  sketch editor, and its headless solve would pull the geometry onto the
+ *  wrong side. The open sketch re-aims its own session copy of the
+ *  constraints (syncParamValues); the extrudes are only ever the document's. */
+function rebindSketchSides(doc: CadDocument, sketchId: string, entityId: string, oldSides: number | undefined, sides: number) {
   const f = doc.features.find((x) => x.id === sketchId);
-  if (f?.type !== "sketch" || !f.constraints?.length) return;
-  rebindPolygonSides(resolveRealEntities(f, doc.parameters), f.constraints, entityId, oldSides);
+  if (f?.type !== "sketch") return;
+  if (f.constraints?.length) rebindPolygonSides(resolveRealEntities(f, doc.parameters), f.constraints, entityId, oldSides);
+  if (oldSides !== undefined) applyPointCarry(doc, sketchId, polygonSidesCarry(entityId, oldSides, sides));
 }
 
 /** `<entityId>:<field>` for every polygon or slot number in sketch `sketchId`

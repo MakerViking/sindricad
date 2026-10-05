@@ -601,4 +601,104 @@ describe("a pick lands on what the cut shows (5effc008 review)", () => {
     h.look([0.3, 0.4, -60], [0.3, 0.4, 0]);
     expect(h.faceOf(h.click(500, 350)), "C's bottom face").toBe(12 + 5);
   });
+
+  // Extrude's start and up-to picks (GH #41) weigh a body CORNER and the sketch
+  // points in front of the body, which the ray cannot hit, so they had their
+  // own occlusion test and corner pick, and those saw the whole model through
+  // the cut. Driven through the real Extrude tool's Up-to click, on the real
+  // viewport's picks, after the cut is made the way the Section tool makes it.
+  //
+  // Looking up from close under C: P1 is a sketch point 10 below the cut, in
+  // the removed half, where C stood in front of it; P2 is one 2 above the cut,
+  // inside A, behind A's cap.
+  const P1: [number, number, number] = [1, 1, -10];
+  const P2: [number, number, number] = [-1, -1, 2];
+  const C_CORNER: [number, number, number] = [3, 3, -23]; // a corner of C's bottom face
+
+  async function extrudeOn(h: ReturnType<typeof pickHarness>) {
+    const { ExtrudeTool } = await import("./extrudeTool");
+    const { SketchOverlay } = await import("../sketch/overlay");
+    vi.stubGlobal("Node", FakeEl);
+    const level = (z: number) => ({ origin: [0, 0, z], normal: [0, 0, 1], xdir: [1, 0, 0] });
+    const d = {
+      features: [
+        // the profile, well clear of the boxes
+        { id: "s1", type: "sketch", plane: "XY", entities: [{ id: "ra", type: "rectangle", x: 60, y: 0, width: 10, height: 10 }] },
+        { id: "s2", type: "sketch", plane: level(P1[2]), entities: [{ id: "p1", type: "point", x: P1[0], y: P1[1] }] },
+        { id: "s3", type: "sketch", plane: level(P2[2]), entities: [{ id: "p2", type: "point", x: P2[0], y: P2[1] }] },
+      ],
+      parameters: {},
+    } as unknown as CadDocument;
+    const overlay = new SketchOverlay();
+    overlay.update(d);
+    const previews: unknown[] = [];
+    const queries: unknown[] = [];
+    const store = {
+      document: d,
+      isParamBound: () => false,
+      boundExpr: () => null,
+      beginEditPreview() {},
+      endEditPreview() {},
+      setPreview: (f: unknown) => previews.push(f),
+      setEditPreview: (f: unknown) => previews.push(f),
+      buildState: {},
+      hiddenBodyIds: () => [],
+      nextId: () => "new1",
+      onBuild: () => () => {},
+      queryReferences: (items: unknown) => {
+        queries.push(items);
+        return new Promise(() => {});
+      },
+    };
+    // the real viewport's picks; what the tool draws or highlights is stubbed
+    Object.assign(h.vp, {
+      projectToScreen: (w: THREE.Vector3) => h.screenOf([w.x, w.y, w.z]),
+      addToScene() {},
+      removeFromScene() {},
+      requestRender() {},
+      tiltOffAxis: () => false,
+      pointInSolid: () => false,
+      planeHitsAt: () => [],
+      datumPlaneOf: () => null,
+      showAllPlanes() {},
+      hoverPlane() {},
+      hoverFaceAt: () => null,
+      hoverEdge() {},
+      hoverDatum() {},
+      clearHover() {},
+    });
+    const tool = new ExtrudeTool(h.vp as never, overlay, store as never);
+    overlay.toggleRegionSelection(overlay.regions.find((wr) => wr.region.entityIds.includes("ra"))!, false);
+    tool.start(() => {});
+    const internals = tool as unknown as { onKey(e: KeyboardEvent): void; onDown(e: PointerEvent): void };
+    internals.onKey({ key: "t", target: null, shiftKey: false, ctrlKey: false, metaKey: false, isComposing: false, keyCode: 0, preventDefault() {}, stopPropagation() {} } as unknown as KeyboardEvent);
+    /** an Up-to click at a world point as the screen shows it: the point it ran up to, or "corner" */
+    const clickAt = (w: [number, number, number]) => {
+      const before = queries.length;
+      const s = h.screenOf(w);
+      internals.onDown({ button: 0, clientX: s.x, clientY: s.y, buttons: 1, ctrlKey: false, metaKey: false, shiftKey: false, preventDefault() {}, stopImmediatePropagation() {} } as unknown as PointerEvent);
+      if (queries.length > before) return "corner";
+      return (previews.at(-1) as { upToRef?: { entity: string } } | undefined)?.upToRef?.entity ?? null;
+    };
+    return { clickAt };
+  }
+
+  it("Extrude's Up to takes no corner of the removed half, and a sketch point that half hid", async () => {
+    const h = pickHarness();
+    cutAtZero(h);
+    h.look([0.3, 0.4, -40], [0.3, 0.4, 0]);
+    const x = await extrudeOn(h);
+    expect(x.clickAt(C_CORNER), "a corner of C, which the cut removed").toBeNull();
+    expect(x.clickAt(P2), "a point behind A's cap is still hidden").toBeNull();
+    expect(x.clickAt(P1), "the point C hid before the cut took it away").toBe("p1");
+  });
+
+  it("CONTROL: with no cut, the same clicks take C's corner and leave both points hidden", async () => {
+    const h = pickHarness();
+    h.look([0.3, 0.4, -40], [0.3, 0.4, 0]);
+    const x = await extrudeOn(h);
+    expect(x.clickAt(P1), "behind C").toBeNull();
+    expect(x.clickAt(P2), "behind C and A").toBeNull();
+    expect(x.clickAt(C_CORNER)).toBe("corner");
+  });
 });

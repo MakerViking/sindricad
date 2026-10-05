@@ -5,7 +5,7 @@
 import * as THREE from "three";
 import type { Viewport } from "../viewport/viewport";
 import type { DocumentStore } from "../document/store";
-import type { EdgeFingerprint, Feature, ParamTarget, PlaceOffset, PlaneSpec, ProjectedSource, ProjectionUpdate, Selector, SketchConstraint, SketchEntity, SketchPattern } from "../types";
+import type { EdgeFingerprint, ExtrudeRef, Feature, ParamTarget, PlaceOffset, PlaneSpec, ProjectedSource, ProjectionUpdate, Selector, SketchConstraint, SketchEntity, SketchPattern } from "../types";
 import { applyProjectionUpdate, dimPlaceOf, isBadgeEntity, isDriven, isPlacedDim } from "../types";
 import { SketchPlane } from "./plane";
 import { SketchOverlay, curveObjects, dimensionLineObjects, pointHighlight, polyline, dashedPolyline, CURVE_COLOR, PREVIEW_COLOR, SELECT_COLOR } from "./overlay";
@@ -17,19 +17,20 @@ import { isEditableTarget } from "../ui/focus";
 import { SketchDimensions, dimBadgeFields, type ExtraDim } from "./sketchDimensions";
 import { SketchGlyphs } from "./sketchGlyphs";
 import { constraintGlyphs, diagnosisOf, type ConstraintGlyph } from "./glyphs";
-import { entityDims, constraintDims, dimRefPoints, curveKind, hoverOperandCurve, lineOperand, lineOperandAt, linearDim, rebindPolygonSides, setDimPixelScale, shapeSideAt, slotAxisAt, staggeredDefaults, type DimField, type ConstraintDim } from "./entityDims";
+import { entityDims, constraintDims, dimRefPoints, curveKind, hoverOperandCurve, lineOperand, lineOperandAt, linearDim, rebindPolygonSides, setDimPixelScale, RECT_CENTRE, shapeSideAt, slotAxisAt, staggeredDefaults, type DimField, type ConstraintDim } from "./entityDims";
 import {
   clampPlace, isDimError, isRoundTarget, pickDimTarget, rebindTarget, resolveDim, targetIdentity,
   targetKey, unsupportedMessage,
   type DimOptions, type DimPlan, type DimTarget,
 } from "./dimensionTool";
-import { pickEntity, trimSpan, trimWithConstraints, detachEndpoint, detachableEnd, filletCorner, chamferCorner, cornerJoins, explodeCompound, polygonRingHolds, rotationTie, translationTie, offsetEntity, offsetChain, offsetChainJunction, signedOffsetAt, breakWithConstraints, extendLine, breakLink, attachmentPoints, bodyDragBlocked, bodyDragFrame, fixPinnedIds, pickDragPoint, FIXED_POINT_MSG, PROJECTED_FIXED_MSG, type ExplodeResult, type OffsetResult } from "./modify";
+import { pickEntity, trimSpan, trimWithConstraints, detachEndpoint, detachableEnd, filletCorner, chamferCorner, cornerJoins, explodeCompound, polygonRingHolds, rotationTie, translationTie, offsetEntity, offsetChain, offsetChainJunction, signedOffsetAt, breakWithConstraints, extendLine, breakLink, attachmentPoints, bodyDragBlocked, bodyDragFrame, fixPinnedIds, pickDragPoint, FIXED_POINT_MSG, PROJECTED_FIXED_MSG, type ExplodeResult, type OffsetResult, type TrimResult } from "./modify";
 import { newEntityId, newConstraintId, isDimConstraint, notePatternId } from "./id";
 import { SketchHistory, cloneSnapshot, type SketchSnapshot } from "./history";
 import { isPlainNumber, parseField, dimValueOk, fmtLength, fieldText, canonicalDecimal, fieldExpr } from "../ui/units";
 import { splitNameValue } from "../params/engine";
 import { RIGID_ENTITY_NUM_FIELDS, coerceForField, type FieldKind } from "../document/numFields";
-import type { PointCarry, RegionCarry, SketchBinding } from "../document/store";
+import type { RegionCarry, SketchBinding } from "../document/store";
+import { composePointCarry, polygonSidesCarry, type PointCarry } from "../document/pointCarry";
 import { advanceCenterArcSweep, centerArcEntity, circumcenter } from "./arc";
 import { coincKey, compileAndSolve, constraintIndexOf, soleDimEntity, MAX_BIAS_ANCHORS } from "./sketchSolve";
 import { SolverUnavailable } from "./solver";
@@ -425,10 +426,14 @@ export class SketchMode {
    *  the sketch, in its one undo step; they ride in the in-sketch undo
    *  snapshot, so undoing the edit takes them back too. */
   private regionCarry: RegionCarry = {};
-  /** The shapes an edit here exploded, and where each of their points went
-   *  (commitExplodes). finish() re-points with it every extrude, on any
-   *  sketch, that starts from or runs up to one of those points, in the same
-   *  undo step; it rides in the in-sketch undo snapshot like regionCarry. */
+  /** What an edit here renamed, and where each of its points and lines went:
+   *  a shape exploded (commitExplodes), a curve or shape trimmed or broken
+   *  (carryPieces), a polygon's corners and sides renumbered
+   *  (commitPolygonEdit). finish() re-points with it every extrude, on any
+   *  sketch, that starts from or runs up to one of them, in the same undo
+   *  step; it rides in the in-sketch undo snapshot like regionCarry. Only kept
+   *  while an extrude names something in this sketch (carryPoints), so a
+   *  session nothing refers into snapshots as before. */
   private pointCarry: PointCarry = {};
   /** The datumPlane feature this sketch is placed ON, when it was created from
    *  one. Round-tripped through finish() so re-editing a sketch never silently
@@ -2842,8 +2847,12 @@ export class SketchMode {
     }
     this.cancelPolygonEdit();
     if (!writes.length) return;
-    // a new side count renumbers the sides and corners constraints name
-    if (e.sides !== oldSides) rebindPolygonSides(this.entities, this.constraints, e.id, oldSides);
+    // a new side count renumbers the sides and corners constraints name, and
+    // an extrude's start or up-to reference
+    if (e.sides !== oldSides) {
+      rebindPolygonSides(this.entities, this.constraints, e.id, oldSides);
+      this.carryPoints(polygonSidesCarry(e.id, oldSides, e.sides));
+    }
     this.refreshActive();
     this.requestSolve(); // banks the undo step, like every other sketch edit
     this.onState?.();
@@ -4454,13 +4463,28 @@ export class SketchMode {
   private trimClick(p: THREE.Vector2) {
     const idx = pickEntity(this.entities, p, this.pickTol());
     if (idx < 0 || this.guardProjected(this.entities[idx])) return;
+    const trimmed = this.entities[idx]!;
     const res = trimWithConstraints(this.entities, idx, p, this.constraints);
     this.entities = res.entities;
     this.constraints = res.constraints;
+    this.carryPieces(trimmed, res);
     const before = this.constraints.length;
     this.afterModify(); // prunes too: anything it still finds dangling counts
     const dropped = res.dropped + before - this.constraints.length;
     if (dropped > 0) toast(t("sketch.modify.trimDropped", { count: dropped }));
+  }
+  /** A Trim or a Break gives every piece a new id (trimWithConstraints says
+   *  why), so an extrude that starts from or runs up to a point or a line of
+   *  `cut` goes to the piece that still has it: a rectangle's corner to the
+   *  line end it is now, its side to its line. It used to say "was deleted
+   *  from its sketch" about a side still drawn. */
+  private carryPieces(cut: ResolvedEntity, res: TrimResult) {
+    this.carryPoints({
+      [cut.id]: Object.fromEntries([
+        ...Object.entries(res.points).map(([k, q]) => [k, { entity: q.e, pointIndex: q.p }]),
+        ...Object.entries(res.lines).map(([id, line]) => [id.slice(cut.id.length), { entity: line }]),
+      ]),
+    });
   }
   private filletClick(p: THREE.Vector2) {
     const pick = this.cornerPick(p);
@@ -4597,7 +4621,7 @@ export class SketchMode {
       if (!pk.side) { ids.push(e.id); continue; }
       let done = exploded.find((x) => x.shape.id === e.id);
       if (!done) {
-        const result = explodeCompound(entities, constraints, entities.findIndex((x) => x.id === e.id));
+        const result = explodeCompound(entities, constraints, entities.findIndex((x) => x.id === e.id), { centre: this.extrudeNamesCentre(e.id) });
         if (!result) return null;
         ({ entities, constraints } = result);
         done = { shape: e, result };
@@ -4629,6 +4653,34 @@ export class SketchMode {
     return null;
   }
 
+  /** The start and up-to references, of every extrude in the document, that
+   *  name a point or a line of this sketch (types.ts ExtrudeRef). */
+  private refsIntoSketch(): Extract<ExtrudeRef, { sketch: string }>[] {
+    if (!this.editingId || !this.store) return [];
+    const out: Extract<ExtrudeRef, { sketch: string }>[] = [];
+    for (const f of this.store.document.features) {
+      if (f.type !== "extrude") continue;
+      for (const r of [f.startFrom, f.upToRef]) {
+        if ((r?.kind === "sketchPoint" || r?.kind === "sketchLine") && r.sketch === this.editingId) out.push(r);
+      }
+    }
+    return out;
+  }
+
+  /** Add what an edit just renamed to pointCarry, after what the edits before
+   *  it in this session renamed: the second of two trims can retire a line
+   *  the first one made. Nothing while no extrude names anything here. */
+  private carryPoints(next: PointCarry) {
+    if (this.refsIntoSketch().length) this.pointCarry = composePointCarry(this.pointCarry, next);
+  }
+
+  /** Whether an extrude starts from or runs up to rectangle `id`'s centre:
+   *  explodeCompound then keeps that centre as a point (`centre`), since it
+   *  is no end of any of the lines the rectangle becomes. */
+  private extrudeNamesCentre(id: string): boolean {
+    return this.refsIntoSketch().some((r) => r.kind === "sketchPoint" && r.entity === id && r.pointIndex === RECT_CENTRE);
+  }
+
   /** Make explodes planned on a copy (explodeCompound) the sketch's own: what
    *  else names the shapes by id, a pattern's sources and the selection, now
    *  names what they became, and the user is told the shape is lines now.
@@ -4638,10 +4690,14 @@ export class SketchMode {
       // An extrude that starts from or runs up to one of its corners names it
       // by the shape's id and a corner index, and the line that kept the id
       // has two ends: corner 2 or 3 would name nothing at Finish (Extrude:
-      // "isn't on its curve any more"). Each point goes where it went.
-      this.pointCarry[shape.id] = Object.fromEntries(
-        Object.entries(result.points).map(([k, q]) => [k, { entity: q.e, pointIndex: q.p }]),
-      );
+      // "isn't on its curve any more"). Each point goes where it went, and a
+      // side (`<shapeId>~<k>`) to its line.
+      this.carryPoints({
+        [shape.id]: Object.fromEntries([
+          ...Object.entries(result.points).map(([k, q]) => [k, { entity: q.e, pointIndex: q.p }]),
+          ...result.sides.map((line, k) => [`~${k}`, { entity: line }]),
+        ]),
+      });
       // The shape's own id is still there, on its first line. A pattern of the
       // shape copies all of it, not that one line.
       for (const pat of this.patterns) {
@@ -4800,7 +4856,7 @@ export class SketchMode {
     for (const shape of this.entities.filter((e) => this.selected.has(e.id) && isCompoundShape(e))) {
       const why = this.explodeRefusal(shape);
       if (why) { toast(why, { timeout: 8000 }); continue; }
-      const result = explodeCompound(this.entities, this.constraints, this.entities.indexOf(shape));
+      const result = explodeCompound(this.entities, this.constraints, this.entities.indexOf(shape), { centre: this.extrudeNamesCentre(shape.id) });
       if (!result) continue;
       this.entities = result.entities;
       this.constraints = result.constraints;
@@ -4929,7 +4985,9 @@ export class SketchMode {
     const regions = this.regionsBeforeRename();
     const done: { shape: ResolvedEntity; result: ExplodeResult }[] = [];
     for (const shape of this.entities.filter((e) => this.selected.has(e.id) && e.type === "rectangle")) {
-      const result = explodeCompound(this.entities, this.constraints, this.entities.indexOf(shape), { square: "perpendicular" });
+      const result = explodeCompound(this.entities, this.constraints, this.entities.indexOf(shape), {
+        square: "perpendicular", centre: this.extrudeNamesCentre(shape.id),
+      });
       if (!result) continue;
       this.entities = result.entities;
       this.constraints = result.constraints;
@@ -5140,9 +5198,11 @@ export class SketchMode {
     const idx = pickEntity(this.entities, p, this.pickTol());
     if (idx < 0 || this.guardProjected(this.entities[idx])) return;
     const before = this.entities.length;
+    const broken = this.entities[idx]!;
     const res = breakWithConstraints(this.entities, idx, p, this.constraints);
     this.entities = res.entities;
     this.constraints = res.constraints;
+    this.carryPieces(broken, res);
     const kept = this.constraints.length;
     this.afterModify(); // prunes too: anything it still finds dangling counts
     const dropped = res.dropped + kept - this.constraints.length;
