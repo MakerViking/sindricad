@@ -66,8 +66,9 @@ type Mode = Record<string, any>;
 /** A SketchMode on the select tool where one screen px is one sketch mm, so a
  *  pointer event's clientX/Y IS the plane point. `frames` is what the viewport
  *  would run at the start of its next frame (Viewport.beforeNextDraw). */
-function mount(opts: { badges?: boolean; more?: SketchConstraint[] } = {}) {
+function mount(opts: { badges?: boolean; more?: SketchConstraint[]; moreEnts?: ResolvedEntity[] } = {}) {
   const { ents, cons } = doc();
+  ents.push(...(opts.moreEnts ?? []));
   cons.push(...(opts.more ?? []));
   const frames: (() => void)[] = [];
   const seen = { state: 0, redraws: 0, drawnB: "" };
@@ -340,5 +341,55 @@ describe("dimension badges and constraint glyphs move with a drag (GH #17)", () 
     paint();
     // release rebuilds them from scratch; they must already have been there
     expect(where()).toEqual(midDrag);
+  });
+});
+
+describe("a mid-drag frame solves only the dragged point's cluster (GH #17 drag speed)", () => {
+  it("never moves geometry outside the cluster, and release always sees the whole sketch", async () => {
+    // C shares no position and no constraint with A/B: outside the cluster.
+    const isolated: ResolvedEntity = { type: "circle", id: "C", x: 500, y: 500, radius: 3 };
+    const m = mount({ moreEnts: [isolated] });
+    const C = () => m.s.entities.find((e: ResolvedEntity) => e.id === "C");
+    const before = JSON.stringify(C());
+
+    m.down(10, 10);
+    m.move(15, 12);
+    await m.frame();
+    const midEnts = solves.mock.calls[0]![0] as ResolvedEntity[];
+    expect(midEnts.some((e) => e.id === "C"), "a mid-drag solve excludes the unrelated circle").toBe(false);
+    expect(JSON.stringify(C()), "untouched during the drag").toBe(before);
+
+    m.up();
+    await settle();
+    while (m.s.solveBusy) await settle();
+    const releaseEnts = solves.mock.calls.at(-1)![0] as ResolvedEntity[];
+    expect(releaseEnts.some((e) => e.id === "C"), "release solves the whole sketch").toBe(true);
+    expect(JSON.stringify(C()), "still untouched after release").toBe(before);
+  });
+
+  it("gives the same final geometry on release as a full solve of the same move", async () => {
+    const from = { x: 10, y: 10 };
+    const to = { x: 23, y: 7 };
+    const m = mount();
+    m.down(from.x, from.y);
+    // several frames, so the mid-gesture solves run on the cluster-scoped path
+    m.move(14, 9);
+    await settle();
+    m.move(18, 8);
+    await m.frame();
+    m.move(to.x, to.y);
+    await settle();
+    m.up();
+    await settle();
+    while (m.s.solveBusy) await settle();
+    const viaCluster = { x2: m.B().x2, y2: m.B().y2 };
+
+    // what an unconditional full-sketch solve gives for the same single move,
+    // the "today" path this gesture must still agree with on release
+    const { ents, cons } = doc();
+    const full = await compileAndSolve(ents, cons, { fromX: from.x, fromY: from.y, toX: to.x, toY: to.y });
+    const bFull = full.entities.find((e) => e.id === "B") as Extract<ResolvedEntity, { type: "line" }>;
+    expect(viaCluster.x2).toBeCloseTo(bFull.x2, 6);
+    expect(viaCluster.y2).toBeCloseTo(bFull.y2, 6);
   });
 });

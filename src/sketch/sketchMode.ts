@@ -37,6 +37,7 @@ import { composePointCarry, polygonSidesCarry, type PointCarry } from "../docume
 import { advanceCenterArcSweep, centerArcEntity, circumcenter } from "./arc";
 import { coincKey, compileAndSolve, constraintIndexOf, soleDimEntity, MAX_BIAS_ANCHORS } from "./sketchSolve";
 import { SolverUnavailable } from "./solver";
+import { dragCluster } from "./dragCluster";
 import { p2lSideFlipped, refreshStep, refreshSteps } from "../document/projectionWalk";
 import { resolveRealEntities, toSketchEntity } from "./resolve";
 import { applyDrivingDimsDirect, dimBindingFor, governingDimAt, lockDimFor, measuredLocks, planDimEdit } from "./directDims";
@@ -390,6 +391,12 @@ export class SketchMode {
    *  selection (Shift, Ctrl or Cmd held) instead of replacing it. */
   private boxSel: { from: THREE.Vector2; to: THREE.Vector2; additive: boolean } | null = null;
   private dragFrom: THREE.Vector2 | null = null; // grabbed point's current position
+  /** The constraint-connected cluster dragFrom's point sits in, computed once at
+   *  grab (and again if detachFrame splits it mid-gesture) — GH #17 drag speed.
+   *  pump() solves only these entities per frame instead of the whole sketch;
+   *  null means "no cluster found" (fall back to the whole sketch) or "not a
+   *  point drag" (body drags never set it). */
+  private dragClusterIds: Set<string> | null = null;
   // click-vs-drag bookkeeping for a grabbed POINT: where the pointer went down
   // (screen px), and whether it ever moved past the same 4px threshold
   // moveDrag uses. A stationary click on a vertex must still SELECT, instead
@@ -859,6 +866,7 @@ export class SketchMode {
     hideCheckPanel(); // a stale results list must not outlive the sketch it describes
     this.selected.clear();
     this.dragFrom = null;
+    this.dragClusterIds = null;
     this.dragSnapshot = null;
     this.dragConsBefore = null;
     this.pendingDrag = null;
@@ -926,6 +934,7 @@ export class SketchMode {
     this.clickPts = [];
     this.filletFirst = null;
     this.dragFrom = null;
+    this.dragClusterIds = null;
     this.dragDetach = null;
     this.detachArmed = null;
     this.pendingDrag = null;
@@ -2571,6 +2580,9 @@ export class SketchMode {
       if (gp) {
         const at = this.planePoint(e) ?? p;
         this.dragFrom = gp.p.clone();
+        // GH #17 drag speed: everything outside this cluster has no path to
+        // the grabbed point, so a drag frame's solve can skip it (see pump()).
+        this.dragClusterIds = dragCluster(this.entities, this.constraints, gp.p.x, gp.p.y);
         this.dragStartClient = { x: e.clientX, y: e.clientY };
         this.dragMoved = false;
         this.dragAdditive = additiveClick(e);
@@ -4491,6 +4503,7 @@ export class SketchMode {
         this.dragSnapshot = null;
         this.dragConsBefore = null;
         this.dragFrom = null;
+        this.dragClusterIds = null;
         this.moveDrag = null;
         this.pendingDrag = null;
         this.pendingPinIdxs = null;
@@ -6935,7 +6948,17 @@ export class SketchMode {
           const pins = pinEnts.length
             ? pinEnts.flatMap((e) => attachmentPoints(e, this.constraints).map((q) => ({ x: q.x, y: q.y })))
             : undefined;
-          const r = await compileAndSolve(this.entities, this.constraints, d ?? undefined, undefined, pins, this.boundShapeFields());
+          // GH #17 drag speed: a mid-gesture point-drag frame only needs to
+          // solve the cluster the grabbed point sits in — everything outside
+          // it has no path to move, so a full-sketch solve would leave it
+          // exactly where it already is. Release (dragRelease set, by
+          // endDrag) and a body drag always solve the whole sketch, same as
+          // a grab with no cluster found (dragClusterIds null).
+          const cluster = !forBody && !this.dragRelease ? this.dragClusterIds : null;
+          const solveEntities = cluster && cluster.size > 0
+            ? this.entities.filter((e) => cluster.has(e.id))
+            : this.entities;
+          const r = await compileAndSolve(solveEntities, this.constraints, d ?? undefined, undefined, pins, this.boundShapeFields());
           // The gesture this result belongs to ended, was cancelled, or was
           // replaced mid-solve: drop the result (and its toast) rather than
           // apply it to a gesture that never asked for it. Asked per KIND —
@@ -6953,7 +6976,17 @@ export class SketchMode {
           this.conflict = r.conflicts.length > 0;
           this.conflictIdx = parseConflictIdx(r.conflicts);
           this.overIdx = parseConflictIdx(r.overDefined);
-          if (!this.conflict) this.entities = r.entities;
+          if (!this.conflict) {
+            // A cluster-scoped solve returned only its own entities: merge
+            // them back by id rather than replacing the whole list, or every
+            // out-of-cluster entity would vanish from this.entities.
+            if (solveEntities === this.entities) {
+              this.entities = r.entities;
+            } else {
+              const byId = new Map(r.entities.map((e) => [e.id, e] as const));
+              this.entities = this.entities.map((e) => byId.get(e.id) ?? e);
+            }
+          }
           this.lastDof = r.dof;
           if (r.dragRefused) {
             // Nothing moved: keep the anchor where the grabbed point still is.
@@ -7168,6 +7201,7 @@ export class SketchMode {
     if (r.kind !== "detached") {
       toast(r.kind === "coincident" ? t("sketch.guard.coincidentHolds") : FIXED_POINT_MSG);
       this.dragFrom = null;
+      this.dragClusterIds = null;
       this.dragSnapshot = null;
       return false;
     }
@@ -7179,6 +7213,9 @@ export class SketchMode {
       this.overIdx.clear();
     }
     from.copy(w); // the pulled end sits under the cursor: the drag pins it from here
+    // the pull just changed this point's connectivity (and its id): recompute
+    // the cluster from here, not the stale pre-detach one
+    this.dragClusterIds = dragCluster(this.entities, this.constraints, w.x, w.y);
     return true;
   }
 
@@ -7360,17 +7397,31 @@ export class SketchMode {
       return;
     }
     if (!this.dragFrom) return;
+    // GH #17 drag speed: a drag whose frames were cluster-scoped has never had
+    // the WHOLE sketch solved together. Force exactly one more solve, of
+    // everything, before this gesture's result is final — the full solve on
+    // release stays authoritative, same as every frame already was before
+    // cluster-scoping existed. One-shot: cleared here (not after) so the
+    // recursive endDrag call pump() makes below does not force it again.
+    const forcedSettle = this.dragClusterIds !== null && this.dragMoved;
+    if (forcedSettle) this.dragClusterIds = null;
     // The gesture's last move can still be waiting for its frame (queueDrag).
     // Releasing on top of it would drop it, and the point would stop one frame
     // short of where the button came up. Solve it now; pump() finishes the
     // release when it lands. With the solver loaded that is still inside this
     // event's microtasks, so no other input sees the half-released state.
-    if (this.pendingDrag && !this.solverDead) {
+    if ((this.pendingDrag || forcedSettle) && !this.solverDead) {
+      // No move is pending: resolve the WHOLE sketch at the drag's own
+      // current position, a no-op move that only widens the solve back out.
+      if (!this.pendingDrag) {
+        this.pendingDrag = { fromX: this.dragFrom.x, fromY: this.dragFrom.y, toX: this.dragFrom.x, toY: this.dragFrom.y };
+      }
       this.dragRelease = { pointerId };
       void this.pump();
       return;
     }
     this.dragFrom = null;
+    this.dragClusterIds = null;
     this.pendingDrag = null;
     this.pendingPinIdxs = null;
     if (pointerId != null) {

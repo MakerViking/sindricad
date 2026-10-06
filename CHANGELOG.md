@@ -94,6 +94,15 @@ This file starts on 2026-08-03. For anything before that, see the
   that curve, wherever the curve itself moves to. Asked for in
   [#17](https://github.com/MakerViking/sindricad/issues/17).
 
+- **Dragging a point in a sketch with a lot of other geometry is faster.**
+  Every drag frame used to re-solve the whole sketch, so a big sketch dragged
+  slower than a small one even though the drag only touches the geometry
+  connected to the point you're holding. A drag frame now solves just that
+  connected piece, and everything else stays exactly where it is. Letting go
+  still runs the full solve, so the final result is the same either way.
+  Measured on a 400-entity sketch: about 5x faster per frame. Part of
+  [#17](https://github.com/MakerViking/sindricad/issues/17).
+
 ### Fixed
 
 - **Shift-drag at a Break only pulls apart what Break actually cut.** It used

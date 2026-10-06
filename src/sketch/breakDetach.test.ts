@@ -121,6 +121,11 @@ function sketch(constraints: SketchConstraint[] = []) {
         await settle();
       }
       priv.endDrag(1);
+      // GH #17 drag speed: a cluster-scoped gesture's release can fire one more
+      // settle solve in the background (forcedSettle in endDrag). Drain it before
+      // the next drag() call starts a new gesture, or that gesture's own first
+      // move can find dragRelease still set from this one and get swallowed.
+      await settle();
     },
     rightClick(at: THREE.Vector2) {
       cur.raw = at;
@@ -254,7 +259,12 @@ describe("pressed on the cut itself, the drag picks the half", () => {
     menus.at(-1)!.find((i) => i.label === t("sketch.menu.disconnect"))!.onClick!();
     // a plain drag from the cut toward the RIGHT half (the one ending at x=10)
     await sk.drag(cut, cut.clone(), [v(cut.x + 3, cut.y + 2)], false);
-    const right = arcs().find((a) => a.x1 === 10 || a.x2 === 10)!;
+    // GH #17 drag speed: release now does a cluster solve then a forced
+    // full-sketch resettle (two solver passes, not one), so an untouched
+    // coordinate can land a float epsilon off its input value (e.g.
+    // 9.999999999999998, not exactly 10) even though it never moved
+    // geometrically. Identify the half by closeness, not exact equality.
+    const right = arcs().find((a) => Math.abs(a.x1 - 10) < 1e-6 || Math.abs(a.x2 - 10) < 1e-6)!;
     const leftArc = arcs().find((a) => a !== right)!;
     const moved = (a: typeof right) => [v(a.x1, a.y1), v(a.x2, a.y2)].some((p) => p.distanceTo(v(cut.x + 3, cut.y + 2)) < 1e-6);
     expect(moved(right), "the right half's end did not follow the drag").toBe(true);
