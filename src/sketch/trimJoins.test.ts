@@ -312,6 +312,7 @@ describe("the tangency point shows while trimming, and snaps", () => {
     const s = Object.create(SketchMode.prototype) as SketchMode & Record<string, unknown>;
     Object.assign(s, {
       entities: ents, constraints: cons, patterns: [], dimPicks: [], dimsVisible: false, entityVersion: 0, gridSnap: false,
+      selected: new Set<string>(),
       plane: { plane: {}, origin: new THREE.Vector3(), to2D: (w: THREE.Vector3) => new THREE.Vector2(w.x, w.y), to3D: (x: number, y: number) => new THREE.Vector3(x, y, 0) },
       viewport: {
         pixelWorldSize: () => 1, requestRender() {},
