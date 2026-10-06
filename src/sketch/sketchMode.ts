@@ -43,7 +43,7 @@ import { applyDrivingDimsDirect, dimBindingFor, governingDimAt, lockDimFor, meas
 import { constraintDimKey, rowConstraintAt, sketchDimRows, type SketchDimRow } from "./dimRows";
 import { dimConflictMsg, withdrawTrial, type SketchTrial } from "./dimConflict";
 import { expandPattern, translated, rotated, scaled } from "./pattern";
-import { candidatesFromEntities, snap, snapCoincidences, type SnapKind, type SnapCandidate, type PointRef } from "./snap";
+import { candidatesFromEntities, snap, snapCoincidences, snapPointOns, type SnapKind, type SnapCandidate, type PointRef, type CurveRef } from "./snap";
 import type { ResolvedEntity } from "./snap";
 import {
   curvesEndingAt, inferArcTangents, inferLineRelations, isGeometrySnap, relationConstraints,
@@ -315,6 +315,13 @@ export class SketchMode {
    *  Carried here so commitFromCursor can emit a real coincident constraint. */
   private baseRef: PointRef | null = null;
   private lastSnapRef: PointRef | null = null;
+  /** the curve the current base / last cursor was SNAPPED ONTO (an on-curve,
+   *  not endpoint, snap), when there is one. Mutually exclusive with the
+   *  sibling *Ref field above: a snap candidate carries one or the other,
+   *  never both (see SnapCandidate in snap.ts). Lets commitFromCursor emit a
+   *  real pointOn constraint, the same way *Ref lets it emit coincident. */
+  private baseCurve: CurveRef | null = null;
+  private lastSnapCurve: CurveRef | null = null;
   /** the constraints the next click would add, drawn muted (field report 636afdcb) */
   private pendingGlyphs: ConstraintGlyph[] | null = null;
   private arcStart: THREE.Vector2 | null = null; // 3-point arc: start, end, then bulge
@@ -332,9 +339,13 @@ export class SketchMode {
   private arcStartRef: PointRef | null = null;
   private arcEndRef: PointRef | null = null;
   private arcCenterRef: PointRef | null = null;
+  private arcStartCurve: CurveRef | null = null;
+  private arcEndCurve: CurveRef | null = null;
+  private arcCenterCurve: CurveRef | null = null;
   /** what a centre rectangle's first click, its CENTRE, was snapped onto: set
    *  with its `clickPts` entry, for the same reason as the arc's */
   private rectCenterRef: PointRef | null = null;
+  private rectCenterCurve: CurveRef | null = null;
   private splinePts: THREE.Vector2[] = []; // in-progress spline fit points
   private clickPts: THREE.Vector2[] = []; // accumulated clicks for multi-point primitives (polygon/slot/circle variants, centre arc)
   /** centre-point arc: the running signed sweep (radians) from the start, kept
@@ -2548,6 +2559,7 @@ export class SketchMode {
     const p = hit.p;
     this.lastSnapKind = hit.kind;
     this.lastSnapRef = hit.ref ?? null;
+    this.lastSnapCurve = hit.curve ? { id: hit.curve, at: p.clone() } : null;
 
     if (this.tool === "select") {
       this.clearSelectHover();
@@ -2741,6 +2753,7 @@ export class SketchMode {
       this.base = p.clone();
       this.basePinned = isGeometrySnap(hit.kind);
       this.baseRef = hit.ref ?? null;
+      this.baseCurve = hit.curve ? { id: hit.curve, at: p.clone() } : null;
       if (this.tool === "line") this.chainStart = p.clone(); // remember loop start
       this.showDimFields();
       return;
@@ -2754,9 +2767,11 @@ export class SketchMode {
     if (!this.arcStart) {
       this.arcStart = p.clone();
       this.arcStartRef = this.lastSnapRef;
+      this.arcStartCurve = this.lastSnapCurve;
     } else if (!this.arcEnd) {
       this.arcEnd = p.clone();
       this.arcEndRef = this.lastSnapRef;
+      this.arcEndCurve = this.lastSnapCurve;
     } else {
       const id = newEntityId();
       // A tangent to the line or arc either end continues, when the arc leaves
@@ -2769,7 +2784,7 @@ export class SketchMode {
       // they must be CONSTRAINED to what they landed on, not merely copied from
       // it (field report ecc3e0d6). The third click is the through-point, which
       // is not a solver point and so is never emitted for.
-      this.emitSnapCoincidences(ent, this.arcStartRef, this.arcEndRef);
+      this.emitSnapCoincidences(ent, this.arcStartRef, this.arcEndRef, null, this.arcStartCurve, this.arcEndCurve);
       this.constraints.push(...tangents.map((other): SketchConstraint => ({ type: "tangent2", a: id, b: other })));
       this.clearPendingGlyph();
       this.arcStart = null;
@@ -2790,12 +2805,14 @@ export class SketchMode {
     if (!center) {
       this.clickPts = [p.clone()];
       this.arcCenterRef = this.lastSnapRef;
+      this.arcCenterCurve = this.lastSnapCurve;
       return;
     }
     if (!start) {
       if (center.distanceTo(p) < 1e-4) return; // no radius yet: wait for a real one
       this.clickPts.push(p.clone());
       this.arcStartRef = this.lastSnapRef;
+      this.arcStartCurve = this.lastSnapCurve;
       this.arcSweep = 0;
       return;
     }
@@ -2808,7 +2825,7 @@ export class SketchMode {
     // The same joins the 3-point arc gets, plus the centre, which this tool's
     // first click placed (solver point 2). The end click only chose an angle, so
     // its ref joins only where the end landed on that point (snapCoincidences).
-    this.emitSnapCoincidences(ent, this.arcStartRef, this.lastSnapRef, this.arcCenterRef);
+    this.emitSnapCoincidences(ent, this.arcStartRef, this.lastSnapRef, this.arcCenterRef, this.arcStartCurve, this.lastSnapCurve, this.arcCenterCurve);
     this.clickPts = [];
     this.refreshActive();
     this.overlay.setPreview([]);
@@ -3545,6 +3562,7 @@ export class SketchMode {
     if (!this.clickPts.length) {
       this.clickPts = [p.clone()];
       this.rectCenterRef = this.lastSnapRef;
+      this.rectCenterCurve = this.lastSnapCurve;
       this.showMultiDimFields(); // W/H
       return;
     }
@@ -3562,7 +3580,7 @@ export class SketchMode {
     // it, as the corner-to-corner rectangle's are. The first click placed the
     // CENTRE, which is a point too now (point 4), so it joins what it was
     // snapped onto, the origin most often.
-    this.emitSnapCoincidences(ent, null, this.lastSnapRef, this.rectCenterRef);
+    this.emitSnapCoincidences(ent, null, this.lastSnapRef, this.rectCenterRef, null, this.lastSnapCurve, this.rectCenterCurve);
     this.refreshActive();
     this.requestSolve();
     this.onState?.();
@@ -4303,6 +4321,7 @@ export class SketchMode {
     this.lastCursor.copy(hit.p);
     this.lastSnapKind = hit.kind; // kept in step with lastCursor: the Enter-key commit reads both
     this.lastSnapRef = hit.ref ?? null;
+    this.lastSnapCurve = hit.curve ? { id: hit.curve, at: hit.p.clone() } : null;
     this.showSnap(hit);
 
     if (this.tool === "arc") {
@@ -4601,7 +4620,7 @@ export class SketchMode {
     // these micro-gaps prevent the lines from being truly joined and can
     // subsequently cause cracks during extrusion, as well as undetected or
     // missing regions" (field report ecc3e0d6).
-    this.emitSnapCoincidences(entity, this.baseRef, this.lastSnapRef);
+    this.emitSnapCoincidences(entity, this.baseRef, this.lastSnapRef, null, this.baseCurve, this.lastSnapCurve);
     if (this.tool === "line" && entity.type === "line") {
       const end = new THREE.Vector2(entity.x2, entity.y2);
       // clicked back on the start point → close the loop and end the chain
@@ -4634,6 +4653,7 @@ export class SketchMode {
         // on each other but not constrained yet"). Whatever this end snapped
         // onto is joined to it already, and so to the next segment through it.
         this.baseRef = { id: entity.id, idx: 1 };
+        this.baseCurve = null; // this end is now an exact entity endpoint, not an on-curve snap
         this.showDimFields();
       }
     } else {
@@ -4655,9 +4675,19 @@ export class SketchMode {
     startRef: PointRef | null,
     endRef: PointRef | null,
     centerRef: PointRef | null = null,
+    startCurve: CurveRef | null = null,
+    endCurve: CurveRef | null = null,
+    centerCurve: CurveRef | null = null,
   ) {
     this.constraints.push(
       ...snapCoincidences(entity, startRef, endRef, this.entities, this.constraints, centerRef),
+    );
+    // on-curve snaps (placed on the MIDDLE of a line/arc, not an endpoint) get
+    // the same treatment, GH #17: the join is a pointOn rather than a
+    // coincident, but it is just as silently lost without it. Not gated by
+    // Auto Constrain — see autoConstrainOff: a join is not inference.
+    this.constraints.push(
+      ...snapPointOns(entity, startCurve, endCurve, this.constraints, centerCurve),
     );
   }
 
@@ -4684,14 +4714,14 @@ export class SketchMode {
     if (!world) return null;
     const p2d = this.plane.to2D(world);
     // Hold Ctrl to suppress snapping for fine placement (raw cursor position).
-    if (noSnap) return { p: p2d, kind: "free" as SnapKind, world, ref: undefined as PointRef | undefined };
+    if (noSnap) return { p: p2d, kind: "free" as SnapKind, world, ref: undefined as PointRef | undefined, curve: undefined as string | undefined };
     const res = snap(
       p2d,
       this.splineSnapCandidates(), // the cached candidates, plus a spline being drawn's own start
       (q) => this.viewport.projectToScreen(this.plane.to3D(q.x, q.y)),
       this.gridSnap ? this.gridCell : 0,
     );
-    return { p: res.point, kind: res.kind, ref: res.ref, world: this.plane.to3D(res.point.x, res.point.y) };
+    return { p: res.point, kind: res.kind, ref: res.ref, curve: res.curve, world: this.plane.to3D(res.point.x, res.point.y) };
   }
 
   private showSnap(hit: { kind: SnapKind; world: THREE.Vector3 } | null) {

@@ -324,13 +324,13 @@ describe("the solver keeps a snapped ARC joined", () => {
 describe("every commit path that can owe a coincident calls the emitter", () => {
   const commits = [
     // [what commits it, the source marker for its body, the refs it must pass]
-    ["arcClick", "private arcClick(", "this.emitSnapCoincidences(ent, this.arcStartRef, this.arcEndRef)"],
-    ["commitFromCursor", "private commitFromCursor(", "this.emitSnapCoincidences(entity, this.baseRef, this.lastSnapRef)"],
+    ["arcClick", "private arcClick(", "this.emitSnapCoincidences(ent, this.arcStartRef, this.arcEndRef, null, this.arcStartCurve, this.arcEndCurve)"],
+    ["commitFromCursor", "private commitFromCursor(", "this.emitSnapCoincidences(entity, this.baseRef, this.lastSnapRef, null, this.baseCurve, this.lastSnapCurve)"],
     // the corner click commits, so its own ref is still lastSnapRef; the centre
     // was captured at its click (a rectangle's centre is point 4)
-    ["centerRectClick", "private centerRectClick(", "this.emitSnapCoincidences(ent, null, this.lastSnapRef, this.rectCenterRef)"],
+    ["centerRectClick", "private centerRectClick(", "this.emitSnapCoincidences(ent, null, this.lastSnapRef, this.rectCenterRef, null, this.lastSnapCurve, this.rectCenterCurve)"],
     // the centre and start were captured at their clicks; the end click commits
-    ["arcCenterClick", "private arcCenterClick(", "this.emitSnapCoincidences(ent, this.arcStartRef, this.lastSnapRef, this.arcCenterRef)"],
+    ["arcCenterClick", "private arcCenterClick(", "this.emitSnapCoincidences(ent, this.arcStartRef, this.lastSnapRef, this.arcCenterRef, this.arcStartCurve, this.lastSnapCurve, this.arcCenterCurve)"],
   ] as const;
 
   for (const [name, marker, call] of commits) {
@@ -361,6 +361,8 @@ describe("every commit path that can owe a coincident calls the emitter", () => 
   it("the emitter takes its refs as arguments, not off `this`", () => {
     // the arc path cannot use baseRef/lastSnapRef, so a signature that reads
     // them internally is what made a second call site impossible to add safely
-    expect(sketchSrc).toContain("private emitSnapCoincidences(\n    entity: ResolvedEntity,\n    startRef: PointRef | null,\n    endRef: PointRef | null,\n    centerRef: PointRef | null = null,\n  )");
+    expect(sketchSrc).toContain(
+      "private emitSnapCoincidences(\n    entity: ResolvedEntity,\n    startRef: PointRef | null,\n    endRef: PointRef | null,\n    centerRef: PointRef | null = null,\n    startCurve: CurveRef | null = null,\n    endCurve: CurveRef | null = null,\n    centerCurve: CurveRef | null = null,\n  )",
+    );
   });
 });

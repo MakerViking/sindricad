@@ -5,7 +5,7 @@
 
 import * as THREE from "three";
 import type { DimPlace, ProjectedCurve, ProjectedSource, SketchConstraint } from "../types";
-import { RECT_CENTRE, asRound, dimRefPoints, refPoint } from "./entityDims";
+import { RECT_CENTRE, asRound, dimRefPoints, lineOperandAt, refPoint } from "./entityDims";
 import { polygonPoints, rectCorners } from "./region";
 
 export type SnapKind =
@@ -51,17 +51,25 @@ export interface SnapCandidate {
   p: THREE.Vector2;
   kind: SnapKind;
   priority: number; // higher wins
-  /** absent when the solver cannot address this point. A line's MIDPOINT, an
-   *  arc's through-point and a rectangle side's middle are real snap targets
-   *  but not points `dimRefPoints` lists, so they snap the coordinate and emit
-   *  nothing. */
+  /** absent when the solver cannot address this point by INDEX. A line's
+   *  MIDPOINT, an arc's through-point and a rectangle side's middle are real
+   *  snap targets but not points `dimRefPoints` lists, so there is no `p` to
+   *  name — they snap the coordinate and, via `curve` below, the curve as a
+   *  whole rather than one of its points. */
   ref?: PointRef;
+  /** set instead of `ref` for an ON-CURVE candidate (presently: a midpoint) —
+   *  the curve id `snapPointOns` constrains a placed point to with `pointOn`,
+   *  the same id a line/circle/arc/rect-or-poly-or-slot-edge constraint takes
+   *  as `curve` (sketchSolve's `kindOf`). Mutually exclusive with `ref`: a
+   *  candidate is either one of a curve's own named points or a spot on it. */
+  curve?: string;
 }
 
 export interface SnapResult {
   point: THREE.Vector2;
   kind: SnapKind;
   ref?: PointRef;
+  curve?: string;
 }
 
 /** How far a drawn end may sit from the point it snapped to and still count as
@@ -148,6 +156,58 @@ export function snapCoincidences(
   return out;
 }
 
+/** A curve a click actually landed ON (a midpoint, not one of the curve's own
+ *  named points) and where: `snapCoincidences`'s `PointRef` has an index to
+ *  re-look the target point up by; a curve has no such index, so this carries
+ *  the landed position instead. */
+export interface CurveRef {
+  id: string;
+  at: THREE.Vector2;
+}
+
+/** The `pointOn` constraints a freshly drawn entity owes to snaps that placed
+ *  one of its points on the MIDDLE of an existing line, arc or
+ *  rectangle/polygon/slot edge — an on-curve snap, never the curve's own
+ *  endpoints/corners/centre (that join is `snapCoincidences`'s: a candidate's
+ *  `ref` and `curve` are mutually exclusive, so one commit never emits both
+ *  for the same click).
+ *
+ *  Mirrors `snapCoincidences`'s shape exactly, including WHICH of the entity's
+ *  points a click could have placed (`placed`) and the same "landed
+ *  elsewhere" refusal — except matched by POSITION against `ref.at` rather
+ *  than by looking up a target point's index, because a curve names no point
+ *  of its own to look up. */
+export function snapPointOns(
+  entity: ResolvedEntity,
+  startRef: CurveRef | null,
+  endRef: CurveRef | null,
+  constraints: SketchConstraint[],
+  centerRef: CurveRef | null = null,
+): SketchConstraint[] {
+  const corners = [0, 1, 2, 3];
+  const placed: [CurveRef | null, number[]][] =
+    entity.type === "line" ? [[startRef, [0]], [endRef, [1]]]
+    : entity.type === "arc" ? [[startRef, [0]], [endRef, [1]], [centerRef, [2]]]
+    : entity.type === "rectangle" ? [[startRef, corners], [endRef, corners], [centerRef, [RECT_CENTRE]]]
+    : [];
+  const out: SketchConstraint[] = [];
+  for (const [ref, candidates] of placed) {
+    if (!ref) continue;
+    if (ref.id === entity.id || ref.id.startsWith(`${entity.id}~`)) continue; // cannot join a thing to itself
+    const idx = candidates.find((k) => {
+      const here = refPoint(entity, k);
+      return !!here && ref.at.distanceTo(here) <= JOIN_TOL;
+    });
+    if (idx === undefined) continue; // the point landed elsewhere
+    const already = (c: SketchConstraint) =>
+      (c.type === "pointOn" && c.e === entity.id && c.p === idx && c.curve === ref.id)
+      || (c.type === "coincident" && ((c.e1 === entity.id && c.p1 === idx) || (c.e2 === entity.id && c.p2 === idx)));
+    if (constraints.some(already)) continue;
+    out.push({ type: "pointOn", e: entity.id, p: idx, curve: ref.id });
+  }
+  return out;
+}
+
 export function snap(
   raw: THREE.Vector2,
   candidates: SnapCandidate[],
@@ -175,7 +235,14 @@ export function snap(
     }
   }
 
-  if (best) return { point: best.p.clone(), kind: best.kind, ...(best.ref ? { ref: best.ref } : {}) };
+  if (best) {
+    return {
+      point: best.p.clone(),
+      kind: best.kind,
+      ...(best.ref ? { ref: best.ref } : {}),
+      ...(best.curve ? { curve: best.curve } : {}),
+    };
+  }
 
   if (gridStep <= 0) return { point: raw.clone(), kind: "free" }; // grid snap off
 
@@ -204,14 +271,14 @@ export function candidatesFromEntities(
     // corners and silently left circle centres and projected endpoints out,
     // though the solver resolves both.
     const refs = dimRefPoints(e);
-    const add = (x: number, y: number, kind: SnapKind, priority: number) => {
+    const add = (x: number, y: number, kind: SnapKind, priority: number, curve?: string) => {
       const r = refs.find((q) => Math.abs(q.pos.x - x) <= JOIN_TOL && Math.abs(q.pos.y - y) <= JOIN_TOL);
-      out.push({ p: new THREE.Vector2(x, y), kind, priority, ...(r ? { ref: { id: e.id, idx: r.p } } : {}) });
+      out.push({ p: new THREE.Vector2(x, y), kind, priority, ...(r ? { ref: { id: e.id, idx: r.p } } : curve ? { curve } : {}) });
     };
     if (e.type === "line") {
       add(e.x1, e.y1, "endpoint", 100);
       add(e.x2, e.y2, "endpoint", 100);
-      add((e.x1 + e.x2) / 2, (e.y1 + e.y2) / 2, "midpoint", 80);
+      add((e.x1 + e.x2) / 2, (e.y1 + e.y2) / 2, "midpoint", 80, e.id);
     } else if (e.type === "rectangle") {
       const hw = e.width / 2;
       const hh = e.height / 2;
@@ -222,10 +289,10 @@ export function candidatesFromEntities(
       for (const c of rectCorners(e.x, e.y, e.width, e.height)) add(c.x, c.y, "endpoint", 100);
       add(e.x, e.y, "center", 90);
       // edge midpoints
-      add(e.x, e.y + hh, "midpoint", 80);
-      add(e.x, e.y - hh, "midpoint", 80);
-      add(e.x + hw, e.y, "midpoint", 80);
-      add(e.x - hw, e.y, "midpoint", 80);
+      add(e.x, e.y + hh, "midpoint", 80, lineOperandAt(e, { x: e.x, y: e.y + hh }) ?? undefined);
+      add(e.x, e.y - hh, "midpoint", 80, lineOperandAt(e, { x: e.x, y: e.y - hh }) ?? undefined);
+      add(e.x + hw, e.y, "midpoint", 80, lineOperandAt(e, { x: e.x + hw, y: e.y }) ?? undefined);
+      add(e.x - hw, e.y, "midpoint", 80, lineOperandAt(e, { x: e.x - hw, y: e.y }) ?? undefined);
     } else if (e.type === "circle") {
       add(e.x, e.y, "center", 90);
     } else if (e.type === "polygon") {
@@ -244,7 +311,7 @@ export function candidatesFromEntities(
     } else if (e.type === "arc") {
       add(e.x1, e.y1, "endpoint", 100);
       add(e.x2, e.y2, "endpoint", 100);
-      add(e.mx, e.my, "midpoint", 80); // the through-point is not a solver point
+      add(e.mx, e.my, "midpoint", 80, e.id); // the through-point is not a solver point
       // The centre is drawn as a "+" and is solver point 2, but was never
       // offered, so a Rotate about an arc's centre could not land on it. Same
       // rule as a projected arc's centre below (asRound).
@@ -270,11 +337,11 @@ export function candidatesFromEntities(
       if (cv.kind === "line") {
         add(cv.x1, cv.y1, "endpoint", 100);
         add(cv.x2, cv.y2, "endpoint", 100);
-        add((cv.x1 + cv.x2) / 2, (cv.y1 + cv.y2) / 2, "midpoint", 80);
+        add((cv.x1 + cv.x2) / 2, (cv.y1 + cv.y2) / 2, "midpoint", 80, e.id);
       } else if (cv.kind === "arc") {
         add(cv.x1, cv.y1, "endpoint", 100);
         add(cv.x2, cv.y2, "endpoint", 100);
-        add(cv.mx, cv.my, "midpoint", 80); // exact model point, same as native arcs
+        add(cv.mx, cv.my, "midpoint", 80, e.id); // exact model point, same as native arcs
       } else if (cv.kind === "poly") {
         const pts = cv.pts;
         pts.forEach(([x, y], i) => {

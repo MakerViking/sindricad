@@ -85,6 +85,15 @@ This file starts on 2026-08-03. For anything before that, see the
   that number in round steps, and typing a number puts the cut there, below the
   origin too.
 
+- **Snapping an endpoint onto the middle of a line, arc or circle holds it
+  there.** Snapping onto an existing point already added the constraint that
+  keeps the join from drifting apart; snapping onto the middle of a curve,
+  not one of its named points, did not, so the join could still pull open
+  on the next edit. A rectangle corner, or a line, arc or spline end, placed
+  on a curve's middle by snapping now gets the same treatment: it stays on
+  that curve, wherever the curve itself moves to. Asked for in
+  [#17](https://github.com/MakerViking/sindricad/issues/17).
+
 ### Fixed
 
 - **Shift-drag at a Break only pulls apart what Break actually cut.** It used

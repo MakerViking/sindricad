@@ -151,6 +151,13 @@ const byId = <T extends ResolvedEntity>(es: ResolvedEntity[], id: string) => es.
 const gap = (a: { x: number; y: number }, b: { x: number; y: number }) => Math.hypot(a.x - b.x, a.y - b.y);
 const start = (l: Line) => ({ x: l.x1, y: l.y1 });
 const end = (l: Line) => ({ x: l.x2, y: l.y2 });
+/** perpendicular distance from `p` to `l`'s INFINITE line, the same geometry
+ *  pointOnLine constrains: a check robust to the carrier itself moving, unlike
+ *  comparing to its ORIGINAL coordinates. */
+const perpToLine = (l: Line, p: { x: number; y: number }) => {
+  const dx = l.x2 - l.x1, dy = l.y2 - l.y1;
+  return Math.abs((p.x - l.x1) * dy - (p.y - l.y1) * dx) / Math.hypot(dx, dy);
+};
 
 /** Solve `entities` with `patch` applied to one of them, with and without the
  *  constraints the gesture recorded. */
@@ -689,5 +696,79 @@ describe("a fillet and a point that was put ON a curve", () => {
     expect(toasts).toEqual([]);
     expect(d.h.constraints).toContainEqual(keep);
     expect(byId<Line>(d.h.entities, "q").y1, "q's start sits on a's line").toBeCloseTo(0, 9);
+  });
+});
+
+// --- 8. an on-curve snap gets pointOn, the way an endpoint snap gets coincident
+// (GH #17) -------------------------------------------------------------------
+
+describe("a line drawn onto the MIDDLE of another line is constrained to it (pointOn)", () => {
+  it("records one pointOn for the end that landed on the midpoint, and the solver holds it on the line", async () => {
+    const a = line("a", 0, 0, 10, 0); // midpoint at (5, 0)
+    const d = drawing("line", [a]);
+    d.click(5, 20); // free start, away from anything
+    d.click(5, 0); // a's midpoint: an on-curve snap, not an endpoint
+    const [n] = d.drawn() as Line[];
+    expect(n, "the second click committed nothing").toBeDefined();
+    expect(coincidents(d.h.constraints), "a midpoint snap is not an endpoint snap").toEqual([]);
+    expect(d.h.constraints.filter((c) => c.type === "pointOn")).toEqual([
+      { type: "pointOn", e: n!.id, p: 1, curve: "a" },
+    ]);
+
+    // pull the new line's end off the midpoint, then solve: pointOn pins it to
+    // a's infinite line, not back to the point it started at — and nothing else
+    // pins "a" either, so the check is the perpendicular distance to whatever
+    // the solve left "a" at, not a fixed y = 0.
+    const r = await displaced(d.h.entities, d.h.constraints, n!.id, { x2: 7, y2: 3 });
+    const fixedN = byId<Line>(r.fixed.entities, n!.id), fixedA = byId<Line>(r.fixed.entities, "a");
+    const controlN = byId<Line>(r.control.entities, n!.id), controlA = byId<Line>(r.control.entities, "a");
+    expect(perpToLine(fixedA, end(fixedN)), "the fixed solve left the point off the line").toBeLessThan(1e-6);
+    expect(perpToLine(controlA, end(controlN)), "the control put the point on the line too: this oracle measures nothing")
+      .toBeGreaterThan(0.5);
+  });
+
+  it("does not double up when the end also lands on a named point", () => {
+    // b's start (5, 0) sits exactly on a's midpoint, which also sits on a's own
+    // points by nothing — this just pins down that a midpoint candidate carries
+    // a curve, never a point ref, so the two emitters never both fire for one end.
+    const a = line("a", 0, 0, 10, 0);
+    const d = drawing("line", [a]);
+    d.click(5, 20);
+    d.click(5, 0);
+    const [n] = d.drawn() as Line[];
+    const onN = d.h.constraints.filter((c) => c.type === "pointOn" && c.e === n!.id);
+    const coincN = d.h.constraints.filter((c) => c.type === "coincident");
+    expect(onN).toHaveLength(1);
+    expect(coincN).toEqual([]);
+  });
+});
+
+describe("a line drawn onto a rectangle's EDGE MIDPOINT is constrained to that edge (pointOn)", () => {
+  it("names the edge operand, not the whole rectangle", () => {
+    const R: ResolvedEntity = { type: "rectangle", id: "R", x: 0, y: 0, width: 40, height: 20 };
+    const d = drawing("line", [R]);
+    d.click(-30, 0);
+    d.click(20, 0); // the right edge's midpoint
+    const [n] = d.drawn() as Line[];
+    expect(n, "the second click committed nothing").toBeDefined();
+    const pointOns = d.h.constraints.filter((c) => c.type === "pointOn") as Extract<SketchConstraint, { type: "pointOn" }>[];
+    expect(pointOns).toHaveLength(1);
+    expect(pointOns[0]).toMatchObject({ e: n!.id, p: 1 });
+    expect(pointOns[0]!.curve.startsWith("R~"), `expected an edge operand, got ${pointOns[0]!.curve}`).toBe(true);
+  });
+});
+
+describe("a 3-point arc's start snapped onto a midpoint gets pointOn too", () => {
+  it("records pointOn for the start and nothing for the unconstrainable through-point", () => {
+    const a = line("a", 0, 0, 10, 0); // midpoint at (5, 0)
+    const d = drawing("arc", [a]);
+    d.click(5, 0); // arc start, onto a's midpoint
+    d.click(20, 0); // arc end, free
+    d.click(12, 5); // through-point: never a solver point
+    const [n] = d.drawn() as { type: "arc"; id: string }[];
+    expect(n, "the third click committed no arc").toBeDefined();
+    expect(d.h.constraints.filter((c) => c.type === "pointOn")).toEqual([
+      { type: "pointOn", e: n!.id, p: 0, curve: "a" },
+    ]);
   });
 });
