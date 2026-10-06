@@ -308,6 +308,7 @@ function drawing(tool: "line" | "arc", ents: ResolvedEntity[], typed: Record<str
       hide() {},
       updateFromCursor() {},
       position() {},
+      placeAt() {},
     },
     entityCurve: () => ({}),
     base: null, chainStart: null, basePinned: false, baseRef: null,

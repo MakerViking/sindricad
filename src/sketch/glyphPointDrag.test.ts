@@ -238,7 +238,7 @@ describe("Disconnect from the ⊙ badge on a chain's corner", () => {
     expect(coincidents(sk.live.s.constraints)).toEqual([{ type: "coincident", e1: "B", p1: 0, e2: "C", p2: 0 }]);
   });
 
-  it("a Shift-drag from the badge still refuses an explicit join, and says where Disconnect is", async () => {
+  it("a Shift-drag from the badge at an ordinary corner is a plain drag: Shift only pulls apart at a Break's cut (C3), so the join holds and Disconnect is still the way to pull it apart", async () => {
     const sk = chain();
     toasts.length = 0;
     sk.pressBadge(20, 0, true);
@@ -248,8 +248,9 @@ describe("Disconnect from the ⊙ badge on a chain's corner", () => {
     await sk.live.settle();
     sk.live.release();
     await sk.live.settle();
-    expect(toasts).toEqual([t("sketch.guard.coincidentHolds")]);
-    expect(at(sk.live.ent("B"), 0)).toEqual({ x: 20, y: 0 });
+    expect(toasts, "not a Break cut, so Shift never attempts the pull").toEqual([]);
+    expect(at(sk.live.ent("B"), 0)).toEqual({ x: expect.closeTo(24, 6), y: expect.closeTo(8, 6) });
+    expect(at(sk.live.ent("A"), 1)).toEqual({ x: expect.closeTo(24, 6), y: expect.closeTo(8, 6) });
     expect(coincidents(sk.live.s.constraints)).toHaveLength(1);
   });
 
