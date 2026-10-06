@@ -1899,6 +1899,20 @@ export class DocumentStore {
     this.markDirty();
   }
 
+  /** Show/hide several sketches in one step (the Browser's Sketches-folder
+   *  header eye toggle): apply every change, then mark dirty once. Unlike
+   *  setBodiesVisibility there's no rebuild to consider — sketch visibility
+   *  is display-only and nothing reads it as a geometry input. */
+  setSketchesVisibility(vis: Map<string, boolean>) {
+    let changed = false;
+    for (const [id, visible] of vis) {
+      if (this.sketchVis.get(id) === visible) continue;
+      this.sketchVis.set(id, visible);
+      changed = true;
+    }
+    if (changed) this.markDirty();
+  }
+
   // --- body visibility overrides (explicit show/hide; no geometry effect — just a
   // re-render that filters the hidden body's faces out of the mesh, MCAD-style) ---
   /** explicit show/hide override for a body, or undefined if unset. */

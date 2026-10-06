@@ -170,6 +170,32 @@ export function startInlineRename(
  *  `.find-flash` animation in styles.css. */
 export const FIND_FLASH_MS = 1200;
 
+/** The Bodies/Sketches folder-header eye icon, "with memory": a blunt
+ *  show-all/hide-all (like a single assembly sub-group's own toggle) forgets
+ *  which items were ALREADY hidden before the group-hide, so showing the
+ *  group again shows everything. This decides, from the current per-id
+ *  visibility and whatever was snapshotted last time the group was hidden,
+ *  what to apply next and what snapshot to keep — pure, so it's testable
+ *  without a DOM. */
+export function groupVisibilityToggle(
+  ids: string[],
+  isVisible: (id: string) => boolean,
+  snapshot: Map<string, boolean> | null,
+): { next: Map<string, boolean>; snapshot: Map<string, boolean> | null } {
+  if (ids.some(isVisible)) {
+    // something is still visible: hide everything, remembering who already wasn't
+    return {
+      next: new Map(ids.map((id) => [id, false])),
+      snapshot: new Map(ids.map((id) => [id, isVisible(id)])),
+    };
+  }
+  // everything is hidden: restore exactly the state from before that hide
+  return {
+    next: new Map(ids.map((id) => [id, snapshot?.get(id) ?? true])),
+    snapshot: null,
+  };
+}
+
 /** A row click offered to a running tool first (see BrowserTree.pickHook). */
 export type TreePick =
   | { kind: "body"; id: string; additive: boolean }
@@ -208,12 +234,23 @@ export class BrowserTree {
   // would silently drop a class set on the old one.
   private flashId: string | null = null;
   private flashTimer: number | null = null;
+  // Top-level Bodies/Sketches folder-header eye toggle, "with memory": hiding
+  // the group snapshots which items were already individually hidden, so the
+  // next click restores EXACTLY that — not a blunt "show all" that forgets a
+  // body the user had hidden before the group-hide. Transient (not persisted),
+  // same as `collapsed` above: it only has to survive this browser session.
+  private hiddenBodiesSnapshot: Map<string, boolean> | null = null;
+  private hiddenSketchesSnapshot: Map<string, boolean> | null = null;
 
   onSelect: ((id: string) => void) | null = null;
   onEditSketch: ((id: string) => void) | null = null;
   onSketchOnPlane: ((plane: Plane3) => void) | null = null;
   onToggleSketch: ((id: string) => void) | null = null;
   isSketchVisible: ((id: string) => boolean) | null = null;
+  // bulk set (the Sketches folder-header toggle) — unlike onToggleSketch, the
+  // caller decides the full per-id map, since the Browser is the one holding
+  // the "with memory" snapshot.
+  onSetSketchesVisibility: ((vis: Map<string, boolean>) => void) | null = null;
   onToggleBody: ((id: string) => void) | null = null;
   isBodyVisible: ((id: string) => boolean) | null = null;
   // per-construction-plane show/hide (eye toggle), mirroring bodies.
@@ -450,16 +487,58 @@ export class BrowserTree {
       };
     };
     this.bodyAncestors.clear();
+    const bodyIds = bodies.map((b) => b.id);
+    const anyBodyVisible = bodyIds.some((id) => this.isBodyVisible?.(id) ?? true);
+    // Group toggle "with memory": hiding snapshots who was already hidden so
+    // the next click restores exactly that, not a blunt show-all. Mirrors the
+    // one-batched-write rationale in renderAssemblyNode's own group toggle.
+    const toggleBodies =
+      bodyIds.length && this.onToggleBody
+        ? () => {
+            const { next, snapshot } = groupVisibilityToggle(
+              bodyIds,
+              (id) => this.isBodyVisible?.(id) ?? true,
+              this.hiddenBodiesSnapshot,
+            );
+            this.hiddenBodiesSnapshot = snapshot;
+            this.store.setBodiesVisibility(next);
+            this.refresh();
+          }
+        : undefined;
     const groups = this.assemblyGroups(bodies, doc);
     if (!groups) {
       // no imported assembly tree in this document — exactly the flat list as before
-      this.folder("Bodies", t("browser.folder.bodies"), "body", bodies.map(bodyItem), t("browser.empty.bodies"));
-    } else if (!this.renderHead("f:Bodies", t("browser.folder.bodies"), "body", bodies.length, 0)) {
+      this.folder(
+        "Bodies",
+        t("browser.folder.bodies"),
+        "body",
+        bodies.map(bodyItem),
+        t("browser.empty.bodies"),
+        toggleBodies,
+        anyBodyVisible,
+      );
+    } else if (
+      !this.renderHead("f:Bodies", t("browser.folder.bodies"), "body", bodies.length, 0, toggleBodies, anyBodyVisible)
+    ) {
       for (const b of groups.loose) this.renderRow(bodyItem(b), 0);
       for (const n of groups.roots) this.renderAssemblyNode(n, 0, bodyItem);
     }
 
     // --- Sketches ---
+    const sketchIds = sketches.map((f) => f.id);
+    const anySketchVisible = sketchIds.some((id) => this.isSketchVisible?.(id) ?? true);
+    const toggleSketches =
+      sketchIds.length && this.onSetSketchesVisibility
+        ? () => {
+            const { next, snapshot } = groupVisibilityToggle(
+              sketchIds,
+              (id) => this.isSketchVisible?.(id) ?? true,
+              this.hiddenSketchesSnapshot,
+            );
+            this.hiddenSketchesSnapshot = snapshot;
+            this.onSetSketchesVisibility!(next);
+          }
+        : undefined;
     this.folder(
       "Sketches",
       t("browser.folder.sketches"),
@@ -479,6 +558,8 @@ export class BrowserTree {
         title: t("browser.sketchTitle"),
       })),
       t("browser.empty.sketches"),
+      toggleSketches,
+      anySketchVisible,
     );
 
     if (scroll) this.el.scrollTop = scroll;
@@ -679,9 +760,11 @@ export class BrowserTree {
       extraMenu?: CtxItem[]; // prepended menu items (e.g. Cut all bodies, Color ▸)
     }[],
     emptyText?: string,
+    onToggleVis?: (() => void) | undefined,
+    visible?: boolean,
   ) {
     const key = `f:${name}`;
-    if (this.renderHead(key, label, folderIcon, items.length, 0)) return;
+    if (this.renderHead(key, label, folderIcon, items.length, 0, onToggleVis, visible)) return;
     if (items.length === 0) {
       const empty = document.createElement("div");
       empty.className = "empty-state tree-child";

@@ -5,7 +5,7 @@
 // body's node chain to the root, keeping sibling identity straight, and refusing
 // to lose a body when the manifest is malformed.
 import { describe, expect, it } from "vitest";
-import { buildAssemblyGroups } from "./browserTree";
+import { buildAssemblyGroups, groupVisibilityToggle } from "./browserTree";
 
 type Node = { name: string; parent: number | null };
 
@@ -147,5 +147,44 @@ describe("buildAssemblyGroups", () => {
     )!;
     expect(out.loose.map((b) => b.name)).toEqual(["Extrude1"]);
     expect(out.roots).toHaveLength(1);
+  });
+});
+
+// Field report 2b68885b: the Browser's top-level Bodies/Sketches folder
+// headers get an eye icon that hides the whole group, but — unlike a blunt
+// show-all/hide-all (the pattern a single assembly sub-group's own header
+// toggle already uses) — showing the group again must restore each item's
+// OWN prior state, not show everything. "b" below is hidden before the user
+// ever touches the group header; a show-all-on-restore would wrongly reveal
+// it, which is exactly the bug this toggle must not have.
+describe("groupVisibilityToggle (Bodies/Sketches folder-header eye icon)", () => {
+  const ids = ["a", "b", "c"];
+
+  it("hides everything and remembers who was already hidden", () => {
+    const visible = (id: string) => id !== "b"; // b already hidden
+    const { next, snapshot } = groupVisibilityToggle(ids, visible, null);
+    expect([...next]).toEqual([["a", false], ["b", false], ["c", false]]);
+    expect(snapshot && [...snapshot]).toEqual([["a", true], ["b", false], ["c", true]]);
+  });
+
+  it("restores exactly the prior per-item state, not show-all", () => {
+    const allHidden = () => false; // the state left by the hide-all above
+    const snapshot = new Map([["a", true], ["b", false], ["c", true]]);
+    const { next, snapshot: cleared } = groupVisibilityToggle(ids, allHidden, snapshot);
+    expect([...next]).toEqual([["a", true], ["b", false], ["c", true]]);
+    expect(cleared).toBeNull();
+  });
+
+  it("falls back to showing everything when there is no snapshot to restore", () => {
+    const allHidden = () => false;
+    const { next } = groupVisibilityToggle(ids, allHidden, null);
+    expect([...next]).toEqual([["a", true], ["b", true], ["c", true]]);
+  });
+
+  it("re-hides (with a fresh snapshot) when only SOME items are visible", () => {
+    const mixed = (id: string) => id === "a"; // only a visible
+    const { next, snapshot } = groupVisibilityToggle(ids, mixed, null);
+    expect([...next]).toEqual([["a", false], ["b", false], ["c", false]]);
+    expect(snapshot && [...snapshot]).toEqual([["a", true], ["b", false], ["c", false]]);
   });
 });

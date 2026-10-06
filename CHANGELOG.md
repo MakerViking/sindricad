@@ -109,6 +109,11 @@ This file starts on 2026-08-03. For anything before that, see the
   Measured on a 400-entity sketch: about 5x faster per frame. Part of
   [#17](https://github.com/MakerViking/sindricad/issues/17).
 
+- **The Bodies and Sketches folders have their own eye icon.** Click it to hide
+  every body or every sketch in one go. Click it again and each one comes back
+  exactly as it was — a body or sketch you had already hidden on its own stays
+  hidden, instead of everything showing again.
+
 ### Fixed
 
 - **A mesh heavy enough to crash the import outright now still comes in, as a

@@ -910,6 +910,15 @@ tree.onToggleSketch = (id) => {
   if (!sketch.active) overlay.update(store.document);
   tree.refresh();
 };
+// Sketches folder-header eye toggle (hide/restore the whole group at once,
+// "with memory" — the Browser itself computes and keeps the snapshot of who
+// was already hidden; this just applies the batch the same way a single
+// toggle does).
+tree.onSetSketchesVisibility = (vis) => {
+  store.setSketchesVisibility(vis);
+  if (!sketch.active) overlay.update(store.document);
+  tree.refresh();
+};
 
 // SOLID-mode direct selection of a visible sketch's profile AREAS (MCAD-style):
 // click a shown sketch's cell to (pre)select it, then Extrude (E) uses it. Only
