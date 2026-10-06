@@ -254,6 +254,10 @@
       "importFailed": "import failed",
       "insertNoBodies": "That document has no visible bodies to insert. Bodies hidden there are left out.",
       "insertNothingBuilt": "Nothing in that document built, so there is nothing to insert. Open it to see what failed.",
+      "joinOnlyHidden": {
+        "one": "This join added a new body instead of merging: the only body it reaches is {body}, which was hidden when you made the join, so I left it alone. To join it, delete this join, show {body} and make the join again.",
+        "other": "This join added a new body instead of merging: the only bodies it reaches, {body} and others ({count} in all), were hidden when you made the join, so I left them alone. To join them, delete this join, show them and make the join again."
+      },
       "joinPiecesApart": {
         "one": "{count} piece I joined into {body} does not touch the rest of it, so after this step it is a separate piece of the body. A gap too small to see still counts. Make it overlap to fuse it in, or use Separate into bodies to give it a body of its own.",
         "other": "{count} pieces I joined into {body} do not touch the rest of it, so after this step they are separate pieces of the body. A gap too small to see still counts. Make them overlap to fuse them in, or use Separate into bodies to give each a body of its own."

@@ -86,6 +86,7 @@ INSERT_NO_BODIES = "insertNoBodies"         # the other document has no visible 
 CUT_ONLY_HIDDEN = "cutOnlyHidden"           # a Cut removed nothing because the only bodies it reaches ({body}, `count` in all) were hidden when it was made
 # Boolean errors (the feature changed nothing, so it is red):
 CUT_LOST_PROJECTION = "cutLostProjection"   # an extrude Cut removed nothing, and its profile is placed by a projected edge in its sketch that lost its source
+JOIN_ONLY_HIDDEN = "joinOnlyHidden"         # a Join added a new body instead of merging because the only bodies it reaches ({body}, `count` in all) were hidden when it was made
 # Join warning (a Combine join, or a join-mode extrude/revolve/sweep/loft/thicken):
 JOIN_PIECES_LEFT_OUT = "joinPiecesLeftOut"  # `count` pieces going into the join do not touch {body} and were left out (the debris rule)
 JOIN_PIECES_APART = "joinPiecesApart"  # `count` pieces of a `joinTouchingOnly` join do not touch the rest of {body} and stay in it as pieces of their own
@@ -102,7 +103,7 @@ ALL = frozenset({
     MERGE_NOTHING, MERGE_NOTHING_APART, MERGE_NO_SOLID, MERGE_ALL_DAMAGED, MERGE_FAILED, MERGE_NO_BODY,
     MERGE_DROPPED_SURFACES, MERGE_DAMAGED_LEFT_OUT, MERGE_SEPARATE_PIECES,
     SEPARATE_DROPPED_SURFACES, SEPARATE_DROPPED_FACES, CUT_ONLY_HIDDEN, CUT_LOST_PROJECTION,
-    JOIN_PIECES_LEFT_OUT, JOIN_PIECES_APART, INSERT_NOTHING_BUILT, INSERT_NO_BODIES,
+    JOIN_ONLY_HIDDEN, JOIN_PIECES_LEFT_OUT, JOIN_PIECES_APART, INSERT_NOTHING_BUILT, INSERT_NO_BODIES,
 })
 
 # --- the body slot -----------------------------------------------------------

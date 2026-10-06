@@ -1182,6 +1182,13 @@ export interface ResolveDiag {
   // because the only material it reaches is in bodies hidden when it was made:
   // the first is `body_id`, `count` how many. A warning with a `reason`, on the
   // amber chip and toasted once whatever the feature (splitWarnings.TOASTED_CODES).
+  // "joinOnlyHidden" = a Join (extrude, revolve, loft, sweep, thicken) BUILT —
+  // it still added a new body, a Join with nothing to act on always has — but
+  // the only bodies its prism reaches were hidden when it was made, so nothing
+  // was merged and the new body is the whole story, not a sign anything is
+  // wrong (field report 14f32f87). Same shape as `cutOnlyHidden`: the first is
+  // `body_id`, `count` how many, a warning with a `reason`, amber chip, toasted
+  // once whatever the feature.
   // "joinPiecesLeftOut" = a join (a Combine join, or a Join-mode extrude,
   // revolve, sweep, loft or thicken) built but left `count` of the pieces being
   // joined out of the body, because they do not touch it and the debris rule
@@ -1199,7 +1206,7 @@ export interface ResolveDiag {
     | "edge" | "face" | "combine" | "edgeOpFailed" | "sealedVoid" | "cleanUpFitted"
     | "splitSeparated" | "splitSeparatedKept" | "splitDamagedParts" | "splitMissed" | "splitBodiesGone" | "splitLegacyVolume"
     | "mergeDroppedSurfaces" | "mergeDamagedLeftOut" | "mergeSeparatePieces"
-    | "separateDroppedSurfaces" | "separateDroppedFaces" | "cutOnlyHidden" | "joinPiecesLeftOut" | "joinPiecesApart";
+    | "separateDroppedSurfaces" | "separateDroppedFaces" | "cutOnlyHidden" | "joinOnlyHidden" | "joinPiecesLeftOut" | "joinPiecesApart";
   resolved: number; // how many entities matched (0 for a skipped combine)
   confidence: number; // 0..1 — margin to the runner-up candidate (1 = lone clear winner)
   lossy: boolean; // a marginal / drift-path match was taken (or a feature was skipped)

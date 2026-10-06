@@ -60,8 +60,11 @@ const TOASTED: ReadonlySet<string> = new Set<FeatureType>(["split", "mergeSolids
  *  reference notes too. A cut that removed nothing because the only material it
  *  reaches was hidden when it was made is material the feature left out too, and
  *  it was a red error before it was a warning: on the chip alone it reads as "I
- *  cut and nothing happened". */
-const TOASTED_CODES: ReadonlySet<string> = new Set(["cutOnlyHidden", "joinPiecesLeftOut"]);
+ *  cut and nothing happened". A join that only reached hidden bodies still adds
+ *  a new body with nothing merged, which looks the same on the chip as a join
+ *  that touches nothing at all — on the chip alone the user sees an unexplained
+ *  extra body (field report 14f32f87). */
+const TOASTED_CODES: ReadonlySet<string> = new Set(["cutOnlyHidden", "joinOnlyHidden", "joinPiecesLeftOut"]);
 
 export function toastsWarnings(type: string | undefined): boolean {
   return type !== undefined && TOASTED.has(type);

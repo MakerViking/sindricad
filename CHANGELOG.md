@@ -50,6 +50,12 @@ This file starts on 2026-08-03. For anything before that, see the
   the selection colour when selected. A selected construction point gets a
   square around it.
 
+- **A join whose only match was hidden says so.** An extrude, revolve, loft,
+  sweep or thicken set to Join still adds a new body when the only bodies it
+  reaches were hidden when you made it, the same as always, but it now warns
+  and names the body instead of leaving you looking at an unexplained extra
+  body with no word said.
+
 - **Import Mesh is now just Import.** It has always taken STEP files as well as
   meshes, and the old name hid that. Its tooltip lists the formats it reads.
 

@@ -2824,6 +2824,32 @@ def test_cut_skips_hidden_body():
     print(f"  cut skips hidden OK: body1 {v['body1']:.0f} cut, hidden body2 {v['body2']:.0f} intact")
 
 
+def test_join_only_hidden_warns():
+    """Field report 14f32f87: an extrude Join whose box only overlaps a body
+    that was HIDDEN when the join was made used to add a new body with no word
+    said — the hidden body is correctly left alone (same rule as a Cut), but
+    the result looks identical to a join that genuinely touches nothing, and
+    the user is left staring at an unexplained extra body. Mirrors
+    test_cut_skips_hidden_body/`cutOnlyHidden`: now a `joinOnlyHidden` warning
+    names the hidden body, and the geometry is unchanged either way (the new
+    body was always going to be added)."""
+    _s1, a = _box(1, 20, 20, 10)  # body1: x=-10..10, z=0..10
+    s2 = {"id": "s2", "type": "sketch", "plane": "XY",
+          "entities": [{"type": "rectangle", "width": 10, "height": 10, "x": 5}]}  # overlaps body1's box
+    join = {"id": "e2", "type": "extrude", "sketch": "s2", "distance": 10,
+            "operation": "join", "hiddenBodies": ["body1"]}
+    diag = []
+    _part, err, bodies = rebuild({"parameters": {}, "features": a + [s2, join]}, diagnostics=diag)
+    assert not err, err
+    assert len(bodies) == 2, f"body1 stays apart, the prism still becomes its own body: {bodies}"
+    vol = {b["id"]: b["shape"].volume for b in bodies if b.get("shape")}
+    assert abs(vol["body1"] - 4000) < 1, f"hidden body1 must be UNTOUCHED: {vol}"
+    warn = [d for d in diag if d.get("code") == "joinOnlyHidden"]
+    assert len(warn) == 1 and warn[0]["feature_id"] == "e2" and warn[0]["body_id"] == "body1" \
+        and warn[0]["count"] == 1 and "{body}" in warn[0]["reason"], diag
+    print("  join-only-hidden OK: still adds a new body, untouched body1, and warns why")
+
+
 def test_revolve_sweep_loft_thicken_capture_visibility():
     """Field report 05f53ee7: an old revolve CUT failed with "Cut removed nothing
     — the extrude doesn't reach any body. Drag the other way" only after a
@@ -5599,6 +5625,7 @@ if __name__ == "__main__":
     test_sketch_crossing_split()
     test_extrude_cut_disjoint()
     test_cut_skips_hidden_body()
+    test_join_only_hidden_warns()
     test_revolve_sweep_loft_thicken_capture_visibility()
     test_visibility_captured()
     test_incremental_cache()

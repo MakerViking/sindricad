@@ -11549,6 +11549,12 @@ def _boolean_into_bodies(bodies, solid, op, new_body, hidden=frozenset(), split_
     sent the user looking for a geometry problem that was not there. The
     `cutOnlyHidden` diagnostic names the first such body.
 
+    A Join whose only candidates were hidden when it was made still adds a new
+    body — a Join with nothing to act on always has — but that used to happen
+    silently (field report 14f32f87): the user saw an unexpected extra body with
+    no word said. The `joinOnlyHidden` diagnostic names the first such body,
+    mirroring `cutOnlyHidden`.
+
     Guards no-op / destructive booleans: a Join whose prism is already inside the
     body, or a Cut/Intersect that meets no material, used to return the model
     UNCHANGED with no error ("I extruded and nothing happened"). Each op is now
@@ -11634,6 +11640,7 @@ def _boolean_into_bodies(bodies, solid, op, new_body, hidden=frozenset(), split_
     prism_vol = _try_vol(solid)
     if op == "join":
         if not hits:
+            _join_only_hidden(bodies, solid, hidden, touching_only, diag, feature_id)
             new_body(solid)
             return
         # What is fused is what the user saw: a chip an earlier cut left hidden
@@ -11776,6 +11783,41 @@ def _cut_only_hidden(bodies, solid, hidden, eps, diag, feature_id):
         f"This cut removed nothing: the only bodies it reaches, {BODY_SLOT} and others "
         f"({n} in all), were hidden when you made the cut, so I left them alone. To cut "
         "them, delete this cut, show them and make the cut again."))
+    return True
+
+
+def _join_only_hidden(bodies, solid, hidden, touching_only, diag, feature_id):
+    """A `joinOnlyHidden` warning on `diag` when a Join whose box/touch hits are
+    already empty would have reached a hidden body instead: it was not that the
+    prism meets nothing, it is that the only bodies it meets were hidden when
+    the join was made, so they were left alone exactly as `hiddenBodies` asks.
+    Without this the join still adds a new body (a Join with nothing to act on
+    always has), which the user sees with no explanation — a hidden-body join
+    looking identical to one that genuinely touches nothing.
+
+    Mirrors `_cut_only_hidden`'s shape: only reached once `hits` is already
+    empty, so a join that fuses something pays nothing for it. Unlike a cut, no
+    second boolean is needed to tell "touches but didn't remove volume" from
+    "touches at all" — a join keeps whatever it is given, so the bbox (and,
+    for a `joinTouchingOnly` feature, the real touch test) is proof enough."""
+    reached = []
+    for b in bodies:
+        progress_tick()
+        if b.get("shape") is None or b.get("id") not in hidden or not _bbox_overlap(b["shape"], solid):
+            continue
+        if touching_only and not _join_touches(solid, _as_seen(b)):
+            continue
+        reached.append(b)
+    if not reached:
+        return False
+    n = len(reached)
+    _split_diag(diag, feature_id, errors_mod.JOIN_ONLY_HIDDEN, reached[0], count=n, reason=(
+        f"This join added a new body instead of merging: the only body it reaches is "
+        f"{BODY_SLOT}, which was hidden when you made the join, so I left it alone. To "
+        f"join it, delete this join, show {BODY_SLOT} and make the join again." if n == 1 else
+        f"This join added a new body instead of merging: the only bodies it reaches, "
+        f"{BODY_SLOT} and others ({n} in all), were hidden when you made the join, so I "
+        "left them alone. To join them, delete this join, show them and make the join again."))
     return True
 
 
