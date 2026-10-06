@@ -143,6 +143,56 @@ export function diameterDim(
   };
 }
 
+/** A line or arc's own endpoints, for loop-walking; anything else has none. */
+function segEndpoints(e: ResolvedEntity): [V, V] | null {
+  return e.type === "line" || e.type === "arc" ? [v(e.x1, e.y1), v(e.x2, e.y2)] : null;
+}
+
+/** Closed rings among `ents`' lines and arcs, walked endpoint to endpoint —
+ *  what a fillet or chamfer leaves of a rectangle or polygon (explodeCompound
+ *  plus a rounded corner). `verts` is each member's OWN start point in travel
+ *  order, for a shoelace winding test. A junction with more than two members
+ *  (a branch, not a simple ring) just fails to close — handled by falling
+ *  through to the plain per-entity default, never by guessing. */
+function closedLoops(ents: ResolvedEntity[], tol: number): { ring: ResolvedEntity[]; verts: V[] }[] {
+  const segs = ents
+    .map((e) => ({ e, ep: segEndpoints(e) }))
+    .filter((s): s is { e: ResolvedEntity; ep: [V, V] } => s.ep !== null);
+  const used = new Set<string>();
+  const near = (a: V, b: V) => a.distanceTo(b) <= tol;
+  const out: { ring: ResolvedEntity[]; verts: V[] }[] = [];
+  for (const start of segs) {
+    if (used.has(start.e.id)) continue;
+    const ring = [start.e];
+    const verts = [start.ep[0]];
+    used.add(start.e.id);
+    let tail = start.ep[1];
+    for (let guard = segs.length; guard > 0; guard--) {
+      if (near(tail, verts[0]!)) {
+        if (ring.length >= 3) out.push({ ring, verts });
+        break;
+      }
+      const next = segs.find((s) => !used.has(s.e.id) && (near(s.ep[0], tail) || near(s.ep[1], tail)));
+      if (!next) break; // open chain, not a ring — leave its lines alone
+      used.add(next.e.id);
+      ring.push(next.e);
+      verts.push(tail);
+      tail = near(next.ep[0], tail) ? next.ep[1] : next.ep[0];
+    }
+  }
+  return out;
+}
+
+/** Signed polygon area (shoelace); positive for a counter-clockwise walk. */
+function shoelaceArea(pts: V[]): number {
+  let sum = 0;
+  for (let i = 0; i < pts.length; i++) {
+    const a = pts[i]!, b = pts[(i + 1) % pts.length]!;
+    sum += a.x * b.y - b.x * a.y;
+  }
+  return sum / 2;
+}
+
 /** Default badge placements that a single entity can't work out on its own,
  *  because they depend on its NEIGHBOURS.
  *
@@ -164,7 +214,18 @@ export function diameterDim(
  *
  *  "Concentric" is judged with the same screen-space clearance the badges use,
  *  so near-concentric circles — which stack just as badly at that zoom — fan out
- *  too; with no zoom context (unit tests, inspector) it falls back to exact. */
+ *  too; with no zoom context (unit tests, inspector) it falls back to exact.
+ *
+ *  The other case: a plain line's length badge defaults to its own LEFT
+ *  normal, which only reads as "outward" for a clockwise loop. A rectangle's
+ *  sides are generated bl→br→tr→tl→bl — counter-clockwise — so the moment a
+ *  fillet or a chamfer explodes it into standalone lines and arcs (it has no
+ *  more hardcoded, always-outward width/height placement of its own), every
+ *  side's badge defaulted to the INSIDE of the rectangle (field report
+ *  26ff3c13). Each closed ring of lines/arcs gets its winding checked once
+ *  here and every line member's default flipped to the outward side —
+ *  rather than reversing the line's own stored direction, which corner-index
+ *  mapping elsewhere (fillet, chamfer, offset) depends on. */
 export function staggeredDefaults(ents: ResolvedEntity[]): Map<string, DimPlace> {
   const tol = Math.max(dimOffset(0), 1e-9);
   const groups: ResolvedEntity[][] = [];
@@ -190,6 +251,16 @@ export function staggeredDefaults(ents: ResolvedEntity[]): Map<string, DimPlace>
       inner = e.radius;
       out.set(e.id, { diameter: { ox: Math.cos(ang) * dist, oy: Math.sin(ang) * dist } });
     });
+  }
+  for (const { ring, verts } of closedLoops(ents, tol)) {
+    if (shoelaceArea(verts) <= 0) continue; // clockwise: the left normal is already outward
+    for (const e of ring) {
+      if (e.type !== "line") continue;
+      const dir = v(e.x2 - e.x1, e.y2 - e.y1).normalize();
+      const nrm = v(-dir.y, dir.x);
+      const mag = clamp(Math.hypot(e.x2 - e.x1, e.y2 - e.y1) * 0.16, 3, 12);
+      out.set(e.id, { ...out.get(e.id), length: { ox: -nrm.x * mag, oy: -nrm.y * mag } });
+    }
   }
   return out;
 }
@@ -762,7 +833,17 @@ export function dimRefPoints(e: ResolvedEntity): { p: number; pos: V }[] {
  *  entity and index, or null; a tie goes to the later entity, so your own
  *  geometry beats the origin listed before it. `except` is passed over. THE
  *  point a click takes: every constraint tool's (ConstraintTools.pickEndpoint)
- *  and the Select tool's, so the two cannot disagree about it. */
+ *  and the Select tool's, so the two cannot disagree about it.
+ *
+ *  A rectangle's or polygon's own CENTRE (RECT_CENTRE / POLYGON_CENTRE) wins
+ *  over any of its vertices whenever a centre is within tolerance AT ALL —
+ *  even one a vertex beats on raw distance. A vertex that happens to land on
+ *  another point (a hexagon sized so one corner sits on the origin) reads,
+ *  to the user, as "the shape is here", and the centre is what a constraint
+ *  on a parametric shape nearly always means (field report c8ba080b: binding
+ *  the vertex instead grew the hexagon rather than moving it, since nothing
+ *  pinned the centre the user thought they'd picked). This never touches a
+ *  circle's own single point — it has no separate vertex to lose a tie to. */
 export function refPointNear(
   ents: readonly ResolvedEntity[],
   p: { x: number; y: number },
@@ -771,14 +852,19 @@ export function refPointNear(
 ): { id: string; idx: number } | null {
   let best: { id: string; idx: number } | null = null;
   let bestD = tol * tol;
+  let bestCentre: { id: string; idx: number } | null = null;
+  let bestCentreD = tol * tol;
   for (const e of ents) {
     for (const r of dimRefPoints(e)) {
       if (except && e.id === except.id && r.p === except.idx) continue;
       const dx = r.pos.x - p.x, dy = r.pos.y - p.y, d = dx * dx + dy * dy;
       if (d <= bestD) { bestD = d; best = { id: e.id, idx: r.p }; }
+      if ((r.p === RECT_CENTRE || r.p === POLYGON_CENTRE) && d <= bestCentreD) {
+        bestCentreD = d; bestCentre = { id: e.id, idx: r.p };
+      }
     }
   }
-  return best;
+  return bestCentre ?? best;
 }
 
 /** resolve a dimension pick (entity + p index) to its current 2D position */

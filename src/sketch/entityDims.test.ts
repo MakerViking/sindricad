@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import * as THREE from "three";
 import {
   constraintDims, dimensionSegments, entityDims, hoverOperandCurve, lineOperand, lineRimPoints,
-  staggeredDefaults,
+  staggeredDefaults, refPointNear, POLYGON_CENTRE,
   pointRimPoints, rimGap, rimGapPoints, rimNesting,
 } from "./entityDims";
 import type { ResolvedEntity } from "./snap";
@@ -562,6 +562,48 @@ describe("badge label placement", () => {
     const own = ents.flatMap((e) => entityDims(e, defs.get(e.id)).flatMap((d) => d.lines));
     expect(segs.map(([a, b]) => [a.x, a.y, b.x, b.y]))
       .toEqual(own.map(([a, b]) => [a.x, a.y, b.x, b.y]));
+  });
+
+  it("a rectangle's untouched sides stay OUTSIDE after one corner is filleted (field report 26ff3c13)", () => {
+    // explodeCompound's rectangle walk is bl → br → tr → tl — counter-clockwise
+    // — so once a fillet turns the rectangle into standalone lines/arcs, each
+    // line's own default (its LEFT normal) points into the rectangle unless
+    // staggeredDefaults' closed-loop winding check flips it back out.
+    const ents: ResolvedEntity[] = [
+      { type: "line", id: "bottom", x1: 0, y1: 0, x2: 17, y2: 0 }, // bl -> br, short of the fillet
+      { type: "arc", id: "corner", x1: 17, y1: 0, x2: 20, y2: 3, mx: 19.12, my: 0.88 }, // the filleted br corner
+      { type: "line", id: "right", x1: 20, y1: 3, x2: 20, y2: 10 }, // -> tr
+      { type: "line", id: "top", x1: 20, y1: 10, x2: 0, y2: 10 }, // -> tl
+      { type: "line", id: "left", x1: 0, y1: 10, x2: 0, y2: 0 }, // -> bl, closing the ring
+    ];
+    const defs = staggeredDefaults(ents);
+    const [top] = entityDims(ents[3]!, defs.get("top"));
+    const [left] = entityDims(ents[4]!, defs.get("left"));
+    // the rectangle spans x:[0,20], y:[0,10] — outside means past those edges,
+    // not back toward the interior
+    expect(top!.labelPos.y).toBeGreaterThan(10);
+    expect(left!.labelPos.x).toBeLessThan(0);
+  });
+});
+
+describe("refPointNear: a shape's centre over its own vertex (field report c8ba080b)", () => {
+  // Root cause: a hexagon sized so one of its vertices lands within click
+  // tolerance of a point the user meant to pick the CENTRE for (to make it
+  // concentric with the origin). The vertex won on raw distance, so the
+  // coincident constraint bound a corner instead — and a locked distance to
+  // the centre then had only one way to hold both: grow the hexagon.
+  const hex: ResolvedEntity = { type: "polygon", id: "hex", x: 0, y: 0, radius: 1, sides: 6, angle: 0 };
+
+  it("picks the centre even when a vertex is strictly closer, as long as the centre is in tolerance", () => {
+    // vertex 0 sits at (1, 0); the click is right next to it, 0.1 away, while
+    // the centre is 0.9 away — still inside this generous tolerance
+    const pick = refPointNear([hex], { x: 0.9, y: 0 }, 1.0);
+    expect(pick).toEqual({ id: "hex", idx: POLYGON_CENTRE });
+  });
+
+  it("still picks the vertex when the centre is out of reach", () => {
+    const pick = refPointNear([hex], { x: 0.9, y: 0 }, 0.2); // too tight for the centre (0.9 away)
+    expect(pick).toEqual({ id: "hex", idx: 0 });
   });
 });
 

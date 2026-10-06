@@ -125,6 +125,18 @@ This file starts on 2026-08-03. For anything before that, see the
   a sixteenth of a millimetre, and `1/16 in` came out as one divided by 16
   inches.
 
+- **A rectangle's dimension badges stay outside it after a corner fillet.**
+  Filleting or chamfering a corner turns the rectangle into separate lines
+  and an arc, and the sides that were not touched had their badges default
+  to the inside of the shape instead of the outside.
+
+- **A coincident constraint on a polygon prefers its centre over a vertex
+  that happens to sit nearby.** A hexagon sized so a corner landed close to
+  the point being picked bound that corner instead of the centre, so a
+  locked distance to that point grew the hexagon rather than moving it.
+  Picking near a shape's centre now favours the centre whenever it is in
+  reach at all, even when a vertex is closer.
+
 - **Equal and Tangent from the right-click menu hold on circles and arcs.**
   Equal on two circles, and Tangent on an arc or on two circles, added a
   constraint that did nothing and was dropped by the next edit. They now add
