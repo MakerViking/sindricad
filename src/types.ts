@@ -1016,7 +1016,13 @@ export type Feature =
   // face's own full axial length (the sidecar's default, re-measured every
   // rebuild so a face that grows or shrinks upstream keeps threading all the
   // way down it).
-  | { id: string; type: "thread"; face: Selector; body?: string; standard: string; fit?: "exact" | "print"; clearance?: Num; length?: Num; leftHand?: boolean }
+  //
+  // `starts` is how many parallel helical grooves the thread has — the real
+  // Tr8x8 printer leadscrew is 4, not 1 (2 mm pitch, 8 mm lead). Absent means
+  // the chosen standard's own natural count (looked up from
+  // thread_standards.json, 4 for Tr8x8, 1 for every other listed size); only
+  // stored when the user overrides that for a custom lead screw (1-8).
+  | { id: string; type: "thread"; face: Selector; body?: string; standard: string; fit?: "exact" | "print"; clearance?: Num; length?: Num; leftHand?: boolean; starts?: Num }
   // Printed surface texture: real mesh displacement (not appearance-only), computed
   // by the sidecar at tessellation time. `faces` absent = whole body (then `body`
   // names the target, required); present = the operated face set (mirrors

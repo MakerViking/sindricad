@@ -77,6 +77,7 @@ function harness(features: Feature[] = []) {
     commit(): void;
     onPanelChoice(id: string, v: string): void;
     onPanelNumber(id: string, v: number | null, raw: string): void;
+    onPanelSelect(id: string, v: string): void;
   };
 
   const click = (hit: { selector: Selector; bodyId: string | null } | null) => {
@@ -86,6 +87,7 @@ function harness(features: Feature[] = []) {
   const commit = () => internals.commit();
   const onPanelChoice = (id: string, v: string) => internals.onPanelChoice(id, v);
   const onPanelNumber = (id: string, v: number | null, raw: string) => internals.onPanelNumber(id, v, raw);
+  const onPanelSelect = (id: string, v: string) => internals.onPanelSelect(id, v);
   /** flush the one pending queryReferences reply */
   const resolve = async (result: QueryResult[]) => {
     const reply = replies.pop();
@@ -95,7 +97,7 @@ function harness(features: Feature[] = []) {
     await Promise.resolve();
   };
 
-  return { tool, store, added, replaced, previews, queries, paramBound, click, resolve, commit, onPanelChoice, onPanelNumber };
+  return { tool, store, added, replaced, previews, queries, paramBound, click, resolve, commit, onPanelChoice, onPanelNumber, onPanelSelect };
 }
 
 const SEL: Selector = { kind: "face", by: "nearest", point: [1, 2, 3] };
@@ -183,6 +185,72 @@ describe("ThreadTool — panel choices land in the stored feature", () => {
     // this only documents that the bad input never reached the feature
     expect(h.added).toHaveLength(1);
     expect(h.added[0]).not.toHaveProperty("length");
+  });
+});
+
+describe("ThreadTool — starts (multi-start threads)", () => {
+  it("switching the standard to Tr8x8 adopts its natural 4 starts, omitted from the stored feature when left unchanged", async () => {
+    const h = harness();
+    h.tool.start(() => {});
+    h.click({ selector: SEL, bodyId: "b1" });
+    const m6 = lookupThread("M6x1")!;
+    await h.resolve([{ index: 0, ok: true, count: 1, entities: [{ body: "b1", sel: SEL, radius: m6.majorDiameter / 2, external: true }] }]);
+
+    const tr88 = lookupThread("Tr8x8")!;
+    expect(tr88.starts).toBe(4);
+    h.onPanelSelect("standard", "Tr8x8");
+
+    h.commit();
+    expect(h.added[0]).toEqual({ id: "new1", type: "thread", face: { ...SEL, body: "b1" }, standard: "Tr8x8", body: "b1" });
+    expect(h.added[0]).not.toHaveProperty("starts");
+  });
+
+  it("overriding starts on a single-start standard stores the override", async () => {
+    const h = harness();
+    h.tool.start(() => {});
+    h.click({ selector: SEL, bodyId: "b1" });
+    const m6 = lookupThread("M6x1")!;
+    await h.resolve([{ index: 0, ok: true, count: 1, entities: [{ body: "b1", sel: SEL, radius: m6.majorDiameter / 2, external: true }] }]);
+
+    h.onPanelNumber("starts", 2, "2");
+    h.commit();
+    expect(h.added[0]).toEqual({ id: "new1", type: "thread", face: { ...SEL, body: "b1" }, standard: "M6x1", body: "b1", starts: 2 });
+  });
+
+  it("overriding Tr8x8 down to a single start stores that override too", async () => {
+    const h = harness();
+    h.tool.start(() => {});
+    h.click({ selector: SEL, bodyId: "b1" });
+    const m6 = lookupThread("M6x1")!;
+    await h.resolve([{ index: 0, ok: true, count: 1, entities: [{ body: "b1", sel: SEL, radius: m6.majorDiameter / 2, external: true }] }]);
+
+    h.onPanelSelect("standard", "Tr8x8");
+    h.onPanelNumber("starts", 1, "1");
+    h.commit();
+    expect(h.added[0]).toEqual({ id: "new1", type: "thread", face: { ...SEL, body: "b1" }, standard: "Tr8x8", body: "b1", starts: 1 });
+  });
+
+  it("an out-of-range starts value is clamped to [1, 8]", async () => {
+    const h = harness();
+    h.tool.start(() => {});
+    h.click({ selector: SEL, bodyId: "b1" });
+    const m6 = lookupThread("M6x1")!;
+    await h.resolve([{ index: 0, ok: true, count: 1, entities: [{ body: "b1", sel: SEL, radius: m6.majorDiameter / 2, external: true }] }]);
+
+    h.onPanelNumber("starts", 12, "12");
+    h.commit();
+    expect((h.added[0] as { starts?: number }).starts).toBe(8);
+  });
+
+  it("re-editing an old Tr8x8 document with no stored starts defaults the panel to its natural 4 and replaces unchanged", () => {
+    const oldDoc: Feature = { id: "t1", type: "thread", face: SEL, body: "b1", standard: "Tr8x8" } as Feature;
+    const h = harness([oldDoc]);
+    expect(h.tool.startEdit("t1", () => {})).toBe(true);
+    h.commit();
+    // the old document never stored `starts`, so re-saving it unchanged must
+    // not inject a new key — but the geometry it rebuilds to is now correct
+    // (4 starts, see thread_standards.json), which is the whole point of the fix
+    expect(h.replaced).toEqual([{ id: "t1", feature: oldDoc }]);
   });
 });
 

@@ -7601,7 +7601,7 @@ def _thread_tool_profile(centre, axis, radial, points):
     return face
 
 
-def _sweep_thread(centre, axis, path_r, pitch, turns, lefthand, prof):
+def _sweep_thread(centre, axis, path_r, lead, turns, lefthand, prof):
     """Sweep `prof` around a helix of `path_r` radius about `axis` — exactly
     like `_sweep_helix` (FRENET mode, one-turn edges via `_helix_path`, the
     self-interference probe on `_HELIX_CHECK_TURNS` turns), duplicated rather
@@ -7609,7 +7609,12 @@ def _sweep_thread(centre, axis, path_r, pitch, turns, lefthand, prof):
     straight off a sweep feature's own `path` sketch, and Thread has neither:
     its axis comes from `_cylinder_frame`, not a drawn circle. `path_r` is the
     profile's own FLAT boundary (see `_handle_thread`), not necessarily the
-    thread's major radius."""
+    thread's major radius.
+
+    `lead` is the helix's own advance per revolution — the single-start pitch
+    for an ordinary thread, or pitch * starts for one groove of a multi-start
+    one (`_handle_thread` builds `starts` copies of this one helix, turned
+    about the axis, rather than calling this per start)."""
     from OCP.BRepAlgoAPI import BRepAlgoAPI_Check
 
     start = prof.center()
@@ -7617,7 +7622,7 @@ def _sweep_thread(centre, axis, path_r, pitch, turns, lefthand, prof):
     def swept(n):
         try:
             solid = sweep(sections=prof, is_frenet=True,
-                          path=_helix_path(centre, axis, path_r, pitch, n, lefthand, start))
+                          path=_helix_path(centre, axis, path_r, lead, n, lefthand, start))
         except Exception as ex:
             raise ValueError(
                 f"Thread: could not build the helix. [{type(ex).__name__}]"
@@ -7658,6 +7663,12 @@ def _handle_thread(f, ctx):
     against adjoining material — a blind hole's run-out is meant to notch
     slightly into the floor, same as a real tap does; a through hole's
     run-out harmlessly overruns into air.
+
+    A multi-start thread (Tr8x8's real hardware: 4 starts, 2 mm pitch, 8 mm
+    lead) is `starts` copies of one single-start helix tool, each turned
+    360/starts degrees about the axis and cut together in one boolean — see
+    the `starts`/`lead`/`tools` block below for why no extra overlap check is
+    needed between them.
 
     The thread's own geometry (major/minor radius, pitch, flank angle) comes
     entirely from the standard's table, not from the picked face's measured
@@ -7700,6 +7711,14 @@ def _handle_thread(f, ctx):
     if rec is None:
         raise ValueError(f"Thread: unknown standard {f['standard']!r}")
     pitch = rec["pitch"]
+    # `starts` defaults to the standard's own natural count (4 for Tr8x8, 1 for
+    # everything else) so an old document that never stored this field still
+    # builds the standard's REAL thread, not an arbitrary single-start one. The
+    # panel lets a user override it per-feature for a custom lead screw.
+    starts = int(round(ctx.val(f.get("starts", rec.get("starts", 1)))))
+    if not (1 <= starts <= 8):
+        raise ValueError(f"Thread: starts must be between 1 and 8 (got {starts})")
+    lead = pitch * starts
     half_angle = thread_standards.half_angle_rad(rec)
     major_r = rec["majorDiameter"] / 2.0
     minor_r = thread_standards.minor_diameter(rec) / 2.0
@@ -7733,7 +7752,13 @@ def _handle_thread(f, ctx):
     # R2 rule: the tool runs one full pitch before the nominal start and one
     # full pitch past the nominal end (see this function's own docstring).
     run_start = centre0 + axis * (v0 - pitch)
-    turns = length / pitch + 2.0
+    # One helix tool advances by the LEAD (pitch * starts) per revolution, not
+    # the single-start pitch: a real lead screw's single groove climbs by its
+    # whole lead every turn, and `starts` of those grooves (see below) make up
+    # the finished thread. `turns` is sized off the lead the same way the
+    # single-start formula was sized off the pitch, so this collapses to the
+    # original `length / pitch + 2.0` exactly when starts == 1.
+    turns = (length + 2.0 * pitch) / lead
     prof = _thread_tool_profile(run_start, axis, radial, points)
     # The helix the tool is swept along runs at the FLAT, controlled boundary
     # of the profile (major_r for internal, minor_r for external) — the one
@@ -7742,11 +7767,24 @@ def _handle_thread(f, ctx):
     # material already gone), so it is fine for the profile to extend away
     # from the path on one side only, never straddling it.
     path_r = major_r if not external else minor_r
-    tool = _sweep_thread(run_start, axis, path_r, pitch, turns, lefthand, prof)
+    tool = _sweep_thread(run_start, axis, path_r, lead, turns, lefthand, prof)
+    # A multi-start thread is `starts` copies of that one tool, each turned
+    # 360/starts degrees about the thread axis — geometrically exact because
+    # rotating a lead-L helix by 2*pi/starts about its own axis is exactly the
+    # same curve as shifting it along the axis by `pitch` (lead = pitch *
+    # starts), which is precisely the axial spacing `_thread_tool_points`'s own
+    # width clamp already keeps clear of self-overlap for a single start. So
+    # the starts never need a dedicated overlap check of their own: they tile
+    # the same way neighbouring turns of one start already do.
+    tools = [tool]
+    if starts > 1:
+        turn_axis = Axis(centre0, axis)
+        for k in range(1, starts):
+            tools.append(tool.rotate(turn_axis, k * 360.0 / starts))
 
     before_solids = max(1, len(body["shape"].solids()))
     before_volume = body["shape"].volume
-    result = _serial_bool(body["shape"], tool, "cut")
+    result = _serial_bool(body["shape"], tools, "cut")
     if result.volume >= before_volume - 1e-6:
         raise ValueError(
             "Thread: this cut removed nothing. The hole or shaft may no longer "

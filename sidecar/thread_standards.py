@@ -12,18 +12,17 @@ trapezoidal sizes (Tr8x8, Tr8x2, Tr10x2, Tr12x3, Tr16x4). Not a complete
 engineering reference: a size missing here is a size this tool refuses by
 not listing it, not a bug.
 
-Tr8x8 is modeled here as pitch 4 mm, not pitch 8: a literal single-start
-ISO 2904 Tr8 at an 8 mm pitch has a minor diameter of zero (depth 0.5*P =
-4 mm on a 4 mm radius), which is not a buildable thread. The real "Tr8x8"
-hardware this designation names - the 3D-printer Z-axis leadscrew - is a
-2-start thread, 8 mm LEAD, 4 mm pitch. v1 has no multi-start sweep (one
-helix only), so this models it as a single P4 helix: a usable, correctly-
-depthed Tr8 thread, but geometrically one start short of the real 2-start
-part. Flagged for Thomas; true multi-start is future work, not this v1.
+Tr8x8 is the real 3D-printer Z-axis leadscrew: a 4-start thread, 2 mm
+PITCH, 8 mm LEAD. A record's own `pitch` is always the single-start pitch
+(what one helix profile is built at and advances by per revolution); a
+`starts` count (default 1 when the field is absent) multiplies that into
+the LEAD the builder sweeps along, then repeats the profile `starts` times
+around the axis — see builder.py's `_handle_thread`. Tr8x8 is the only
+table entry with `starts` > 1; no other listed size is multi-start.
 
 Every record `lookup()` returns is normalized to the same shape in mm,
 regardless of family:
-    family, designation, majorDiameter, pitch, halfAngleDeg, depthFrac
+    family, designation, majorDiameter, pitch, starts, halfAngleDeg, depthFrac
 
 `halfAngleDeg` is the flank half-angle from the thread axis (30 degrees for
 every 60-degree-included family: ISO metric and UN; 15 degrees for the
@@ -69,6 +68,7 @@ def _normalize(family, rec):
         "designation": rec["designation"],
         "majorDiameter": major,
         "pitch": pitch,
+        "starts": rec.get("starts", 1),
         "halfAngleDeg": fam["halfAngleDeg"],
         "depthFrac": fam["depthFrac"],
     }

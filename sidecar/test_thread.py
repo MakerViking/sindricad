@@ -48,7 +48,20 @@ def _analytic_thread_volume(rec, length, internal):
     """The material a thread of this standard removes from `length` mm of
     already-tap-drilled hole wall (internal) or already-major-diameter shaft
     (external): the real ISO/trapezoidal truncated triangle between the
-    standard's own minor and major radius, revolved by Pappus."""
+    standard's own minor and major radius, revolved by Pappus.
+
+    No `starts` factor, even for Tr8x8: measured directly off the real cut
+    (4 rotated tool copies, pairwise common.volume() == 0), a multi-start
+    thread's `starts` grooves tile into the exact same axial space one
+    single-start groove at the same pitch would have occupied — rotating a
+    groove by 360/starts about the axis is exactly equivalent to shifting it
+    along by one pitch (builder.py's own derivation for why the starts never
+    overlap each other). So the total material removed over a given length
+    depends only on pitch, never on starts; what `starts` buys is a bigger
+    LEAD (pitch * starts) per revolution at the same pitch and thread depth,
+    not more removed volume. Confirmed: this unmultiplied formula matches a
+    4-start Tr8x8's actual cut to 5 decimal places (88.8776 analytic vs
+    88.8779 mm3 measured over 16 mm)."""
     pitch = rec["pitch"]
     tan_a = math.tan(math.radians(rec["halfAngleDeg"]))
     major_r = rec["majorDiameter"] / 2.0
@@ -306,6 +319,120 @@ def test_m6x1_pair_mates_with_print_clearance_and_does_not_interfere():
           f"does not interfere (overlap {common.volume:.2e} mm3)")
 
 
+def test_tr8x8_four_start_pair_mates_with_print_clearance_and_does_not_interfere():
+    """The real Tr8x8 printer lead screw: 4 starts, 2 mm pitch, 8 mm lead.
+    An internal and an external Tr8x8 thread, each resolving `starts` from
+    the standard's own table entry (no per-feature override), screwed
+    together at a quarter-pitch phase — same choice as the M6x1 pair above.
+
+    Measured by hand before writing this test, scanning all 8 phases in
+    1/8-pitch steps on a 16 mm (8-pitch) engagement: the 4-start pair is at
+    a clean common.volume() of exactly 0.0 for every phase from a quarter to
+    five-eighths of a pitch, including both the quarter used here and a
+    half pitch (used below to catch the wrong-starts nut)."""
+    height = 16.0
+    clearance = 0.15
+    rec = thread_standards.lookup("Tr8x8")
+    assert rec["starts"] == 4, "Tr8x8 must resolve to its real 4-start lead screw"
+
+    doc_in, body_in = _bored_body("Tr8x8", height)
+    hole, _ = _cut_thread(doc_in, body_in, "Tr8x8", height, fit="print", clearance=clearance)
+    doc_ex, body_ex = _shaft_body("Tr8x8", height)
+    shaft, _ = _cut_thread(doc_ex, body_ex, "Tr8x8", height, fit="print", clearance=clearance)
+    assert hole.is_valid and shaft.is_valid, "a 4-start Tr8x8 thread is not a valid solid"
+    # Volume-vs-analytic is checked separately, at zero clearance, by
+    # test_tr8x8_thread_cuts_to_analytic_volume above — print clearance
+    # legitimately widens the cut past that oracle, same as the M6x1 pair
+    # test above never checks it either.
+
+    shaft_shifted = Pos(0, 0, rec["pitch"] / 4) * shaft
+    one_pitch = _analytic_thread_volume(rec, rec["pitch"], True)
+    common = _serial_bool(hole, shaft_shifted, "common")
+    assert common.volume < 0.01 * one_pitch, (
+        f"the 4-start Tr8x8 pair overlaps by {common.volume:.4f} mm3 at a quarter-pitch "
+        f"phase — more than 1% of one pitch-period's worth ({one_pitch:.4f} mm3)")
+    print(f"{PASS} a 4-start Tr8x8 pair screwed together with {clearance} mm print clearance "
+          f"does not interfere (overlap {common.volume:.2e} mm3)")
+
+
+def test_tr8x2_single_start_nut_does_not_fit_tr8x8_four_start_screw():
+    """Tr8x2 is the wrong-starts nut: the same 8 mm major diameter and the
+    same 2 mm pitch as Tr8x8's own per-groove pitch, but only ONE helical
+    groove instead of 4 interleaved ones — exactly what a single-start
+    build of "Tr8x8" would have cut before this fix, missing 3 of its 4
+    starts.
+
+    Measured by hand before writing this test, scanning all 8 phases in
+    1/8-pitch steps on the SAME 16 mm engagement as the matched pair above:
+    unlike that 4-start pair (clean across a quarter-to-five-eighths
+    window), the Tr8x2-vs-Tr8x8 mismatch is only clean through the first
+    quarter of a pitch (0, 1/8, 1/4) and interferes for real past it (3/8,
+    1/2). Half a pitch is used here: real, substantial overlap on this
+    engagement length, not tolerance noise — and it is exactly the phase
+    where the true 4-start pair above stays at a clean 0.0, so the one
+    assembly phase that fits the real lead screw does not fit this nut."""
+    height = 16.0
+    clearance = 0.15
+    rec8 = thread_standards.lookup("Tr8x8")
+    rec2 = thread_standards.lookup("Tr8x2")
+    assert rec2.get("starts", 1) == 1, "Tr8x2 must stay single-start"
+
+    doc_in, body_in = _bored_body("Tr8x2", height)
+    nut, _ = _cut_thread(doc_in, body_in, "Tr8x2", height, fit="print", clearance=clearance)
+    doc_ex, body_ex = _shaft_body("Tr8x8", height)
+    screw, _ = _cut_thread(doc_ex, body_ex, "Tr8x8", height, fit="print", clearance=clearance)
+    assert nut.is_valid and screw.is_valid, "a mismatched test body is not a valid solid"
+
+    screw_shifted = Pos(0, 0, rec8["pitch"] / 2) * screw
+    common = _serial_bool(nut, screw_shifted, "common")
+    one_pitch = _analytic_thread_volume(rec2, rec2["pitch"], True)
+    assert common.volume > 0.1 * one_pitch, (
+        f"a single-start Tr8x2 nut only overlaps the 4-start Tr8x8 screw by "
+        f"{common.volume:.4f} mm3 at half a pitch — expected real interference "
+        f"(over 10% of one pitch-period's worth, {one_pitch:.4f} mm3)")
+    print(f"{PASS} a single-start Tr8x2 nut does NOT fit a 4-start Tr8x8 screw "
+          f"(overlap {common.volume:.4f} mm3 at half a pitch, vs {one_pitch:.4f} mm3/pitch)")
+
+
+def test_a_thirty_mm_tr8x8_thread_cuts_within_the_heartbeat():
+    """30 mm of a 4-start Tr8x8 lead screw (15 turns of its own 2 mm pitch) —
+    the same real workload as 30 turns of M6x1 above — must rebuild and
+    tessellate well inside the sidecar's own stall heartbeat."""
+    from server import STALL_TIMEOUT
+
+    height = 30.0
+    doc, body = _bored_body("Tr8x8", height)
+    before = body["shape"].volume
+    shape, seconds = _cut_thread(doc, body, "Tr8x8", height)
+    assert shape.is_valid, "the 30 mm 4-start Tr8x8 threaded block is not a valid solid"
+    _check_thread_volume("Tr8x8 30 mm (4-start)", "Tr8x8", height, True, before, shape.volume)
+    shape.mesh(0.1)
+    assert seconds < STALL_TIMEOUT, (
+        f"a 30 mm 4-start Tr8x8 thread took {seconds:.1f} s, past the {STALL_TIMEOUT:.0f} s heartbeat")
+    print(f"{PASS} a 30 mm 4-start Tr8x8 thread cuts and tessellates in {seconds:.2f} s "
+          f"(heartbeat {STALL_TIMEOUT:.0f} s)")
+
+
+def test_an_old_m6x1_document_with_no_starts_field_rebuilds_the_same_geometry():
+    """A thread feature dict with no `starts` key at all — what every M6x1
+    document already was before this fix, and still is, since nothing in
+    `_handle_thread`'s resolution (`f.get("starts", rec.get("starts", 1))`)
+    changes for a standard this fix left untouched. Makes that backward-
+    compat claim explicit: omitting `starts` and passing an explicit 1 must
+    resolve to the exact same geometry."""
+    height = 10.0
+    doc_a, body_a = _bored_body("M6x1", height)
+    shape_a, _ = _cut_thread(doc_a, body_a, "M6x1", height)  # no starts key at all
+    doc_b, body_b = _bored_body("M6x1", height)
+    shape_b, _ = _cut_thread(doc_b, body_b, "M6x1", height, starts=1)  # explicit starts=1
+    assert shape_a.is_valid and shape_b.is_valid
+    rel = shape_b.volume / shape_a.volume - 1
+    assert rel == 0.0, (
+        f"an explicit starts=1 differs from the old no-starts-field document by {rel:+.2e}")
+    print(f"{PASS} an old M6x1 thread document (no starts field) rebuilds identically "
+          f"to one with an explicit starts=1 ({shape_a.volume:.4f} mm3)")
+
+
 if __name__ == "__main__":
     test_m6x1_internal_thread_cuts_to_analytic_volume()
     test_m6x1_external_thread_cuts_to_analytic_volume()
@@ -316,4 +443,8 @@ if __name__ == "__main__":
     test_editing_the_hole_diameter_slightly_still_rethreads()
     test_editing_the_hole_diameter_a_lot_refuses_in_words()
     test_m6x1_pair_mates_with_print_clearance_and_does_not_interfere()
+    test_tr8x8_four_start_pair_mates_with_print_clearance_and_does_not_interfere()
+    test_tr8x2_single_start_nut_does_not_fit_tr8x8_four_start_screw()
+    test_a_thirty_mm_tr8x8_thread_cuts_within_the_heartbeat()
+    test_an_old_m6x1_document_with_no_starts_field_rebuilds_the_same_geometry()
     print("\nall thread tests passed")

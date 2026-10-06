@@ -32,7 +32,7 @@ import { setPrompt } from "../ui/prompt";
 import { t } from "../i18n";
 import { isImeComposing } from "../ui/focus";
 import { ToolPanel, type PanelRow } from "../ui/toolPanel";
-import { allThreadDesignations, FAMILY_LABEL, nearestThread } from "./threadStandards";
+import { allThreadDesignations, designationLabel, FAMILY_LABEL, lookupThread, nearestThread } from "./threadStandards";
 
 type Phase = "pick" | "edit";
 
@@ -42,6 +42,7 @@ interface ThreadValues {
   clearance: number;
   length: number | null; // null = the picked face's own full axial length
   leftHand: boolean;
+  starts: number; // parallel helical grooves; 1 for an ordinary thread
 }
 
 const PREVIEW_DEBOUNCE_MS = 400;
@@ -79,7 +80,7 @@ function storeClearance(mm: number) {
 // rendering needs (toolPanel.ts: "consecutive options sharing a group").
 const STANDARD_OPTIONS: { value: string; label: string; group?: string }[] = allThreadDesignations().map((rec) => ({
   value: rec.designation,
-  label: rec.designation,
+  label: designationLabel(rec),
   group: FAMILY_LABEL[rec.family],
 }));
 
@@ -133,7 +134,7 @@ export class ThreadTool {
   startEdit(featureId: string, onDone: (id: string | null) => void): boolean {
     const f = this.store.document.features.find((x) => x.id === featureId);
     if (!f || f.type !== "thread") return false;
-    for (const k of ["clearance", "length"] as const) {
+    for (const k of ["clearance", "length", "starts"] as const) {
       const val = (f as Record<string, unknown>)[k];
       if (typeof val === "string" || this.store.isParamBound({ kind: "feature", feature: featureId, field: k }))
         return false;
@@ -156,6 +157,7 @@ export class ThreadTool {
       clearance: Number(f.clearance ?? readStoredClearance()),
       length: f.length != null ? Number(f.length) : null,
       leftHand: !!f.leftHand,
+      starts: f.starts != null ? Number(f.starts) : (lookupThread(f.standard)?.starts ?? 1),
     });
     return true;
   }
@@ -216,7 +218,7 @@ export class ThreadTool {
       const nearest = nearestThread(diameterMm, this.external);
       this.phase = "edit";
       this.openPanel(
-        { standard: nearest.designation, fit: "exact", clearance: readStoredClearance(), length: null, leftHand: false },
+        { standard: nearest.designation, fit: "exact", clearance: readStoredClearance(), length: null, leftHand: false, starts: nearest.starts },
         this.matchNote(diameterMm, nearest),
       );
     });
@@ -247,6 +249,7 @@ export class ThreadTool {
     this.values = initial;
     const rows: PanelRow[] = [
       { kind: "select", id: "standard", label: t("feature.thread.panel.standard"), options: STANDARD_OPTIONS },
+      { kind: "number", id: "starts", label: t("feature.thread.panel.starts"), field: "count", title: t("feature.thread.panel.startsTitle") },
       {
         kind: "choice", id: "fit", label: t("feature.thread.panel.fit"),
         options: [
@@ -272,6 +275,7 @@ export class ThreadTool {
       onCancel: () => this.cancel(),
     });
     this.panel.setSelect("standard", initial.standard);
+    this.panel.setNumber("starts", initial.starts);
     this.panel.setChoice("fit", initial.fit);
     this.panel.setNumber("clearance", initial.clearance);
     this.panel.setVisible("clearance", initial.fit === "print");
@@ -284,6 +288,8 @@ export class ThreadTool {
   private onPanelSelect(id: string, v: string) {
     if (id !== "standard" || !this.values) return;
     this.values.standard = v;
+    this.values.starts = lookupThread(v)?.starts ?? 1;
+    this.panel.setNumber("starts", this.values.starts);
     this.updatePreview();
   }
 
@@ -308,6 +314,11 @@ export class ThreadTool {
     } else if (id === "length") {
       if (v === null && raw !== "") return;
       this.values.length = raw === "" ? null : v;
+    } else if (id === "starts") {
+      if (v === null && raw !== "") return; // the field shows red; OK refuses it
+      const clamped = Math.min(8, Math.max(1, Math.round(v ?? this.values.starts)));
+      this.values.starts = clamped;
+      this.panel.setNumber("starts", clamped); // re-snaps a cleared or out-of-range field; no-ops if it already matches
     } else {
       return;
     }
@@ -326,6 +337,7 @@ export class ThreadTool {
       ...(v.fit === "print" ? { fit: "print" as const, clearance: v.clearance } : {}),
       ...(v.length != null ? { length: v.length } : {}),
       ...(v.leftHand ? { leftHand: true } : {}),
+      ...(v.starts !== (lookupThread(v.standard)?.starts ?? 1) ? { starts: v.starts } : {}),
       ...(this.bodyId ? { body: this.bodyId } : {}),
     };
   }
@@ -346,7 +358,7 @@ export class ThreadTool {
       this.panel.setWarning(t("feature.thread.panel.reading"));
       return;
     }
-    if (this.panel.numberUnreadable("clearance") || this.panel.numberUnreadable("length")) {
+    if (this.panel.numberUnreadable("clearance") || this.panel.numberUnreadable("length") || this.panel.numberUnreadable("starts")) {
       this.panel.setWarning(t("feature.badNumber"));
       return;
     }

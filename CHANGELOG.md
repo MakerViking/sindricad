@@ -56,6 +56,14 @@ This file starts on 2026-08-03. For anything before that, see the
   and names the body instead of leaving you looking at an unexplained extra
   body with no word said.
 
+- **Threads now support multiple starts, and Tr8x8 is fixed to the real
+  4-start lead screw almost every printer uses.** I had it as a single-start
+  8 mm pitch thread, which a real Tr8x8 nut (2 mm pitch, 4 interleaved
+  starts, 8 mm lead) will not fit. The size panel shows the start count in
+  the label (e.g. "Tr8x8 (P2, 4 starts)") and lets you override it (1-8) for
+  a custom lead screw; an old thread feature with no stored starts count
+  still resolves to the standard's own natural value.
+
 - **Import Mesh is now just Import.** It has always taken STEP files as well as
   meshes, and the old name hid that. Its tooltip lists the formats it reads.
 

@@ -368,7 +368,8 @@
     {
       "designation": "Tr8x8",
       "diameter": 8,
-      "pitch": 4
+      "pitch": 2,
+      "starts": 4
     },
     {
       "designation": "Tr8x2",

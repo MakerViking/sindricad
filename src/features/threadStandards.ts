@@ -37,6 +37,7 @@ interface RawRecord {
   pitch?: number;
   diameterIn?: number;
   tpi?: number;
+  starts?: number;
 }
 
 interface FamilyInfo {
@@ -51,6 +52,7 @@ export interface ThreadRecord {
   majorDiameter: number;
   minorDiameter: number;
   pitch: number;
+  starts: number;
 }
 
 const DATA_TYPED = DATA as unknown as Record<ThreadFamily, RawRecord[]> & { families: Record<ThreadFamily, FamilyInfo> };
@@ -59,7 +61,10 @@ function normalize(family: ThreadFamily, rec: RawRecord): ThreadRecord {
   const major = rec.diameterIn != null ? rec.diameterIn * _MM_PER_INCH : rec.diameter!;
   const pitch = rec.diameterIn != null ? _MM_PER_INCH / rec.tpi! : rec.pitch!;
   const depthFrac = DATA_TYPED.families[family].depthFrac;
-  return { family, designation: rec.designation, majorDiameter: major, minorDiameter: major - 2 * depthFrac * pitch, pitch };
+  return {
+    family, designation: rec.designation, majorDiameter: major,
+    minorDiameter: major - 2 * depthFrac * pitch, pitch, starts: rec.starts ?? 1,
+  };
 }
 
 const BY_DESIGNATION = new Map<string, ThreadRecord>();
@@ -99,4 +104,17 @@ export function nearestThread(diameterMm: number, external: boolean): ThreadReco
     if (err < bestErr) { best = rec; bestErr = err; }
   }
   return best;
+}
+
+/** The panel's size label: the bare designation for an ordinary single-start
+ *  size, or e.g. "Tr8x8 (P2, 4 starts)" when `starts` says this designation
+ *  is really several parallel helical grooves at a finer pitch than its name
+ *  implies — the real Tr8x8 printer leadscrew, not a wrong single helix. */
+export function designationLabel(rec: ThreadRecord): string {
+  if (rec.starts <= 1) return rec.designation;
+  return t("feature.thread.multiStartLabel", {
+    designation: rec.designation,
+    pitch: String(rec.pitch),
+    starts: String(rec.starts),
+  });
 }

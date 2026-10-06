@@ -826,6 +826,7 @@
       },
       "matchHole": "This hole is {diameter} mm across. {designation}'s tap drill is {standard} mm: internal {designation}.",
       "matchShaft": "This shaft is {diameter} mm across. {designation}'s major diameter is {standard} mm: external {designation}.",
+      "multiStartLabel": "{designation} (P{pitch}, {starts} starts)",
       "panel": {
         "clearance": "Clearance",
         "clearanceTitle": "How much to back the flanks off, split between the two mating threads",
@@ -839,7 +840,9 @@
         "lengthTitle": "How far the thread runs. Leave empty to thread the whole face",
         "reading": "Reading that face",
         "right": "Right-hand",
-        "standard": "Standard"
+        "standard": "Standard",
+        "starts": "Starts",
+        "startsTitle": "How many parallel helical grooves the thread has. Most threads are 1; many printer leadscrews are more (Tr8x8 is 4)"
       },
       "pickPrompt": "Click a cylindrical face: a hole wall or a shaft",
       "ref": {
