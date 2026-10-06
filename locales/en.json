@@ -365,35 +365,35 @@
         "radius": "Drag the arrow to set radius (hold Ctrl for fine steps) · type a value + Enter · click edges to add/remove them · click empty space to commit · Esc to cancel"
       },
       "editPrompt": {
-        "chamfer": "Editing chamfer: click an edge to add or remove it · drag the arrow (Ctrl = fine) or type a value · Enter/click empty space to apply · Esc to cancel (later features are hidden while editing)",
-        "fillet": "Editing fillet: click an edge to add or remove it · drag the arrow (Ctrl = fine) or type a value · Enter/click empty space to apply · Esc to cancel (later features are hidden while editing)"
+        "chamfer": "Editing chamfer: click an edge to add or remove it (Shift-click to skip its tangent chain) · drag the arrow (Ctrl = fine) or type a value · Enter/click empty space to apply · Esc to cancel (later features are hidden while editing)",
+        "fillet": "Editing fillet: click an edge to add or remove it (Shift-click to skip its tangent chain) · drag the arrow (Ctrl = fine) or type a value · Enter/click empty space to apply · Esc to cancel (later features are hidden while editing)"
       },
       "members": {
         "creating": {
           "chamfer": {
-            "one": "Creating chamfer: {count} edge · click edges to add/remove · Enter/click empty space to commit · Esc to cancel",
-            "other": "Creating chamfer: {count} edges · click edges to add/remove · Enter/click empty space to commit · Esc to cancel"
+            "one": "Creating chamfer: {count} edge · click edges to add/remove (Shift-click to skip the tangent chain) · Enter/click empty space to commit · Esc to cancel",
+            "other": "Creating chamfer: {count} edges · click edges to add/remove (Shift-click to skip the tangent chain) · Enter/click empty space to commit · Esc to cancel"
           },
           "fillet": {
-            "one": "Creating fillet: {count} edge · click edges to add/remove · Enter/click empty space to commit · Esc to cancel",
-            "other": "Creating fillet: {count} edges · click edges to add/remove · Enter/click empty space to commit · Esc to cancel"
+            "one": "Creating fillet: {count} edge · click edges to add/remove (Shift-click to skip the tangent chain) · Enter/click empty space to commit · Esc to cancel",
+            "other": "Creating fillet: {count} edges · click edges to add/remove (Shift-click to skip the tangent chain) · Enter/click empty space to commit · Esc to cancel"
           }
         },
         "editing": {
           "chamfer": {
-            "one": "Editing chamfer: {count} edge · click edges to add/remove · Enter/click empty space to apply · Esc to cancel",
-            "other": "Editing chamfer: {count} edges · click edges to add/remove · Enter/click empty space to apply · Esc to cancel"
+            "one": "Editing chamfer: {count} edge · click edges to add/remove (Shift-click to skip the tangent chain) · Enter/click empty space to apply · Esc to cancel",
+            "other": "Editing chamfer: {count} edges · click edges to add/remove (Shift-click to skip the tangent chain) · Enter/click empty space to apply · Esc to cancel"
           },
           "fillet": {
-            "one": "Editing fillet: {count} edge · click edges to add/remove · Enter/click empty space to apply · Esc to cancel",
-            "other": "Editing fillet: {count} edges · click edges to add/remove · Enter/click empty space to apply · Esc to cancel"
+            "one": "Editing fillet: {count} edge · click edges to add/remove (Shift-click to skip the tangent chain) · Enter/click empty space to apply · Esc to cancel",
+            "other": "Editing fillet: {count} edges · click edges to add/remove (Shift-click to skip the tangent chain) · Enter/click empty space to apply · Esc to cancel"
           }
         }
       },
       "noEdges": "No edges selected — click an edge to add one · Esc to cancel",
       "pick": {
-        "chamfer": "Select an edge to chamfer (Ctrl-click first to pre-select several)",
-        "fillet": "Select an edge to fillet (Ctrl-click first to pre-select several)"
+        "chamfer": "Select an edge to chamfer (Ctrl-click first to pre-select several · Shift-click to skip its tangent chain)",
+        "fillet": "Select an edge to fillet (Ctrl-click first to pre-select several · Shift-click to skip its tangent chain)"
       },
       "previewFailed": {
         "chamfer": "⚠ chamfer failed: {text}",

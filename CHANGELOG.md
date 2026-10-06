@@ -146,6 +146,16 @@ This file starts on 2026-08-03. For anything before that, see the
   at all, so the app waited on it until it was closed; it now gets the same
   answer.
 
+- **Filleting one edge no longer drags in edges nowhere near it.** Clicking an
+  edge of a fillet or chamfer follows it into whatever blends smoothly from
+  it, same as before, but that used to also catch a side edge or a
+  near-duplicate ring a tessellation artefact leaves a hair off the true one,
+  whenever its angle at the shared corner happened to read as smooth too. It
+  now also has to stay on the same flat loop, when that loop has a rounded
+  corner to tell its plane from. A perfectly straight-sided loop (no rounding
+  anywhere yet) still can't be told apart this way, so I added Shift-click: it
+  adds just the edge you clicked, skipping the chain every time.
+
 - **Opening a STEP or mesh file no longer asks you to save first.** File > Open
   adds those to the document you have open, so it now asks "Save your changes
   before opening another document?" only when you pick a SindriCAD document,

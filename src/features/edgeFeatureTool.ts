@@ -298,9 +298,38 @@ export class EdgeFeatureTool {
   // corner arc) drags that neighbour into the operation — OCCT has no way to
   // end the blend at their joint. So every pick expands across
   // tangent-continuous connections, and deselection removes the same chain.
+  //
+  // Field report 77f004a6: filleting one rim of an extruded hexagon also
+  // fillets edges nowhere near it — the other cap, and a near-duplicate ring
+  // a hair off the true one (an OCCT tessellation artefact). A tangent angle
+  // under 10 degrees was the only test, and a side/connector edge whose
+  // endpoint lands within the coincidence tolerance of a rim vertex, with a
+  // tangent that reads as parallel there, passed it regardless of which flat
+  // loop it belongs to. `EdgeRef` carries no face/kind data to tell a rim
+  // edge from a side edge directly, so the guard below infers it from the
+  // chain's own shape, but carefully: two nearly-parallel straight edges
+  // (exactly what a G1 pair is, by definition) do not pin down a plane —
+  // their cross product is near-zero and its direction is noise, so an
+  // earlier version of this guard that fit a plane from any two chain
+  // members could lock onto a wrong plane and wave a bridge straight
+  // through. Instead, a plane is only trusted when one actual edge in the
+  // chain is itself curved — 3+ sample points spanning real area, which a
+  // straight connector never has — because a real arc's own samples pin the
+  // plane without relying on a second, near-parallel edge to cross against.
+  // A straight rim stretch blending into its neighbouring fillet arc within
+  // one sketch loop stays coplanar with that arc, so that legitimate chain
+  // is unaffected; a side edge or a second ring a fraction of a millimetre
+  // away in the extrude direction is not, and no longer joins. Known
+  // limitation: a bare straight-sided loop with no arc anywhere in the chain
+  // (this report's hexagon, before any rounding exists) gives the guard
+  // nothing to anchor a plane on, so it stays inactive — Shift-click (see
+  // addSingle) is the reliable escape hatch for that case, and for a
+  // genuinely non-planar tangent loop (a blend around a 3D corner) the guard
+  // would otherwise be too strict for.
 
   /** All model edges tangent-connected to `start` (including `start`), walked
-   *  breadth-first across shared endpoints whose end-tangents are colinear. */
+   *  breadth-first across shared endpoints whose end-tangents are colinear
+   *  AND which stay in the flat plane the chain has established so far. */
   private tangentChain(start: EdgeRef): EdgeRef[] {
     const all = this.viewport.visibleEdgeLines();
     const bb = this.store.buildState.result?.bbox;
@@ -309,6 +338,7 @@ export class EdgeFeatureTool {
       : 100;
     const joinTol = Math.max(1e-4, 1e-5 * diag); // endpoint coincidence
     const G1_COS = Math.cos((10 * Math.PI) / 180); // tangents within 10°
+    const PLANE_TOL = Math.max(1e-3, 1e-4 * diag); // flatness of a rim/loop
 
     type End = { p: Vec3; t: THREE.Vector3 }; // endpoint + unit tangent there
     const endsOf = (l: EdgeRef): End[] => {
@@ -324,8 +354,36 @@ export class EdgeFeatureTool {
         last[0] - prev[0], last[1] - prev[1], last[2] - prev[2]).normalize();
       return [{ p: first, t: tHead }, { p: last, t: tTail }];
     };
-
     const chain = new Set<EdgeRef>([start]);
+    // the chain's flat plane, once an actual curved member pins one down —
+    // unset while every member so far is a straight 2-point edge, so a bare
+    // straight-sided loop stays as unguarded as it always was (see the
+    // "known limitation" note above the function).
+    let planeNormal: THREE.Vector3 | null = null;
+    let planeOffset = 0;
+    const tryEstablishPlane = (l: EdgeRef) => {
+      if (planeNormal) return;
+      const pts = l.points as Vec3[];
+      if (pts.length < 3) return; // a straight edge carries no plane of its own
+      const a = new THREE.Vector3(...pts[0]!);
+      const b = new THREE.Vector3(...pts[Math.floor(pts.length / 2)]!);
+      const c = new THREE.Vector3(...pts[pts.length - 1]!);
+      const n = b.clone().sub(a).cross(c.clone().sub(a));
+      if (n.lengthSq() < 1e-9) return; // near-collinear samples — not reliable yet
+      n.normalize();
+      planeNormal = n;
+      planeOffset = n.dot(a);
+    };
+    const inChainPlane = (l: EdgeRef): boolean => {
+      if (!planeNormal) return true;
+      for (const p of l.points as Vec3[]) {
+        const dist = Math.abs(planeNormal.dot(new THREE.Vector3(p[0], p[1], p[2])) - planeOffset);
+        if (dist > PLANE_TOL) return false;
+      }
+      return true;
+    };
+    tryEstablishPlane(start);
+
     const queue: EdgeRef[] = [start];
     while (queue.length) {
       const cur = queue.pop();
@@ -337,7 +395,9 @@ export class EdgeFeatureTool {
             const d = Math.hypot(ce.p[0] - oe.p[0], ce.p[1] - oe.p[1], ce.p[2] - oe.p[2]);
             if (d > joinTol) continue;
             if (Math.abs(ce.t.dot(oe.t)) < G1_COS) continue;
+            if (!inChainPlane(cand)) continue;
             chain.add(cand);
+            tryEstablishPlane(cand);
             queue.push(cand);
             break;
           }
@@ -359,6 +419,20 @@ export class EdgeFeatureTool {
       if (this.ghosts.some((g) => Math.hypot(g.mid[0] - mid[0], g.mid[1] - mid[1], g.mid[2] - mid[2]) < 1e-6)) continue;
       this.addGhost(sel, pts, chainId);
     }
+  }
+
+  /** Add exactly this edge, no tangent chain — the Shift-click escape hatch
+   *  from auto-expansion (field report 77f004a6), for a legitimate 3D chain
+   *  the plane guard above is too strict for, or just to pick one edge out
+   *  of a loop on purpose. Still its own chain id (of one), so a later
+   *  click on this ghost alone removes it, same as any other member. */
+  private addSingle(line: EdgeRef) {
+    const pts = line.points as Vec3[];
+    const sel = edgeSelectorFrom({ points: pts, body: line.body });
+    if (!sel) return;
+    const mid = sel.point;
+    if (this.ghosts.some((g) => Math.hypot(g.mid[0] - mid[0], g.mid[1] - mid[1], g.mid[2] - mid[2]) < 1e-6)) return;
+    this.addGhost(sel, pts);
   }
 
   /** Remove a ghost AND everything added in the same gesture (its chain id) —
@@ -461,7 +535,7 @@ export class EdgeFeatureTool {
       e.stopImmediatePropagation();
       const pts = hit.edge.points;
       const { mid, tan } = midAndTangent(pts);
-      this.beginDrag([hit.selector], mid, tan, hit.edge);
+      this.beginDrag([hit.selector], mid, tan, hit.edge, !e.shiftKey);
       return;
     }
     // drag phase: grabbing the handle scrubs; a clean click elsewhere commits
@@ -484,7 +558,8 @@ export class EdgeFeatureTool {
       return;
     }
     // click toggles membership in BOTH modes — a ghost hit removes that edge,
-    // a bare-edge hit adds it. Either way this press is a toggle, not the
+    // a bare-edge hit adds it (its tangent chain, unless Shift is held — see
+    // addSingle). Either way this press is a toggle, not the
     // commit-on-clean-click gesture (downOnGizmo doubles as that latch).
     const g = this.ghostAt(e.clientX, e.clientY);
     if (g) {
@@ -500,7 +575,8 @@ export class EdgeFeatureTool {
       e.preventDefault();
       e.stopImmediatePropagation();
       this.viewport.clearHover();
-      this.addWithChain(hit.edge);
+      if (e.shiftKey) this.addSingle(hit.edge);
+      else this.addWithChain(hit.edge);
       this.afterMembershipChange();
       this.downOnGizmo = true;
       return;
@@ -530,13 +606,16 @@ export class EdgeFeatureTool {
     anchor: THREE.Vector3,
     tangent: THREE.Vector3 | null,
     chainSource?: EdgeRef,
+    expandChain = true,
   ) {
     // Every member gets a ghost line (visible through the model) and stays
-    // click-toggleable. A direct pick expands across its tangent chain; a
-    // pre-selection expands each matched member's chain the same way
+    // click-toggleable. A direct pick expands across its tangent chain
+    // unless the first click was Shift-held (expandChain false — addSingle);
+    // a pre-selection expands each matched member's chain the same way
     // (unmatched selectors still commit, just without a visual).
     if (chainSource) {
-      this.addWithChain(chainSource);
+      if (expandChain) this.addWithChain(chainSource);
+      else this.addSingle(chainSource);
     } else {
       this.seedGhosts(edges);
       for (const g of [...this.ghosts]) {
