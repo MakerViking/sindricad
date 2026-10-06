@@ -133,6 +133,7 @@ function offsetMode(entities: ResolvedEntity[], typed: number, chainMode = true)
     dim: {
       show: () => {}, hide: () => {}, focus: () => {}, position: () => {}, updateFromCursor: () => {},
       isUserDriven: (n: string) => n === "offset",
+      isEdited: (n: string) => n === "offset",
       getValue: (n: string) => (n === "offset" ? typed : null),
     },
     overlay: { setPreview: () => {} },
@@ -199,6 +200,7 @@ describe("Offset with Chain Selection on the reporter's outline", () => {
         hide: () => { box.focused = false; },
         position: () => {}, updateFromCursor: () => {},
         isUserDriven: (n: string) => n === "offset" && box.typed !== null,
+        isEdited: (n: string) => n === "offset" && box.typed !== null,
         getValue: (n: string) => (n === "offset" ? box.typed : null),
       },
     });

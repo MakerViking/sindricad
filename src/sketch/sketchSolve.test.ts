@@ -408,6 +408,29 @@ describe("offset constraint — the copy stays tied to its source", () => {
     }
   });
 
+  it("a chain with pairs on OPPOSITE sides keeps each pair's own sign (field report be28ed84)", async () => {
+    // offsetChain's walk direction is arbitrary per member, so a Chain
+    // Selection offset can need an outward relationship for one pair and an
+    // inward one for another, both under the SAME nominal chain distance.
+    // Reusing one global sign (the chain's own `c.value`) for every pair used
+    // to force pair2's already-correct inward gap outward instead.
+    const ents = [
+      circle("c1", 0, 0, 5), circle("c2", 0, 0, 8), // outward: +3
+      circle("c3", 20, 0, 5), circle("c4", 20, 0, 2), // inward: -3
+    ];
+    const cons: SketchConstraint[] = [
+      { type: "offset", value: 3, pairs: [{ src: "c1", cpy: "c2" }, { src: "c3", cpy: "c4" }] },
+    ];
+    const r = await compileAndSolve(ents, cons);
+    expect(r.ok).toBe(true);
+    expect(r.conflicts).toEqual([]);
+    const b2 = r.entities.find((e) => e.id === "c2");
+    const b4 = r.entities.find((e) => e.id === "c4");
+    if (b2?.type !== "circle" || b4?.type !== "circle") throw new Error("circles lost");
+    expect(b2.radius).toBeCloseTo(8, 5); // outward pair held at +3
+    expect(b4.radius).toBeCloseTo(2, 5); // inward pair held at -3, not flipped to 8
+  });
+
   it("survives losing one copy: the pair list shrinks, the rest stay linked", async () => {
     // pruneConstraints drops the dead pair; the solver must accept what's left
     const ents = [circle("c1", 0, 0, 5), circle("c2", 0, 0, 8)];

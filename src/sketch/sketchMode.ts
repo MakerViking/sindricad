@@ -6088,6 +6088,7 @@ export class SketchMode {
       [{ name: "offset", label: t("tool.offset"), kind: "length" }],
       () => this.commitOffset(),
       () => this.cancelOffset(),
+      () => this.offsetTyped(),
     );
     setPrompt(t("sketch.offset.prompt"));
     this.noteChainJunction(idx);
@@ -6113,33 +6114,77 @@ export class SketchMode {
       ?? offsetEntity(this.entities, idx, dist);
   }
 
-  /** Live side/distance + preview while the offset is being placed. */
-  private offsetMove(ev: PointerEvent) {
-    const pick = this.offsetPick;
-    const p = this.planePoint(ev);
-    const src = pick ? this.entities[pick.idx] : undefined;
-    if (!pick || !src || !p) return;
-    const signed = signedOffsetAt(src, p);
-    const typed = this.dim.isUserDriven("offset") ? this.dim.getValue("offset") : null;
-    if (typed !== null) {
-      // Once a value is typed, the SIGN the user wrote owns the side — that is
-      // what the minus is FOR, and the old tool worked that way. Previously the
-      // cursor always won, so typing -1 silently offset outward and the minus
-      // looked ignored. Clear the field to hand the side back to the cursor.
-      pick.mag = Math.abs(typed);
-      if (typed !== 0) pick.side = typed < 0 ? -1 : 1;
-    } else if (signed !== null) {
-      if (Math.abs(signed) > 1e-6) pick.side = signed < 0 ? -1 : 1;
-      pick.mag = Math.abs(signed);
-      this.dim.updateFromCursor({ offset: pick.mag });
-    }
-    this.dimAtCursor(ev.clientX, ev.clientY);
+  /** A typed value's SIGN is the side the user means, literally — that is what
+   *  the minus key is for (field report be28ed84). A typed value without a
+   *  minus does NOT force the side to outward: it only sets the magnitude and
+   *  leaves whichever side the drag (or a previous type) already picked alone.
+   *  Only fires once the user has actually typed (`isEdited`), never on a bare
+   *  Tab-lock, so locking the field with the mouse-picked side showing does
+   *  not silently flip it. */
+  private applyTypedOffset(pick: { idx: number; side: number; mag: number }) {
+    if (!this.dim.isEdited("offset")) return;
+    const typed = this.dim.getValue("offset");
+    if (typed === null) return;
+    pick.mag = Math.abs(typed);
+    if (typed < 0) pick.side = -1;
+  }
+
+  /** Render the live preview and say which side the offset lands on. Shared by
+   *  the mouse-driven path (offsetMove) and the keyboard-driven one
+   *  (offsetTyped) — typing or Tab-locking a value never touches the mouse. */
+  private offsetRedraw(src: ResolvedEntity, pick: { idx: number; side: number; mag: number }) {
+    this.dim.updateFromCursor({ offset: pick.mag });
+    // Say which side out loud: a bare magnitude in the box left the direction
+    // legible nowhere (field report be28ed84).
+    setPrompt(
+      pick.side < 0
+        ? t("sketch.offset.sideIn", { distance: fmtLength(pick.mag) })
+        : t("sketch.offset.sideOut", { distance: fmtLength(pick.mag) }),
+    );
     const res = this.offsetResultFor(pick.idx, pick.side * pick.mag);
     const added = res ? res.entities.slice(this.entities.length) : [];
     // keep the source highlighted so it stays obvious what is being offset
     const preview = [...curveObjects([src], this.plane, 0x33aaff, true)];
     if (added.length) preview.push(...curveObjects(added, this.plane, PREVIEW_COLOR, true));
     this.overlay.setPreview(preview);
+  }
+
+  /** Live side/distance + preview while the offset is being placed. */
+  private offsetMove(ev: PointerEvent) {
+    const pick = this.offsetPick;
+    const p = this.planePoint(ev);
+    const src = pick ? this.entities[pick.idx] : undefined;
+    if (!pick || !src || !p) return;
+    if (this.dim.isUserDriven("offset")) {
+      // Typed, or Tab-locked: applyTypedOffset itself no-ops on a bare
+      // Tab-lock (isEdited stays false until real text changes), so this
+      // freezes the pick at lock time instead of letting the cursor keep
+      // overwriting it.
+      this.applyTypedOffset(pick);
+    } else {
+      // Not typed (or only Tab-locked): the cursor owns the side, derived
+      // fresh from this arc's own geometry every move.
+      const signed = signedOffsetAt(src, p);
+      if (signed !== null) {
+        if (Math.abs(signed) > 1e-6) pick.side = signed < 0 ? -1 : 1;
+        pick.mag = Math.abs(signed);
+      }
+    }
+    this.dimAtCursor(ev.clientX, ev.clientY);
+    this.offsetRedraw(src, pick);
+  }
+
+  /** The box's own "input" (every keystroke) and Tab-lock both route here —
+   *  neither passes through the canvas's pointermove listener, which is what
+   *  silently repaints the mouse-driven case, so this path must ask for its
+   *  own frame (field report 8159018e). */
+  private offsetTyped() {
+    const pick = this.offsetPick;
+    const src = pick ? this.entities[pick.idx] : undefined;
+    if (!pick || !src) return;
+    this.applyTypedOffset(pick);
+    this.offsetRedraw(src, pick);
+    this.viewport.requestRender();
   }
 
   private commitOffset() {
@@ -6150,12 +6195,12 @@ export class SketchMode {
     if (this.dim.isUserDriven("offset")) {
       const typed = this.dim.getValue("offset");
       if (typed === null) { toast(t("sketch.offset.typeDistance")); return; }
-      // same rule as the live preview: a typed sign is the side (see offsetMove)
-      pick.mag = Math.abs(typed);
-      if (typed !== 0) pick.side = typed < 0 ? -1 : 1;
+      // same literal-sign rule as the live preview (see applyTypedOffset)
+      this.applyTypedOffset(pick);
     }
     if (pick.mag < 1e-6) { toast(t("sketch.offset.typeDistance")); return; }
     const res = this.offsetResultFor(pick.idx, pick.side * pick.mag);
+    const oldLen = this.entities.length;
     this.offsetPick = null;
     this.dim.hide();
     if (!res) {
@@ -6164,6 +6209,12 @@ export class SketchMode {
       return;
     }
     this.entities = res.entities;
+    if (this.constructionMode) {
+      // Offset used to ignore the Construction checkbox and always create
+      // solid geometry (field report 63bc9c78) — every other creation path
+      // in this file marks the entities it adds this same way.
+      for (const added of res.entities.slice(oldLen)) added.construction = true;
+    }
     if (res.linked && res.pairs.length) {
       // the associative link + its single editable dimension
       this.setDrivingDimension({ type: "offset", pairs: res.pairs, value: pick.side * pick.mag });

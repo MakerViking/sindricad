@@ -1820,6 +1820,8 @@
       "paramSides": "An offset tied to a polygon is separate lines now and can't take the new side count, so I left it where it was",
       "prompt": "Offset: move to pick the side, or type a distance · click / Enter to apply · Esc to cancel",
       "rigidCopy": "Offset copy created — not linked to the source (this shape type is rigid)",
+      "sideIn": "Offset: {distance} inward · click / Enter to apply · Esc to cancel",
+      "sideOut": "Offset: {distance} outward · click / Enter to apply · Esc to cancel",
       "typeDistance": "Offset: type a distance, or Esc to cancel"
     },
     "pattern": {

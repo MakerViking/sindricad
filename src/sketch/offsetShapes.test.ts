@@ -513,3 +513,69 @@ describe("what is not a whole shape's offset is left to the solve", () => {
     expect(toasts).toEqual([t("sketch.offset.rigidCopy")]);
   });
 });
+
+// Field reports be28ed84 and 8159018e: the box only ever shows a magnitude,
+// so the side was legible nowhere else (prompts) until it was shown; a typed
+// POSITIVE number used to force the offset outward no matter which side a
+// drag had already resolved; and Tab locking the field left the preview
+// stale until the next mouse move.
+describe("offset shows its side, and a typed value never flips a side a drag already picked", () => {
+  it("the prompt says INWARD while dragging toward the shape's own centre", async () => {
+    const live = sketch([HEX()]);
+    live.s.setTool("offset");
+    live.click(sideMid(HEX(), 0).x, sideMid(HEX(), 0).y); // first click: pick the curve
+    live.move(50, 50); // straight at the hexagon's own centre: unambiguously inward
+    expect(prompts.at(-1)).toContain("inward");
+    live.s.setTool("select");
+  });
+
+  it("a positive typed value after an inward drag stays inward, not jumped outward", async () => {
+    const live = sketch([HEX()]);
+    live.s.setTool("offset");
+    live.click(sideMid(HEX(), 0).x, sideMid(HEX(), 0).y);
+    live.move(50, 50); // resolves the pick's side to inward
+    live.enter("offset", "5"); // positive — must be read literally, not as "outward"
+    await live.settle();
+    live.s.setTool("select");
+    const [src, cpy] = live.shapes("polygon");
+    expect(src).toEqual(HEX());
+    expect(cpy!.radius).toBeCloseTo(grown(10, -5), 9); // stayed inward, not grown(10, 5)
+  });
+
+  it("Tab alone (no typing) still asks for a repaint, instead of waiting on the mouse", async () => {
+    // Bare Tab-to-lock, with nothing typed: applyTypedOffset is a no-op here
+    // (isEdited is false), so the only thing a fix can change is whether a
+    // frame gets asked for at all — the canvas's own pointermove listener
+    // asks for one on every mouse move, but a keydown on the box never
+    // reaches that listener.
+    const live = sketch([HEX()]);
+    live.s.setTool("offset");
+    live.click(sideMid(HEX(), 0).x, sideMid(HEX(), 0).y);
+    live.move(50, 50); // inward, mag resolved from the cursor
+    let renders = 0;
+    (live.s as unknown as { viewport: { requestRender(): void } }).viewport.requestRender = () => { renders++; };
+    const f = (live.s as unknown as { dim: { fields: { input: FakeInput }[] } }).dim.fields[0]!;
+    f.input.dispatch("keydown", { key: "Tab", preventDefault() {}, stopPropagation() {} });
+    expect(renders, "Tab must ask for a frame on its own, not wait for move()").toBeGreaterThan(0);
+    live.s.setTool("select");
+  });
+
+  it("Tab locking the field redraws the preview and prompt without waiting on the mouse", async () => {
+    const live = sketch([HEX()]);
+    live.s.setTool("offset");
+    live.click(sideMid(HEX(), 0).x, sideMid(HEX(), 0).y);
+    live.move(50, 50); // inward, mag resolved from the cursor
+    prompts.length = 0;
+    const f = (live.s as unknown as { dim: { fields: { input: FakeInput }[] } }).dim.fields[0]!;
+    f.input.value = "5";
+    f.input.dispatch("input");
+    f.input.dispatch("keydown", { key: "Tab", preventDefault() {}, stopPropagation() {} });
+    // the redraw must happen off the keystroke itself — no move() call here
+    expect(prompts.at(-1)).toContain("inward");
+    f.input.dispatch("keydown", { key: "Enter", preventDefault() {}, stopPropagation() {} });
+    await live.settle();
+    live.s.setTool("select");
+    const [, cpy] = live.shapes("polygon");
+    expect(cpy!.radius).toBeCloseTo(grown(10, -5), 9);
+  });
+});

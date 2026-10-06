@@ -215,6 +215,12 @@ export class DimInput {
         next.input.focus();
         next.input.select();
       }
+      // Tab is one of the two ways a field's value can go user-driven without
+      // a pointer move (the other is typing, which the "input" listener below
+      // already reports). Without this, locking via Tab left the preview and
+      // side prompt showing the cursor's last position until the mouse moved
+      // again (field report 8159018e).
+      this.onInput?.();
     } else if (e.key === "Enter") {
       e.preventDefault();
       this.commit();

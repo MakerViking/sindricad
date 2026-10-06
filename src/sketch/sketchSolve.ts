@@ -1039,7 +1039,21 @@ export async function compileAndSolve(
           // `difference` is param2 − param1, i.e. cpy.r − src.r = value. SIGNED,
           // so an inward offset shrinks the copy with no branch ambiguity — the
           // same property that makes radialGap safe against an inside-out annulus.
-          cons.push({ id: `${id}r${n}`, type: "radiusDifference", inner: pr.src, outer: pr.cpy, value: c.value });
+          // offsetChain's own walk direction is arbitrary per member (`R = g.R +
+          // (m.ccw ? -dist : dist)`), so a chain's arcs don't all grow — or all
+          // shrink — the same way the chain's nominal `c.value` does: one global
+          // sign for every pair left some of a chain's arcs the wrong size.
+          // Read each pair's sign off its OWN current radii instead (field
+          // report be28ed84), falling back to the chain's sign only when
+          // geometry can't be read yet (a brand-new pair with nothing solved).
+          const srcEnt = entById.get(pr.src), cpyEnt = entById.get(pr.cpy);
+          const srcRound = srcEnt && asRound(srcEnt);
+          const cpyRound = cpyEnt && asRound(cpyEnt);
+          const value =
+            srcRound && cpyRound && Math.abs(cpyRound.r - srcRound.r) > 1e-9
+              ? Math.sign(cpyRound.r - srcRound.r) * mag
+              : c.value;
+          cons.push({ id: `${id}r${n}`, type: "radiusDifference", inner: pr.src, outer: pr.cpy, value });
         }
       });
     }

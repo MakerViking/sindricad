@@ -125,6 +125,23 @@ This file starts on 2026-08-03. For anything before that, see the
   a sixteenth of a millimetre, and `1/16 in` came out as one divided by 16
   inches.
 
+- **Offset says which side it is on, and a typed distance stays on the side
+  you already picked.** The box only ever showed a magnitude, so while
+  dragging there was nowhere to read which way the offset was going to land.
+  It now says "inward" or "outward" right in the prompt. Typing a plain
+  positive number used to force the offset outward no matter which side a
+  drag had already chosen; it now only sets the distance and leaves the side
+  alone. A minus sign still means "the other side," literally.
+
+- **Offset's preview and side no longer wait on the mouse after Tab.** Tab
+  locked the field at the right value, but the preview and the inward/outward
+  prompt kept showing wherever the cursor last was until you moved the mouse
+  again. Locking a field now redraws immediately.
+
+- **Offset honours the Construction checkbox.** With it ticked, Offset still
+  created ordinary solid geometry. The copy it makes is construction now,
+  like every other tool's.
+
 - **A rectangle's dimension badges stay outside it after a corner fillet.**
   Filleting or chamfering a corner turns the rectangle into separate lines
   and an arc, and the sides that were not touched had their badges default
