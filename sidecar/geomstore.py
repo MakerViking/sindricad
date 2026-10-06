@@ -361,6 +361,12 @@ class Store:
         pin is preserved (save must never silently unpin the open document)."""
         total = 0
         for entry in manifest:
+            # A shapeless body (a consumed body, a mesh reference scan) has no
+            # blob. Its None key raised TypeError here, which `_save_checkpoint`
+            # swallows, so ANY document holding one silently stopped writing
+            # disk checkpoints from that feature on.
+            if not entry.get("blob_key"):
+                continue
             try:
                 total += os.path.getsize(self._blob_path(entry["blob_key"]))
             except OSError:
@@ -411,7 +417,8 @@ class Store:
             if row is None:
                 continue
             manifest = json.loads(row["manifest"])
-            if all(os.path.exists(self._blob_path(e["blob_key"])) for e in manifest):
+            if all(os.path.exists(self._blob_path(e["blob_key"]))
+                   for e in manifest if e.get("blob_key")):
                 self.db.execute(
                     "UPDATE checkpoints SET last_access = ? WHERE chain_key = ?",
                     (time.time(), key),
@@ -493,7 +500,8 @@ class Store:
         refcount = {}
         parsed = {}
         for r in rows:
-            manifest = json.loads(r["manifest"])
+            # Shapeless bodies have no blob to count or evict (see save_checkpoint).
+            manifest = [e for e in json.loads(r["manifest"]) if e.get("blob_key")]
             parsed[r["chain_key"]] = manifest
             for e in manifest:
                 refcount[e["blob_key"]] = refcount.get(e["blob_key"], 0) + 1

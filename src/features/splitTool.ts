@@ -336,7 +336,11 @@ export class SplitTool {
   // what the panel shows
 
   private visibleBodies(): string[] {
-    return (this.store.buildState.result?.bodies ?? []).filter((b) => this.store.isBodyVisible(b.id)).map((b) => b.id);
+    // Excludes imported scans: they have no B-rep, so "All visible bodies"
+    // must never hand one to the sidecar as something to cut.
+    return (this.store.buildState.result?.bodies ?? [])
+      .filter((b) => this.store.isBodyVisible(b.id) && !b.meshOnly)
+      .map((b) => b.id);
   }
 
   private bodyName(id: string): string {

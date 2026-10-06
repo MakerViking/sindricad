@@ -441,11 +441,12 @@ const RECT = {
 /** One rectangular body `wPx` x `hPx` on screen, centred, with its four border
  *  edges — built through buildBodyMesh so the faceTriangles convention and the
  *  BodyEdges pick table come from the producers, not from a hand-rolled copy. */
-function rectView(wPx: number, hPx: number): ModelView {
+function rectView(wPx: number, hPx: number, scan = false): ModelView {
   const hw = worldMm(wPx) / 2;
   const hh = worldMm(hPx) / 2;
-  const meta = { id: "b0", name: "b0", faceStart: 0, faceCount: 1 };
-  const edges: RebuildResult["edges"] = [
+  const meta = { id: "b0", name: "b0", faceStart: 0, faceCount: 1, ...(scan ? { meshOnly: true as const } : {}) };
+  // a scan has no B-rep, so it has no edges either
+  const edges: RebuildResult["edges"] = scan ? [] : [
     { id: "L", points: [[-hw, -hh, 0], [-hw, hh, 0]], body: "b0" },
     { id: "R", points: [[hw, -hh, 0], [hw, hh, 0]], body: "b0" },
     { id: "B", points: [[-hw, -hh, 0], [hw, -hh, 0]], body: "b0" },
@@ -598,5 +599,19 @@ describe("occluderAt", () => {
     expect(behind(new THREE.Vector3(0, 0, -2)), "a point 2 mm behind it").toBe(true);
     const off = new Picker().occluderAt(10, 10, RECT, faceCam(), view);
     expect(off(new THREE.Vector3(0, 0, -50)), "no body under the cursor hides nothing").toBe(false);
+  });
+});
+
+describe("pick() on an imported scan", () => {
+  // The sidecar resolves every face selector against the B-rep, and a scan has
+  // none: a face pick made from one would bind some OTHER body's face.
+  const centre = (view: ModelView) => new Picker().pick(VIEW_W / 2, VIEW_H / 2, RECT, faceCam(), view);
+
+  it("returns no face for a click on a scan", () => {
+    expect(centre(rectView(200, 200, true))).toBeNull();
+  });
+
+  it("returns the face for the same click on a solid (the control)", () => {
+    expect(centre(rectView(200, 200))?.kind).toBe("face");
   });
 });

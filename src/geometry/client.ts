@@ -1117,8 +1117,10 @@ export class Geometry implements GeometryBackend {
       nodes?: { name: string; parent: number | null; color?: string }[];
       parts?: { node: number; faces: number }[];
       fitted?: number; faceted?: number; fitSkipped?: string;
+      meshOnly?: true; triangles?: number;
       reference?: { why: string; faces?: number; limit?: number; bodies?: number;
-                    bodyIndex?: number; bodyCount?: number; directions?: number };
+                    bodyIndex?: number; bodyCount?: number; directions?: number;
+                    triangles?: number };
     }>("import", { path, format }, onStarted);
     if (msg.ok) {
       const r = msg.result;
@@ -1136,6 +1138,12 @@ export class Geometry implements GeometryBackend {
         // like the rest: a sidecar that still REFUSES these imports sends no
         // `reference` at all and the reply is unchanged.
         ...(r.reference !== undefined ? { reference: r.reference } : {}),
+        // An imported scan. LOAD-BEARING, not metadata: without it the feature
+        // is saved without `meshOnly` and the rebuild reads the mesh blob as a
+        // BREP and refuses it. This list is a whitelist; a field missing here
+        // is silently dropped before files.ts ever sees it.
+        ...(r.meshOnly ? { meshOnly: true as const } : {}),
+        ...(r.triangles !== undefined ? { triangles: r.triangles } : {}),
       };
     }
     if (!msg.ok && msg.cancelled) return { ok: false, cancelled: true, message: t("engine.error.importCancelled") };

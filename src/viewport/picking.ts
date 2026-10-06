@@ -6,7 +6,7 @@ import * as THREE from "three";
 import type { Selector } from "../types";
 import type { ModelView } from "./render";
 import type { BodyMesh } from "./render";
-import { bodyOfHit, edgeObjects, faceIdOfHit, visibleBodyMeshes } from "./render";
+import { bodyOfHit, edgeObjects, faceIdOfHit, isScanHit, visibleBodyMeshes } from "./render";
 import type { BodyEdges, EdgeRef } from "./edgeLines";
 import { edgeSelectorFrom } from "./edgeMatch";
 import { flushRaycastIndex } from "./raycastIndex";
@@ -141,7 +141,9 @@ export class Picker {
     );
     const fHit = fHits[0];
     let face: FaceHit | null = null;
-    if (fHit) {
+    // A scan hit is no face (see isScanHit), but fHit stays set below: the scan
+    // still hides the edges behind it.
+    if (fHit && !isScanHit(fHit)) {
       const faceId = faceIdOfHit(fHit);
       const point = fHit.point.clone();
       const normal =

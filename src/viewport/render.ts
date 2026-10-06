@@ -36,6 +36,9 @@ export interface BodyMesh {
   // precomputed once so highlight.ts/viewport.ts can touch just one face's/body's
   // own triangles without scanning the whole body on each hover/select/measure.
   faceTriangles: Map<number, number[]>;
+  /** An imported scan (mesh reference body): ONE face id and no B-rep behind it.
+   *  It occludes and it can be snapped to, but it never yields a face pick. */
+  meshOnly?: true;
 }
 
 export interface ModelView {
@@ -193,7 +196,7 @@ export function partitionMesh(
  *  several bodies from the same reply. Output is identical either way. */
 export function buildBodyMesh(
   result: RebuildResult,
-  meta: { id: string; name: string; faceStart: number; faceCount: number },
+  meta: { id: string; name: string; faceStart: number; faceCount: number; meshOnly?: true },
   bodyEdges: RebuildResult["edges"],
   resolution: THREE.Vector2,
   etag: string | undefined,
@@ -374,6 +377,7 @@ export function buildBodyMesh(
     edges,
     baseColors: colors.slice(),
     faceTriangles,
+    ...(meta.meshOnly ? { meshOnly: true as const } : {}),
   };
   // reverse lookup: a raycast hit's `.object` (the exact mesh hit) back to the
   // BodyMesh that owns it — picking.ts/viewport.ts use this via faceIdOfHit().
@@ -405,6 +409,14 @@ export function faceIdOfHit(hit: THREE.Intersection): number {
  *  faceId range lookup could after a rebuild. */
 export function bodyOfHit(hit: THREE.Intersection): BodyMesh | undefined {
   return hit.object.userData.owner as BodyMesh | undefined;
+}
+
+/** Did this raycast land on an imported scan? Face picks must treat that as
+ *  "no face": the sidecar would resolve any face selector made from it against
+ *  some OTHER body's B-rep, because the scan has none. The hit still counts as a
+ *  surface for occlusion, orbit and snapping. */
+export function isScanHit(hit: THREE.Intersection): boolean {
+  return bodyOfHit(hit)?.meshOnly === true;
 }
 
 /** faceId -> owning body, built lazily per ModelView and thrown away with it

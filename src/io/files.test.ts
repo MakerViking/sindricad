@@ -720,6 +720,19 @@ describe("describeSurfaceFit", () => {
 // discover that Thicken is the way out. So this message is not decoration, it
 // is the half of the degrade that makes it defensible.
 describe("describeReferenceImport", () => {
+  it("words a scan on its own, without the Thicken advice that is false for it", () => {
+    const msg = describeReferenceImport({ reference: { why: "tooManyTriangles", triangles: 700000, limit: 150000 } });
+    expect(msg).toContain("reference scan");
+    expect(msg).not.toContain("Thicken");
+    expect(msg).not.toContain("{");
+  });
+
+  it("still says it is a scan when the counts did not arrive", () => {
+    const msg = describeReferenceImport({ reference: { why: "tooManyTriangles" } });
+    expect(msg).toContain("reference scan");
+    expect(msg).not.toContain("{");
+  });
+
   it("says nothing for an import that stayed editable", () => {
     expect(describeReferenceImport({})).toBeNull();
   });

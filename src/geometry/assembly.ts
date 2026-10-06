@@ -24,6 +24,8 @@ export interface WireBodyFull {
   nodeRef?: string;
   /** a split piece: [the body it came from, its number] (types.ts) */
   pieceOf?: [string, number];
+  /** A mesh reference body (an imported scan): triangles with no B-rep behind them. */
+  meshOnly?: true;
   positions: F32Wire;
   indices: U32Wire;
   faceIds: U32Wire;
@@ -42,6 +44,7 @@ export interface WireBodyStub {
   etag: string;
   nodeRef?: string;
   pieceOf?: [string, number];
+  meshOnly?: true;
   unchanged: true;
 }
 export type WireBody = WireBodyFull | WireBodyStub;
@@ -92,6 +95,7 @@ export interface WireManifestEntry {
   etag: string;
   nodeRef?: string;
   pieceOf?: [string, number];
+  meshOnly?: true;
   unchanged?: true;
   faceCount?: number;
   nVerts3?: number;
@@ -129,6 +133,7 @@ export function manifestFromBodies(bodies: WireBody[]): WireManifestEntry[] {
     const e: WireManifestEntry = { id: b.id, name: b.name, etag: b.etag };
     if (b.nodeRef !== undefined) e.nodeRef = b.nodeRef;
     if (b.pieceOf !== undefined) e.pieceOf = b.pieceOf;
+    if (b.meshOnly) e.meshOnly = true;
     if (b.unchanged) {
       e.unchanged = true;
       return e;
@@ -230,7 +235,7 @@ export class RebuildAssembly {
     // they CAN change while geometry does not — a new diagnostic or
     // featureError must still produce a fresh object.
     const sig = manifest.length === 0 ? null : JSON.stringify([
-      sizes.map((m) => [m.id, m.etag, m.name, m.nodeRef, m.pieceOf, m.faceCount]),
+      sizes.map((m) => [m.id, m.etag, m.name, m.nodeRef, m.pieceOf, m.meshOnly, m.faceCount]),
       head.bbox,
       head.diagnostics, head.planes, head.featureError, head.featureErrors, head.projectionUpdates,
     ]);
@@ -275,6 +280,7 @@ export class RebuildAssembly {
       ...(m.etag !== undefined ? { etag: m.etag } : {}),
       ...(m.nodeRef !== undefined ? { nodeRef: m.nodeRef } : {}),
       ...(m.pieceOf !== undefined ? { pieceOf: m.pieceOf } : {}),
+      ...(m.meshOnly ? { meshOnly: true as const } : {}),
     }));
     const out: RebuildResult = {
       mesh,

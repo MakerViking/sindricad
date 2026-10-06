@@ -18,7 +18,10 @@ export type SnapKind =
   // of them, and no solver point, so it snaps the coordinate only
   | "tangent"
   | "on-x"
-  | "on-y";
+  | "on-y"
+  // a vertex of an imported scan, projected onto the sketch plane. Never an
+  // entity, so it carries no constraint: the point is placed, not joined.
+  | "scan";
 
 /** WHICH solver point a snap candidate IS, when the solver can address it.
  *

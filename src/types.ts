@@ -804,6 +804,10 @@ export type Feature =
       brep?: string;
       source?: string;
       solid?: boolean;
+      // An imported scan: `geom` holds a mesh blob (sidecar/meshblob.py), not a
+      // BREP, and the body is read-only reference geometry. Set once at import;
+      // absent on every other import, so their features are unchanged.
+      meshOnly?: true;
       // The dominant material colour the source file carried ('#RRGGBB'), when it
       // had one — glTF only today. Provenance, not the live body colour: the body
       // is coloured by its palette SLOT (bodyColors), which this seeds via a
@@ -1324,7 +1328,10 @@ export interface RebuildResult {
   // `pieceOf`: a piece a Split Body made, as [the body it came from, its
   // number (2, 3, ...)]. The Browser shows it as "<that body's rename> (n)"
   // when the source was renamed and the piece was not (DocumentStore.bodyName).
-  bodies?: { id: string; name: string; faceStart: number; faceCount: number; faceOwners?: (string | null)[]; textureColorSlots?: (number | null)[]; etag?: string; nodeRef?: string; pieceOf?: [string, number] }[];
+  bodies?: { id: string; name: string; faceStart: number; faceCount: number; faceOwners?: (string | null)[]; textureColorSlots?: (number | null)[]; etag?: string; nodeRef?: string; pieceOf?: [string, number];
+    // An imported scan (mesh reference body): triangles with no B-rep behind
+    // them, ONE face id. Picking, tools and snapping branch on this.
+    meshOnly?: true }[];
   // selector-resolution diagnostics, when any selector resolved with low confidence.
   diagnostics?: ResolveDiag[];
   /** feature id -> the plane the sidecar actually USED this rebuild, for every
@@ -1407,8 +1414,14 @@ export type ImportReply =
       // the only reason here that is not about passing a limit, and the only
       // one that carries no counts). An unknown `why` from a newer sidecar must
       // degrade to silence, not to a thrown error — see describeReferenceImport().
+      // A mesh past the B-rep triangle cap, imported as a read-only scan with no
+      // B-rep at all (why: "tooManyTriangles"). Stored on the feature as
+      // `meshOnly` so the rebuild reads the blob as a mesh, never as BREP.
+      meshOnly?: true;
+      triangles?: number;
       reference?: {
         why: string;
+        triangles?: number;
         faces?: number;
         limit?: number;
         bodies?: number;

@@ -19,7 +19,11 @@ import { t } from "../i18n";
 
 type Probe =
   | { kind: "face"; faceId: number; point: THREE.Vector3; dir: THREE.Vector3; area: number }
-  | { kind: "edge"; line: EdgeRef; point: THREE.Vector3; dir: THREE.Vector3; length: number };
+  | { kind: "edge"; line: EdgeRef; point: THREE.Vector3; dir: THREE.Vector3; length: number }
+  // A point on an imported scan. A scan is ONE face of up to millions of
+  // triangles, so it can never be a face probe: closestPair would walk every
+  // one of them against the other probe. A point is what you measure a scan by.
+  | { kind: "point"; point: THREE.Vector3; dir: THREE.Vector3 };
 
 /** Geometry soup for shortest-distance: triangles (faces only), segments, points. */
 interface Soup {
@@ -80,10 +84,15 @@ export class MeasureTool {
   private onDown(e: PointerEvent) {
     if (e.button !== 0) return;
     const hit = this.viewport.pickEntity(e.clientX, e.clientY);
-    if (!hit) return;
+    // pickEntity never returns a scan (it has no B-rep face), so a scan is
+    // probed here, as a point.
+    const onScan = hit ? null : this.viewport.scanPointAt(e.clientX, e.clientY);
+    if (!hit && !onScan) return;
     e.preventDefault();
     e.stopImmediatePropagation();
-    const probe = this.toProbe(hit);
+    const probe = hit
+      ? this.toProbe(hit)
+      : { kind: "point" as const, point: onScan!, dir: new THREE.Vector3(0, 0, 1) };
     if (!probe) return;
     if (this.probes.length >= 2) {
       this.probes = []; // a 3rd pick starts fresh
@@ -125,6 +134,11 @@ export class MeasureTool {
   }
 
   private soupOf(p: Probe): Soup {
+    if (p.kind === "point") {
+      // a zero-length segment, so segment↔segment covers point↔edge and
+      // point↔point with no extra case (closestOnSegments handles degenerate)
+      return { tris: [], segs: [[p.point, p.point]], pts: [p.point] };
+    }
     if (p.kind === "face") {
       const tris = this.viewport.faceTriangles(p.faceId);
       const segs: [THREE.Vector3, THREE.Vector3][] = [];
@@ -211,7 +225,7 @@ export class MeasureTool {
       rows.push(["", t("feature.measure.pick")]);
     } else if (!b) {
       if (a.kind === "face") rows.push([t("feature.measure.area"), A(a.area)]);
-      else rows.push([t("feature.measure.length"), L(a.length)]);
+      else if (a.kind === "edge") rows.push([t("feature.measure.length"), L(a.length)]);
       rows.push([t("feature.measure.at"), xyz(a.point)]);
     } else {
       const near = this.closestPair(a, b);
@@ -219,8 +233,11 @@ export class MeasureTool {
       rows.push([t("feature.measure.distance"), L(near.d)]);
       rows.push([t("feature.measure.delta"), xyz(delta)]);
       rows.push([t("feature.measure.centers"), L(a.point.distanceTo(b.point))]);
-      const ang = THREE.MathUtils.radToDeg(a.dir.angleTo(b.dir));
-      rows.push([t("feature.measure.angle"), `${fmtNumber(ang)}°`]);
+      // A point has no direction, so there is no angle to report against one.
+      if (a.kind !== "point" && b.kind !== "point") {
+        const ang = THREE.MathUtils.radToDeg(a.dir.angleTo(b.dir));
+        rows.push([t("feature.measure.angle"), `${fmtNumber(ang)}°`]);
+      }
       this.viewport.setMeasureMarker(near.pa, near.pb);
     }
 

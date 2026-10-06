@@ -18,6 +18,7 @@ import {
   disposeBody,
   disposeModel,
   faceIdOfHit,
+  isScanHit,
   edgeObjects,
   groupEdgesByBody,
   partitionMesh,
@@ -835,7 +836,10 @@ export class Viewport {
     this.psRay.set(p, this.psDir);
     this.psRay.near = 0;
     this.psRay.far = Infinity;
-    return this.psRay.intersectObjects(visibleBodyMeshes(this.model), false).length % 2 === 1;
+    // A scan is not a solid (often not even closed), so its crossings would
+    // flip the parity of every point behind it.
+    const hits = this.psRay.intersectObjects(visibleBodyMeshes(this.model), false);
+    return hits.filter((h) => !isScanHit(h)).length % 2 === 1;
   }
 
   // --- face-color analysis overlays (Inspect) ---------------------------------
@@ -1596,6 +1600,10 @@ export class Viewport {
     const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3();
     const ab = new THREE.Vector3(), ac = new THREE.Vector3(), n = new THREE.Vector3();
     for (const body of model.bodies) {
+      // A scan has no edges and its one "face" is never planar, so it can never
+      // hide a seam, and walking it cost ~105 ms per rebuild on a 1.3M-triangle
+      // scan (measured) for nothing.
+      if (body.meshOnly) continue;
       const pos = body.mesh.geometry.getAttribute("position");
       const index = body.mesh.geometry.getIndex()!;
       const ids = body.faceIds;
@@ -1898,7 +1906,7 @@ export class Viewport {
   pickFacePlane(clientX: number, clientY: number): PlaneDef | null {
     if (!this.model) return null;
     const hit = this.modelHitsAt(clientX, clientY).hits[0];
-    if (!hit || !hit.face) return null;
+    if (!hit || !hit.face || isScanHit(hit)) return null;
     const mesh = hit.object as THREE.Mesh;
     const pos = mesh.geometry.getAttribute("position");
     const a = new THREE.Vector3().fromBufferAttribute(pos, hit.face.a);
@@ -2322,7 +2330,7 @@ export class Viewport {
   ): { selector: Selector; faceId: number; normal: THREE.Vector3; anchor: THREE.Vector3; bodyId: string | null } | null {
     if (!this.model) return null;
     const hit = this.modelHitsAt(clientX, clientY).hits[0];
-    if (!hit || !hit.face) return null;
+    if (!hit || !hit.face || isScanHit(hit)) return null;
     const mesh = hit.object as THREE.Mesh;
     const pos = mesh.geometry.getAttribute("position");
     const a = new THREE.Vector3().fromBufferAttribute(pos, hit.face.a);
@@ -2365,10 +2373,50 @@ export class Viewport {
     this.requestRender();
     if (!this.model) return null;
     const hit = this.modelHitsAt(clientX, clientY).hits[0];
-    if (!hit) return null;
+    if (!hit || isScanHit(hit)) return null;
     const faceId = faceIdOfHit(hit);
     this.highlighter?.hoverFace(faceId);
     return faceId;
+  }
+
+  /** The corner of the imported-scan triangle under the cursor that is nearest
+   *  on screen, when it is within `pixelTol`; null otherwise, and null when the
+   *  first thing under the cursor is not a scan (a solid in front hides it).
+   *
+   *  Only the hit triangle's three corners are considered: the BVH raycast is
+   *  already the expensive part, and on a dense scan the nearest vertex is
+   *  almost always one of them. World space, through the mesh's own matrix, so
+   *  a scan mid-Move-preview snaps where it is drawn. */
+  scanVertexAt(clientX: number, clientY: number, pixelTol = 10): THREE.Vector3 | null {
+    if (!this.model) return null;
+    const hit = this.rayFrom(clientX, clientY).intersectObjects(visibleBodyMeshes(this.model), false)[0];
+    if (!hit || !hit.face || !isScanHit(hit)) return null;
+    const mesh = hit.object as THREE.Mesh;
+    const pos = mesh.geometry.getAttribute("position");
+    let best: THREE.Vector3 | null = null;
+    let bestD = pixelTol;
+    for (const i of [hit.face.a, hit.face.b, hit.face.c]) {
+      const w = new THREE.Vector3().fromBufferAttribute(pos, i).applyMatrix4(mesh.matrixWorld);
+      const s = this.projectToScreen(w);
+      const d = Math.hypot(s.x - clientX, s.y - clientY);
+      if (d <= bestD) {
+        best = w;
+        bestD = d;
+      }
+    }
+    return best;
+  }
+
+  /** A point ON an imported scan under the cursor, for Measure: the nearest
+   *  triangle corner when one is within `pixelTol` (an exact vertex of the
+   *  scan), else the surface point the ray hit. Null when the first thing
+   *  under the cursor is not a scan. */
+  scanPointAt(clientX: number, clientY: number, pixelTol = 10): THREE.Vector3 | null {
+    const v = this.scanVertexAt(clientX, clientY, pixelTol);
+    if (v) return v;
+    if (!this.model) return null;
+    const hit = this.rayFrom(clientX, clientY).intersectObjects(visibleBodyMeshes(this.model), false)[0];
+    return hit && isScanHit(hit) ? hit.point.clone() : null;
   }
 
   /** Clear any hover highlight (used when leaving an interactive pick mode). */

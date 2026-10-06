@@ -4734,6 +4734,16 @@ export class SketchMode {
       (q) => this.viewport.projectToScreen(this.plane.to3D(q.x, q.y)),
       this.gridSnap ? this.gridCell : 0,
     );
+    // An imported scan ranks above the grid and below the sketch's own
+    // geometry: a join to an existing entity is worth more than a place on the
+    // scan. The vertex is projected straight onto the sketch plane.
+    if (res.kind === "free" || res.kind === "grid") {
+      const v = this.viewport.scanVertexAt(clientX, clientY);
+      if (v) {
+        const p = this.plane.to2D(v);
+        return { p, kind: "scan" as SnapKind, world: this.plane.to3D(p.x, p.y), ref: undefined as PointRef | undefined, curve: undefined as string | undefined };
+      }
+    }
     return { p: res.point, kind: res.kind, ref: res.ref, curve: res.curve, world: this.plane.to3D(res.point.x, res.point.y) };
   }
 

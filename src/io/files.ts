@@ -799,10 +799,19 @@ export function describeSurfaceFit(res: { fitted?: number; faceted?: number; fit
  *  wording is testable without a backend, a file or a toast. */
 export function describeReferenceImport(res: { reference?: {
   why: string; faces?: number; limit?: number; bodies?: number;
-  bodyIndex?: number; bodyCount?: number; directions?: number;
+  bodyIndex?: number; bodyCount?: number; directions?: number; triangles?: number;
 } }): string | null {
   const ref = res.reference;
   if (!ref) return null;
+  // A scan is a different KIND of reference body, not a detailed solid: there
+  // is no B-rep behind it, so the shared summary's "Thicken turns it into a
+  // solid" would be false. It gets its own whole message.
+  if (ref.why === "tooManyTriangles") {
+    return isCount(ref.triangles) && isCount(ref.limit)
+      ? t("file.import.reference.tooManyTriangles", {
+          n: formatCount(ref.triangles), limit: formatCount(ref.limit) })
+      : t("file.import.reference.scan");
+  }
   let why: string | null = null;
   if (ref.why === "tooManyFacetDirections" && isCount(ref.directions)) {
     why = t("file.import.reference.tooManyFacetDirections", { n: formatCount(ref.directions) });
@@ -874,6 +883,7 @@ async function importPath(store: DocumentStore, geometry: GeometryBackend, path:
     geom: res.geom,
     source: path,
     solid: res.solid,
+    ...(res.meshOnly ? { meshOnly: true as const } : {}),
     ...(res.color !== undefined ? { color: res.color } : {}),
     // the file's assembly tree, when it had one. Spread the same way `color` is,
     // so an import with no tree produces exactly the feature it always did.

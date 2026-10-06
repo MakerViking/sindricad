@@ -512,12 +512,18 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
     clearSelectionForCreate();
   }
 
+  /** Bodies a boolean tool can act on: every body except imported scans, which
+   *  have no B-rep and would only come back from the sidecar as a refusal. */
+  function solidBodies() {
+    return (store.buildState.result?.bodies ?? []).filter((b) => !b.meshOnly);
+  }
+
   // Combine: boolean-join/cut/intersect bodies. With exactly two bodies the first
   // is the (kept) target and the second the tool; with more, you pick the target
   // and the tool body so cut/intersect direction is unambiguous.
   async function startCombine() {
     if (busy()) return;
-    const bodies = store.buildState.result?.bodies ?? [];
+    const bodies = solidBodies();
     if (bodies.length < 2) {
       setStatus(t("feature.starters.combine.needsTwo"), "");
       return;

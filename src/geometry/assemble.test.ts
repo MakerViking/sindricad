@@ -159,6 +159,19 @@ describe("assemble (protocol v2, unchanged stubs)", () => {
     expect((r.bodies ?? [])[0]!.pieceOf).toEqual(["body1", 3]);
   });
 
+  it("keeps a scan flagged meshOnly on a full payload AND on its unchanged stub", () => {
+    // The stub is the steady state for a scan (it rarely changes), and a lost
+    // flag would let face tools pick it again.
+    const g = new Geometry();
+    const call = (r: unknown) =>
+      (g as unknown as { assemble(r: unknown): RebuildResult | null }).assemble(r);
+    const bbox = { min: [0, 0, 0], max: [1, 1, 1] };
+    const full = call({ protocol: 2, bodies: [{ ...wireBody("scan", [0, 0, 0]), meshOnly: true }], bbox });
+    expect(full?.bodies?.[0]?.meshOnly).toBe(true);
+    const stub = call({ protocol: 2, bodies: [{ id: "scan", name: "scan", etag: "etag-scan", meshOnly: true, unchanged: true }], bbox });
+    expect(stub?.bodies?.[0]?.meshOnly).toBe(true);
+  });
+
   it("omits nodeRef entirely for a body that has none", () => {
     const r = assembleWithCache(
       [wireBody("bodyA", [0, 0, 1])],

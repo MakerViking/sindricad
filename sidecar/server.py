@@ -525,6 +525,14 @@ def _export_mesh(b, tol=None):
     # loop, so the guarantee worth having is one tick per body regardless of
     # which tier served it. A mixed warm/cold export is the common case.
     progress_tick()
+    if b.get("mesh"):
+        # A scan exports as exactly the triangles it was imported as (moved by
+        # its transform): there is no B-rep to re-tessellate, and no tolerance
+        # could make it finer. Cached by the blob layer, not here.
+        import meshblob
+
+        verts, idx = meshblob.transformed(b["mesh"])
+        return verts.reshape(-1), idx.reshape(-1), np.zeros(len(idx), dtype=np.int64)
     tol = _EXPORT_TOL if tol is None else tol
     bid, sh = b["id"], b["shape"]
     texture_key = _paint_key(b)
@@ -855,6 +863,38 @@ def _set_mesh_progress(done, total):
         pass
 
 
+def _mesh_body_payload(b):
+    """Render payload for a mesh reference body (meshblob.py): its stored
+    triangles, transformed, with no B-rep behind them.
+
+    ONE face id for the whole scan, no edges, no owners: there are no B-rep faces
+    to number and no feature to attribute them to. Cached in `_MESH_CACHE` on
+    (hash, transform), so an edit elsewhere in the document answers this body
+    with an `unchanged` stub instead of re-sending ~24 MB per 1.3M triangles."""
+    import uuid as _uuid
+
+    import meshblob
+
+    bid, mesh = b["id"], b["mesh"]
+    sig = (mesh["geom"], json.dumps(mesh.get("xf")))
+    ent = _MESH_CACHE.get(bid)
+    if ent is not None and ent.get("mesh_sig") == sig:
+        return ent
+    verts, idx = meshblob.transformed(mesh)
+    ntri = len(idx)
+    payload = {
+        "positions": verts.reshape(-1), "indices": idx.reshape(-1),
+        "faceIds": np.zeros(ntri, dtype="<u4"),
+        "faceOwners": [None], "edges": [],
+        "faceCount": 1,
+        "bbox": meshblob.bbox(verts),
+    }
+    ent = {"shape": None, "mesh_sig": sig, "bbox": payload["bbox"],
+           "etag": _uuid.uuid4().hex, "payload": payload}
+    _MESH_CACHE[bid] = ent
+    return ent
+
+
 def _body_payload(b, tolerance, profile):
     """Compute (or fetch) the full render payload for one body: positions/indices/
     faceIds (LOCAL ids, offset client-side), faceOwners, per-body edges. Three
@@ -880,6 +920,8 @@ def _body_payload(b, tolerance, profile):
     from builder import _face_fp, on_feature_tick
     from texture import resolve_body_textures
 
+    if b.get("mesh"):
+        return _mesh_body_payload(b)
     bid, sh = b["id"], b.get("shape")
     requested = tolerance
     size_scale, ang_tol = profile
@@ -1117,11 +1159,11 @@ def _rebuild_job(document, tolerance, known=None):
               % (len(bodies), profile[0], profile[1]), flush=True)
     # Announce the denominator BEFORE the loop so the very first progress frame
     # can already say "1 of 3071" rather than starting at an unknown total.
-    n_to_mesh = sum(1 for b in bodies if b.get("shape") is not None)
+    n_to_mesh = sum(1 for b in bodies if b.get("shape") is not None or b.get("mesh"))
     n_meshed = 0
     _set_mesh_progress(0, n_to_mesh)
     for b in bodies:
-        if b.get("shape") is None:
+        if b.get("shape") is None and not b.get("mesh"):
             continue
         live_ids.add(b["id"])
         ent = _body_payload(b, tolerance, profile)
@@ -1138,6 +1180,10 @@ def _rebuild_job(document, tolerance, known=None):
         # it names the piece in the Browser, and it changes without the mesh.
         if b.get("piece_of"):
             node_ref["pieceOf"] = list(b["piece_of"])
+        # Envelope, not payload, for the same reason as nodeRef: the frontend
+        # needs it on the stub branch too, to keep refusing tools on the scan.
+        if b.get("mesh"):
+            node_ref["meshOnly"] = True
         if known.get(b["id"]) == ent["etag"]:
             out.append({"id": b["id"], "name": b["name"], "etag": ent["etag"],
                         **node_ref, "unchanged": True})
@@ -1239,7 +1285,11 @@ def _export_job(document, fmt, path, body=None, separate=False,
     # rebuild_cached, not rebuild: export runs in the SAME long-lived worker as
     # edits, so a warm cache makes this ~0 s instead of a gratuitous full rebuild
     part, errors, bodies = rebuild_cached(document)
-    live = [b for b in bodies if b.get("shape") is not None]
+    # Mesh reference bodies (meshblob.py) export as the triangles they are, in
+    # every mesh format. STEP is B-rep only, so they are left out of it — out
+    # loud, below — rather than silently.
+    live = [b for b in bodies if b.get("shape") is not None or b.get("mesh")]
+    solid_live = [b for b in live if not b.get("mesh")]
     _prune_export_cache(live)
     # Export what BUILT, and warn about what didn't — never silently. Refusing
     # to export ANYTHING because one feature errored blocked the whole
@@ -1253,6 +1303,11 @@ def _export_job(document, fmt, path, body=None, separate=False,
     any_textured = any(b.get("_textures") for b in live)
     if fmt == "step" and any_textured:
         warnings.append({"message": "texture is not represented in STEP exports"})
+    if fmt == "step" and len(solid_live) < len(live):
+        if not solid_live:
+            return {"error": {"message": "reference scans cannot be exported as STEP; "
+                                         "export them as STL, 3MF or GLB"}}
+        warnings.append({"message": "reference scans are not included in STEP exports"})
 
     def _done(res):
         if warnings:
@@ -1390,7 +1445,7 @@ def _export_job(document, fmt, path, body=None, separate=False,
         except OSError as e:
             return {"error": {"message": f"could not create {outdir}: {e}"}}
         written, used = [], set()
-        for b in live:
+        for b in (solid_live if fmt == "step" else live):
             label = names.get(b["id"]) or b["name"]
             name = _safe_part_filename(label, b["id"])
             cand, i = name, 2
@@ -1410,6 +1465,9 @@ def _export_job(document, fmt, path, body=None, separate=False,
                               "subject": untrusted.clean(body, untrusted.MAX_SUBJECT)}}
         if fmt == "glb":
             return _done({"path": _glb_export([tgt], path)})
+        if fmt == "step" and tgt.get("mesh"):
+            return {"error": {"message": "a reference scan cannot be exported as STEP; "
+                                         "export it as STL, 3MF or GLB"}}
         return _done({"path": _write_one_body(tgt, path)})
 
     # GLB always goes per-body: it carries per-body colour, and routing it through
@@ -1438,7 +1496,7 @@ def _export_job(document, fmt, path, body=None, separate=False,
         import export_tree
 
         tree = export_tree.build_export_tree(
-            document, live, root_name=os.path.splitext(os.path.basename(path))[0] or "Model"
+            document, solid_live, root_name=os.path.splitext(os.path.basename(path))[0] or "Model"
         )
         if tree is not None:
             return _done({"path": export(tree, fmt, path)})
@@ -1454,7 +1512,7 @@ def _export_project_job(document, path, palette, body_colors, body_names, settin
     from tessellate import open_edge_count, orient_consistently, weld_vertices
 
     part, errors, bodies = rebuild_cached(document)
-    live = [b for b in bodies if b.get("shape") is not None]
+    live = [b for b in bodies if b.get("shape") is not None or b.get("mesh")]
     _prune_export_cache(live)
     if not live:
         if errors:
@@ -2059,6 +2117,8 @@ def _manifest_entry(b):
         e["nodeRef"] = b["nodeRef"]
     if b.get("pieceOf") is not None:
         e["pieceOf"] = b["pieceOf"]
+    if b.get("meshOnly"):
+        e["meshOnly"] = True
     if b.get("unchanged"):
         e["unchanged"] = True
         return e

@@ -3592,6 +3592,12 @@ def _wrap_topods(topods):
 # geometry you cannot edit — a surface body, which Thicken turns into a solid.
 # Refusing was the one outcome that left the user with nothing.
 MAX_IMPORT_TRIANGLES = 150_000  # reject before the slow read (avoids the timeout)
+# Past MAX_IMPORT_TRIANGLES a mesh is not refused any more: it becomes a MESH
+# REFERENCE body (meshblob.py), read with numpy and never handed to OCCT. This is
+# the ceiling on THAT. Measured: 1.34M triangles read + weld in ~3 s, 2.8M in
+# ~6 s, 50 MB on the wire. A first cap, not a measured viewport limit: lower it
+# if the real app window struggles at the top of the range.
+MAX_MESH_REFERENCE_TRIANGLES = 3_000_000
 MAX_IMPORT_FACES = 2_000        # after merge: more faces than this = organic/curved,
                                 # not a clean editable model (a prismatic CAD part —
                                 # even with fillets — merges to far fewer faces).
@@ -3690,7 +3696,11 @@ def _peek_triangle_count(path, fmt):
     import_geometry) erring long here means rejecting a healthy plate with a
     fabricated number in the message: one 40,000-triangle part placed 4 times
     was refused as "~160,004 triangles"."""
-    cap = MAX_IMPORT_TRIANGLES
+    # Counts up to the MESH REFERENCE ceiling, not the B-rep one: past
+    # MAX_IMPORT_TRIANGLES the import takes the mesh-body path, which needs a real
+    # count to judge against its own cap. Every caller still only compares this
+    # against a cap, so a sub-cap count is exact exactly as before.
+    cap = MAX_MESH_REFERENCE_TRIANGLES
     try:
         if fmt == "stl":
             with open(path, "rb") as fh:
@@ -4036,6 +4046,13 @@ def _too_dense_error(ntri):
     cheap header/line-count peek, while _sew_obj_file re-checks the EXACT count
     after parsing, because an OBJ n-gon fans out to more triangles than the
     peek's one-per-`f`-line estimate."""
+    if ntri > MAX_MESH_REFERENCE_TRIANGLES:
+        # Past both ceilings: too big even to show as a scan.
+        return ValueError(
+            f"This mesh has ~{ntri:,} triangles, too many to import even as a "
+            f"reference scan (limit ~{MAX_MESH_REFERENCE_TRIANGLES:,}). Reduce it "
+            f"first in a mesh tool."
+        )
     return ValueError(
         f"This mesh has ~{ntri:,} triangles — too dense to import as an editable "
         f"model (limit ~{MAX_IMPORT_TRIANGLES:,}). It's almost certainly an organic/"
@@ -5034,6 +5051,37 @@ def _fit_census(shape):
         return 0, 0
 
 
+def _import_mesh_reference(path, fmt):
+    """The `import` payload for a mesh too dense to become a B-rep.
+
+    Read with numpy, stored as a mesh blob (meshblob.py) and never handed to
+    OCCT: sew + unify is what crashes past ~147k triangles. The body it becomes
+    is read-only reference geometry for modelling against. `faces` is 0 because
+    there is no B-rep face to count, and `reference` carries the reason in the
+    same shape `_note_reference` gives the other degrades, so the frontend words
+    it through the one `describeReferenceImport` path."""
+    import meshblob
+
+    _import_phase(IMPORT_PHASE_READ)
+    verts, idx = meshblob.read_mesh_file(path, fmt)
+    ntri = len(idx)
+    # The peek can undercount (an OBJ n-gon fans out to several triangles), so
+    # the ceiling is judged again on what was actually read.
+    if ntri > MAX_MESH_REFERENCE_TRIANGLES:
+        raise _too_dense_error(ntri)
+    _import_phase(IMPORT_PHASE_ENCODE)
+    return {
+        "geom": meshblob.store(verts, idx),
+        "meshOnly": True,
+        "solid": False,
+        "faces": 0,
+        "triangles": ntri,
+        "name": os.path.splitext(os.path.basename(path))[0] or "Imported",
+        "reference": {"why": "tooManyTriangles", "triangles": ntri,
+                      "limit": MAX_IMPORT_TRIANGLES},
+    }
+
+
 def import_geometry(path, fmt):
     """Read an external geometry file and return the document payload for an
     `import` feature: {brep, solid, faces, name}. STL/3MF/OBJ are read as a
@@ -5091,8 +5139,12 @@ def import_geometry(path, fmt):
         shape = import_brep(path)
     elif fmt in ("stl", "3mf", "obj"):
         ntri = _peek_triangle_count(path, fmt)
-        if ntri and ntri > MAX_IMPORT_TRIANGLES:
+        if ntri and ntri > MAX_MESH_REFERENCE_TRIANGLES:
             raise _too_dense_error(ntri)
+        if ntri and ntri > MAX_IMPORT_TRIANGLES:
+            # Too dense to become a B-rep, not too dense to be USEFUL: a scan
+            # you model against only needs to be seen, snapped to and measured.
+            return _import_mesh_reference(path, fmt)
         fit_report = {}
         if fmt == "obj":
             # build123d's Mesher reads ONLY .3mf and .stl, so every .obj import
@@ -6007,6 +6059,7 @@ def _group_sels_by_body(sel, ctx, label):
             body = ctx.find_body(bid)
             if body is None:
                 raise ValueError(f"{label}: the target body no longer exists")
+            _refuse_scan(body, label)
         else:
             body = ctx.require_active(label)
         groups.setdefault(body["id"], (body, []))[1].append(s)
@@ -6759,6 +6812,7 @@ def _handle_press_pull(f, ctx):
     # not just the active body — so press/pull on a multi-body model
     # modifies the right body.
     act = ctx.find_body(f["body"]) if f.get("body") else ctx.require_active("Press/Pull")
+    _refuse_scan(act, "Press/Pull")
     if act is None:
         raise ValueError("Press/Pull: the target body no longer exists")
     # one or many faces, each pushed by the same distance along its own
@@ -6826,6 +6880,7 @@ def _handle_delete_face(f, ctx):
     # point wins across ALL bodies, and a win on a different body than the
     # named one re-targets there with a lossy diagnostic.
     act = ctx.find_body(f["body"]) if f.get("body") else ctx.require_active("Delete Face")
+    _refuse_scan(act, "Delete Face")
     sels = f["face"] if isinstance(f["face"], list) else [f["face"]]
     act, faces = _retarget_delete_faces(
         act, ctx.bodies, sels, ctx.diagnostics, f.get("id")
@@ -7487,6 +7542,14 @@ def _blob_to_shape(data):
     import geomstore
 
     if not data[: len(_BINTOOLS_MAGIC) + 2].lstrip(b"\n\r ").startswith(_BINTOOLS_MAGIC):
+        import meshblob
+
+        if meshblob.is_mesh_blob(data):
+            # A mesh reference body whose feature lost its `meshOnly` flag, or a
+            # document opened by a build that predates mesh bodies. Say what it
+            # is rather than calling a valid scan corrupt.
+            raise ValueError("this imported body is a reference scan, which this "
+                             "version of SindriCAD cannot open")
         raise ValueError("stored geometry is not a valid binary BREP (bad header)")
     # _wrap_topods, not Shape.cast: BinTools hands back a raw TopoDS, and for an
     # assembly that is a COMPOUND, which Shape.cast() turns into None (see its
@@ -7542,6 +7605,16 @@ def _assembly_root_index(nodes):
 
 def _handle_import(f, ctx):
     base = f.get("name") or "Imported"
+    if f.get("meshOnly"):
+        # A mesh reference body: no shape, ever. Loaded once here so a missing
+        # or corrupt blob fails THIS feature in words (red chip) rather than
+        # the payload step later; the load is cached, so the payload and any
+        # export reuse it.
+        import meshblob
+
+        meshblob.load(f.get("geom") or "")
+        ctx.new_body(None, base, mesh={"geom": f["geom"], "xf": meshblob.IDENTITY})
+        return
     shape = _import_shape(f)
     nodes, parts = f.get("nodes"), f.get("parts")
     # explode:false keeps a multi-solid payload as ONE body. For imported
@@ -7685,6 +7758,7 @@ def _handle_offset_face(f, ctx):
     # that OWNS the picked faces, like press-pull — NOT require_active, which
     # only ever sees bodies[-1] and would edit the wrong body on a multi-body model.
     act = ctx.find_body(f["body"]) if f.get("body") else ctx.require_active("Offset face")
+    _refuse_scan(act, "Offset face")
     if act is None:
         raise ValueError("Offset face: the target body no longer exists")
     faces = resolve_faces(act["shape"], f["faces"], diag=ctx.diagnostics, feature_id=f.get("id"))
@@ -7710,6 +7784,7 @@ def _handle_thicken(f, ctx):
     # solid or a whole SURFACE body (a non-watertight mesh import, which is
     # read-only reference geometry until thickened).
     act = ctx.find_body(f["body"]) if f.get("body") else ctx.require_active("Thicken")
+    _refuse_scan(act, "Thicken")
     if act is None:
         raise ValueError("Thicken: the target body no longer exists")
     sel = f.get("faces")
@@ -8262,6 +8337,7 @@ def _handle_texture(f, ctx):
     # resolve_body_textures), so it survives downstream topology changes the
     # same way every other lossy-tolerant selector already does.
     act = ctx.find_body(f["body"]) if f.get("body") else ctx.require_active("Texture")
+    _refuse_scan(act, "Texture")
     if act is None:
         raise ValueError("Texture: the target body no longer exists")
     sel = f.get("faces") or {"by": "all"}
@@ -8347,6 +8423,17 @@ def _handle_move(f, ctx):
             # stale id (upstream body removal/split renumbered it) —
             # a legitimate no-op, not a hard error
             _skip_feature(ctx.diagnostics, f, "move", "target body already consumed or missing")
+            continue
+        if tgt.get("mesh"):
+            # Composed, not applied: the triangles stay in their blob and the
+            # transform travels with the body. A NEW dict, never an in-place
+            # edit, because snapshots share body sub-objects by reference.
+            import meshblob
+
+            loc = Pos(dx, dy, dz) * Rot(rx, ry, rz)
+            t = loc.wrapped.Transformation()
+            m = [[t.Value(r, c) for c in range(1, 5)] for r in range(1, 4)] + [[0, 0, 0, 1]]
+            tgt["mesh"] = {**tgt["mesh"], "xf": meshblob.compose(tgt["mesh"]["xf"], m)}
             continue
         sh = tgt["shape"]
         # A disjoint body is a build123d ShapeList (no single `.wrapped`);
@@ -9125,7 +9212,7 @@ def rebuild(document, diagnostics=None, resume=None, snapshots_out=None, persist
     counter = {"n": 0}
     errors = []
 
-    def new_body(shape, name=None, node_ref=None):
+    def new_body(shape, name=None, node_ref=None, mesh=None):
         counter["n"] += 1
         # The name is sanitised HERE, not at the importer, because this is the
         # only choke point every body passes through. `step_assembly._clean`
@@ -9146,18 +9233,32 @@ def rebuild(document, diagnostics=None, resume=None, snapshots_out=None, persist
         # every other body dict is byte-identical to what it was before.
         if node_ref:
             entry["node_ref"] = node_ref
+        # A mesh reference body (meshblob.py): shape None, triangles by hash.
+        # Omitted otherwise, like node_ref, so every other body dict is unchanged.
+        if mesh is not None:
+            entry["mesh"] = mesh
         bodies.append(entry)
         return bodies[-1]
 
     def active():
-        return bodies[-1] if bodies else None
+        # The newest body a tool can act on. A scan imported LAST must not become
+        # the implicit target of fillet, mirror, pattern, shell or split: it has
+        # no shape to act on, and it is reference geometry by design.
+        for b in reversed(bodies):
+            if not b.get("mesh"):
+                return b
+        return None
 
     def require_active(label):
         """The active body, or a clear error — for features that modify an
         existing body (fillet, shell, pattern, …) rather than create one."""
-        if not bodies:
+        b = active()
+        if b is None:
+            if bodies:
+                raise ValueError(f"{label} needs a solid body; an imported scan "
+                                 f"is reference geometry and cannot be edited")
             raise ValueError(f"{label} needs an existing body")
-        return bodies[-1]
+        return b
 
     def find_body(bid):
         for b in bodies:
@@ -9437,6 +9538,8 @@ def rebuild(document, diagnostics=None, resume=None, snapshots_out=None, persist
             entry["node_ref"] = b["node_ref"]
         if b.get("piece_of"):
             entry["piece_of"] = b["piece_of"]
+        if b.get("mesh"):
+            entry["mesh"] = b["mesh"]
         out_bodies.append(entry)
 
     shapes = [b["shape"] for b in out_bodies if b["shape"] is not None]
@@ -9830,6 +9933,19 @@ def _save_checkpoint(persist, i, bodies, datums, errors, counter_n, diagnostics=
             # show the pieces under their import's name instead.
             if b.get("piece_of"):
                 entry["piece_of"] = b["piece_of"]
+            if b.get("mesh"):
+                # A scan has no shape to serialise, but it is NOT shapeless
+                # debris: its hash and transform are the whole body. Without
+                # this a disk resume brought it back empty, with no error — the
+                # same trap as `_textures`, `node_ref` and `_intact` above.
+                entry["mesh"] = b["mesh"]
+            if sh is not None and _wrapped_or_none(sh) is None:
+                # A multi-piece result with no single TopoDS (a ShapeList) is
+                # real geometry. Recording it as shapeless would restore it
+                # EMPTY. This used to fail further down (geomstore choked on the
+                # None blob key), which skipped the checkpoint; keep that
+                # outcome deliberately now that shapeless entries are legal.
+                raise ValueError("checkpoint: body has no single shape to store")
             if sh is None or _wrapped_or_none(sh) is None:
                 manifest.append(entry)
                 fps.append(None)
@@ -9908,6 +10024,8 @@ def _restore_from_disk(store, chain_keys):
                     shapeless["_intact"] = True
                 if ent.get("piece_of"):
                     shapeless["piece_of"] = ent["piece_of"]
+                if ent.get("mesh"):
+                    shapeless["mesh"] = ent["mesh"]
                 bodies.append(shapeless)
                 continue
             raw = store.get_blob(ent["blob_key"])
@@ -12737,12 +12855,16 @@ def _do_split(f, ctx):
     gone = 0
     if f.get("bodies"):
         # Deduplicated: the commit below would otherwise cut the same body twice
-        # from one plan and append its pieces twice.
+        # from one plan and append its pieces twice. A list is "cut all
+        # visible", which includes any visible scan; a scan cannot be cut, so
+        # it is skipped here rather than failing the split.
         seen, targets, missing = set(), [], set()
         for b in f["bodies"]:
             t = ctx.find_body(b)
             if t is None:
                 missing.add(b)
+            elif t.get("mesh"):
+                continue
             elif t["id"] not in seen:
                 seen.add(t["id"])
                 targets.append(t)
@@ -12752,6 +12874,7 @@ def _do_split(f, ctx):
         gone = len(missing)
     else:
         one = ctx.find_body(f["body"]) if f.get("body") else ctx.active()
+        _refuse_scan(one, "Split")
         targets = [one] if one is not None else []
     if not targets:
         # Was the raw, untranslated "Split needs an existing body". The ids are
@@ -13014,6 +13137,18 @@ def _retarget_delete_faces(named, bodies, sels, diag, fid):
     return target, faces
 
 
+def _refuse_scan(body, tool):
+    """Raise in words when a tool was pointed at a mesh reference body.
+
+    A scan has no shape, so without this the tool fails somewhere inside OCCT
+    with an AttributeError the user cannot act on. Explicitly named bodies are
+    the only way in: implicit targets (`active()`, a default combine) already
+    skip scans."""
+    if body is not None and body.get("mesh"):
+        raise ValueError(f"{tool} cannot act on an imported scan: it is reference "
+                         f"geometry. Snap and measure against it instead.")
+
+
 def _do_combine(f, bodies, find_body, diag=None):
     """Boolean-combine bodies: join (+), cut (-) or intersect (&). The target body
     is modified in place; tool bodies are consumed unless keepTools is set.
@@ -13028,12 +13163,16 @@ def _do_combine(f, bodies, find_body, diag=None):
     op = f["operation"]
     if op not in ("join", "cut", "intersect"):
         raise ValueError(f"unknown combine operation: {op}")
-    target = find_body(f["target"]) if f.get("target") else (bodies[0] if bodies else None)
+    solids = [b for b in bodies if not b.get("mesh")]
+    target = find_body(f["target"]) if f.get("target") else (solids[0] if solids else None)
+    _refuse_scan(target, "Combine")
     if target is None:
         _skip_feature(diag, f, "combine", "target body already consumed or missing")
         return
-    tool_ids = f.get("tools") or [b["id"] for b in bodies if b["id"] != target["id"]]
+    tool_ids = f.get("tools") or [b["id"] for b in solids if b["id"] != target["id"]]
     tools = [t for t in (find_body(tid) for tid in tool_ids) if t is not None and t["id"] != target["id"]]
+    for t in tools:
+        _refuse_scan(t, "Combine")
     if not tools:
         _skip_feature(diag, f, "combine", "tool bodies already consumed or missing")
         return

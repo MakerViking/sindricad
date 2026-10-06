@@ -223,6 +223,12 @@ Exporting to STEP preserves what import kept: the hierarchy, the part names, the
 and the position of every occurrence. Re-importing your own export returns the same parts,
 names, colours, positions and face count.
 
+A mesh too dense to become an editable solid (past 150,000 triangles, typically a 3D scan)
+comes in as a reference scan instead of being refused, up to 3,000,000 triangles in STL,
+OBJ or 3MF. You can see it, move it into place, snap sketch points to its vertices and
+measure from it, so you can model a part around it. The modelling tools leave it alone
+and say so. It exports as the same triangles in STL, 3MF and GLB, and is left out of STEP.
+
 ## Snapmaker U1 print pipeline
 
 SindriCAD carries print prep for the Snapmaker U1 multi-material printer from model to
