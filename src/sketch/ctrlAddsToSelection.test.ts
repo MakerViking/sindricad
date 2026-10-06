@@ -77,11 +77,11 @@ describe("Ctrl-click adds to the selection in Select", () => {
     expect(shift.selected()).toEqual(["A", "B"]);
   });
 
-  it("Ctrl-click on an END of a line adds that line too", () => {
+  it("Ctrl-click on an END of a line adds that point too", () => {
     const { click, selected } = session();
     click(15, 10);
-    click(20, 20, { ctrlKey: true }); // B's end: the press grabs the point, the release selects
-    expect(selected()).toEqual(["A", "B"]);
+    click(20, 20, { ctrlKey: true }); // B's end: the press grabs the point, the release selects it
+    expect(selected()).toEqual(["A", "B@1"]);
   });
 
   it("a Ctrl box adds what it covers to what is already selected", () => {
