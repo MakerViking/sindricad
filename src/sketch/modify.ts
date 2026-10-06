@@ -624,7 +624,19 @@ export function trimWithConstraints(
     geom: { ...pc.geom, id: pc === keeper ? e.id : newEntityId() },
   }));
   const entities = ents.flatMap((o, i) => (i === index ? pieces.map((pc) => pc.geom) : [o]));
-  return { entities, ...remapTrimmed(e, pieces, cons, entities), points: trimmedPoints(e, pieces) };
+  const remapped = remapTrimmed(e, pieces, cons, entities);
+  // trimmedPoints only looks at e's OWN pieces, so a point this trim cut off
+  // every one of them reads TRIMMED_AWAY even when another entity still ends
+  // there — the second of two trims in a row does that to the first trim's
+  // corner. remapped.points already found it there (sharedEnd): where
+  // trimmedPoints says TRIMMED_AWAY, prefer remapped.points' answer if it has
+  // one. Elsewhere trimmedPoints' own entries stand, including the ones it
+  // omits for a point that did not move.
+  const points = trimmedPoints(e, pieces);
+  for (const [p, q] of Object.entries(points)) {
+    if (q.p === TRIMMED_AWAY && remapped.points[Number(p)]) points[Number(p)] = remapped.points[Number(p)]!;
+  }
+  return { entities, ...remapped, points };
 }
 
 /** Where each of `e`'s points (by dimRefPoints index) is after a trim, when
