@@ -4,10 +4,10 @@
 // listeners (viewport, timeline, tree).
 
 import { isDriven, TRIMMED_AWAY } from "../types";
-import type { CadDocument, DimField, ExtrudeStart, Feature, ParamTarget, PlaneDef, PlaneSpec, ProjectedSource, ProjectionUpdate, RebuildReply, RebuildResult, Selector, SketchConstraint, SketchEntity, ViewCubeSide, ViewOverride } from "../types";
+import type { CadDocument, DimField, Feature, ParamTarget, PlaneDef, PlaneSpec, ProjectedSource, ProjectionUpdate, RebuildReply, RebuildResult, Selector, SketchConstraint, SketchEntity, ViewCubeSide, ViewOverride } from "../types";
 import type { GeometryBackend, ProjectionResult, QueryResult } from "../geometry/client";
 import { featureErrorText } from "../geometry/featureErrorText";
-import { FORMAT_VERSION, migrateDocument, savedVersion } from "./migrate";
+import { migrateDocument, savedVersion } from "./migrate";
 import { applyDrivingDimsDirect, dimBindingFor, planDimEdit, upsertDrivingDim, type DimBinding } from "../sketch/directDims";
 import { rowConstraintAt, type SketchDimRow } from "../sketch/dimRows";
 import { entityDims, rebindPolygonSides } from "../sketch/entityDims";

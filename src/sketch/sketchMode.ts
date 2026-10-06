@@ -26,7 +26,7 @@ import {
 import { pickEntity, pointBeatsCurve, tangencyPoints, trimSpan, trimWithConstraints, detachEndpoint, detachableEnd, isBreakCut, filletCorner, chamferCorner, cornerJoins, explodeCompound, polygonRingHolds, rotationTie, translationTie, offsetEntity, offsetChain, offsetChainJunction, signedOffsetAt, followOffsets, followRefusal, breakWithConstraints, joinLines, extendLine, breakLink, attachmentPoints, bodyDragBlocked, bodyDragFrame, fixPinnedIds, pickDragPoint, FIXED_POINT_MSG, PROJECTED_FIXED_MSG, type ExplodeResult, type OffsetResult, type TrimResult } from "./modify";
 import { newEntityId, newConstraintId, isDimConstraint, notePatternId } from "./id";
 import { SketchHistory, cloneSnapshot, type SketchSnapshot } from "./history";
-import { isPlainNumber, parseField, dimValueOk, fmtLength, fieldText, canonicalDecimal, fieldExpr, storedDimExpr } from "../ui/units";
+import { isPlainNumber, parseField, dimValueOk, fmtLength, fieldText, canonicalDecimal, storedDimExpr } from "../ui/units";
 import { splitNameValue, validateName } from "../params/engine";
 import { parseExpr, refsOfNode } from "../params/parse";
 import { RIGID_ENTITY_NUM_FIELDS, coerceForField, dimValueFromParam, paramValueOfDim, type FieldKind } from "../document/numFields";
