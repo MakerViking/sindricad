@@ -111,6 +111,7 @@ from geom_select import (
     REL_DRIFT,
 )
 import texture
+import thread_standards
 import untrusted
 import errors as errors_mod
 from errors import BODY_SLOT, GeomError
@@ -7478,6 +7479,289 @@ def _handle_sweep(f, ctx):
                          touching_only=bool(f.get("joinTouchingOnly")))
 
 
+def _radial_dir(axis):
+    """A unit vector perpendicular to `axis` (a Vector), picked arbitrarily.
+
+    The thread profile is a surface of revolution about `axis`; which
+    perpendicular it starts from only rotates where the seam sits, never the
+    shape that gets swept."""
+    ref = Vector(1, 0, 0) if abs(axis.X) < 0.9 else Vector(0, 1, 0)
+    return ref.cross(axis).normalized()
+
+
+def _thread_tool_points(major_r, minor_r, pitch, half_angle, internal, clearance):
+    """The four corners of the thread cutting tool's trapezoid profile, in its
+    own (radial, axial) plane: [(r, z), ...] ready for `Polyline(close=True)`.
+
+    One flank angle, mirrored by which end is the FLAT, controlled boundary and
+    which is the OPEN end that runs past the real thread into material that
+    is already void (internal) or already free air (external):
+
+      internal (cutting a hole wall): flat at the major radius — the thread's
+        root, the deepest the cut is allowed to reach, so it must stop exactly
+        there; open past the minor radius, into the waste the tap drill
+        already cleared.
+      external (cutting a shaft): flat at the minor radius — the thread's
+        root again, cut down to from the original round shaft; open past the
+        major radius, into the free air the shaft never filled.
+
+    Both ends share one apex: the point the flank lines would meet if the
+    profile weren't truncated, the same apex ISO 68-1 builds its fundamental
+    triangle from. It sits P/8 (one eighth of the pitch, measured along the
+    radius) outside the flat boundary: `off = pitch / (16 * tan(half_angle))`
+    is P/8 divided by the flank's own rise-per-run. This reproduces the
+    shipped M6x1 sweep test's hand-picked M6_APEX (3.108253) exactly.
+
+    The open end's margin past the real boundary is `0.3 * (major_r -
+    minor_r)` — scaled to the thread's own depth rather than a fixed mm, so
+    it holds up from an M1.6 to a Tr16x4. MEASURED: this reproduces the
+    shipped test's M6_TOOL_IN (2.3) to within 0.4% (2.296 computed) from
+    first principles, not by being chosen to match it.
+
+    `clearance` (Print fit) widens the FLAT boundary only — the one real
+    mating surface — by `clearance / cos(half_angle)`, the flank clearance
+    converted to the radial width this profile is built in. That removes
+    more material right where the two parts actually touch: the internal
+    tool cuts a looser (bigger) hole at its root, the external tool cuts a
+    looser (smaller) shaft at its root — a mating pair that fits looser in
+    print, same clearance on both halves. The OPEN boundary (into material
+    that is already void, or already free air) is never a mating surface,
+    so it is left at its natural, un-widened width: widening it too adds
+    nothing physically, and MEASURED to push a fine-pitch thread's open
+    margin past a full pitch of axial width, tripping the neighbouring-turn
+    overlap check for no real benefit (e.g. M6x1 at 0.15 mm clearance).
+
+    The requested widen is itself CLAMPED so the flat boundary's full width
+    (natural engagement plus both flanks' widen) cannot exceed the pitch —
+    otherwise two neighbouring turns of the SAME tool would overlap, which is
+    meaningless (you cannot remove more than 100% of the material at a
+    radius). MEASURED: for most of the table this clamp is a dormant safety
+    net, not an active limiter — M6x1 at the plan's default 0.15 mm clearance
+    only engages 12.5% of its pitch for the natural engagement band at the
+    flat boundary, leaving room to spare, and Tr8x8 (shallower 15° flank, so
+    a wider natural band at ~23%) still has room to spare too. It DOES engage
+    for the finest standards: M1.6x0.35, the smallest thread this tool lists,
+    asks for more width than its 0.35 mm pitch has room for at 0.15 mm
+    clearance, and is clamped down to an effective ~0.114 mm — not a bug in
+    the conversion, a real physical limit for that combination of standard
+    and clearance. Flagged for Thomas: whether fine-pitch standards should
+    instead cap the clearance the UI will accept per-standard, with a
+    visible note, rather than silently clamping it here."""
+    tan_a = math.tan(half_angle)
+    off = pitch / (16.0 * tan_a)
+    depth = major_r - minor_r
+    margin = 0.3 * depth
+
+    if internal:
+        apex = major_r + off
+        r_lo = max(minor_r - margin, 1e-6)
+        r_hi = major_r
+        flat_r = r_hi
+    else:
+        apex = minor_r - off
+        r_lo = minor_r
+        r_hi = major_r + margin
+        flat_r = r_lo
+
+    def half_width(r):
+        return abs(apex - r) * tan_a
+
+    widen = (clearance / math.cos(half_angle)) if clearance else 0.0
+    max_widen = max(0.0, 0.97 * 0.5 * pitch - half_width(flat_r))
+    widen = min(widen, max_widen)
+
+    if internal:
+        widen_lo, widen_hi = 0.0, widen  # flat boundary is r_hi (major_r)
+    else:
+        widen_lo, widen_hi = widen, 0.0  # flat boundary is r_lo (minor_r)
+
+    w_lo, w_hi = half_width(r_lo) + widen_lo, half_width(r_hi) + widen_hi
+    pts = [(r_lo, -w_lo), (r_hi, -w_hi), (r_hi, w_hi), (r_lo, w_lo)]
+    # The apex sits outside [r_lo, r_hi] on the FLAT side for internal (so
+    # the trapezoid narrows going OUT to r_hi, w_hi < w_lo) and on the OPEN
+    # side for external (it narrows going IN to r_lo instead, w_hi > w_lo) —
+    # the two tapers are mirror images. MEASURED: with this same corner
+    # order, `sweep()`'s Frenet pipe shell comes back a valid NEGATIVE-volume
+    # solid for the narrows-towards-r_lo case even though the planar wire's
+    # own shoelace area and face normal both already agree with the other
+    # case — reverse the corner order for that taper so the swept tool is
+    # always positive-volume either way.
+    if w_hi > w_lo:
+        pts.reverse()
+    return pts
+
+
+def _thread_tool_profile(centre, axis, radial, points):
+    """A `Face` built from `points` in the (radial, axial) plane through
+    `centre`: each `(r, z)` becomes `centre + radial * r + axis * z`."""
+    verts = [centre + radial * r + axis * z for r, z in points]
+    face = _face_from_wire(Polyline(*verts, close=True).wire())
+    if face is None:
+        raise ValueError("Thread: could not build the thread profile")
+    return face
+
+
+def _sweep_thread(centre, axis, path_r, pitch, turns, lefthand, prof):
+    """Sweep `prof` around a helix of `path_r` radius about `axis` — exactly
+    like `_sweep_helix` (FRENET mode, one-turn edges via `_helix_path`, the
+    self-interference probe on `_HELIX_CHECK_TURNS` turns), duplicated rather
+    than shared because `_sweep_helix` reads its circle and pitch/turns
+    straight off a sweep feature's own `path` sketch, and Thread has neither:
+    its axis comes from `_cylinder_frame`, not a drawn circle. `path_r` is the
+    profile's own FLAT boundary (see `_handle_thread`), not necessarily the
+    thread's major radius."""
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Check
+
+    start = prof.center()
+
+    def swept(n):
+        try:
+            solid = sweep(sections=prof, is_frenet=True,
+                          path=_helix_path(centre, axis, path_r, pitch, n, lefthand, start))
+        except Exception as ex:
+            raise ValueError(
+                f"Thread: could not build the helix. [{type(ex).__name__}]"
+            ) from ex
+        if not (solid.volume > 0 and solid.is_valid):
+            raise ValueError("Thread: could not build a solid along the helix.")
+        return solid
+
+    solid = swept(turns)
+    probe = solid if turns <= _HELIX_CHECK_TURNS else swept(_HELIX_CHECK_TURNS)
+    if not BRepAlgoAPI_Check(probe.wrapped, False, True).IsValid():
+        raise ValueError(
+            "Thread: neighbouring turns of the thread overlap. Check the standard "
+            "matches the hole or shaft, or use a coarser pitch."
+        )
+    return solid
+
+
+def _handle_thread(f, ctx):
+    """A real modeled screw thread cut into a cylindrical face — a hole wall
+    (internal) or a shaft (external). Which one it is gets DERIVED fresh from
+    the face's own outward normal every rebuild, never stored on the feature:
+    the same dot-product test `_straight_cylinder_plan` uses for boss-vs-bore,
+    so an upstream edit that turns a boss into a bore (or back) is never
+    silently wrong.
+
+    Built the way `_sweep_helix` already cuts a thread today (Doug 30): one
+    trapezoid profile carried by a true screw motion in FRENET mode around a
+    multi-turn helix built as one-turn edges, with the same self-interference
+    probe (`_sweep_thread`, above). The profile itself is the new part: the
+    standard's own ISO 68-1 (or, for Tr, 30-degree trapezoidal) truncated
+    triangle, built straight in Python from the standard's table numbers
+    rather than through a sketch — `_thread_tool_points`.
+
+    Run-out (the plan's R2 rule): the swept tool always runs one full pitch
+    before the nominal start and one full pitch past the nominal end, so the
+    cut never leaves a ledge at a thread's own ends. Deliberately NOT clamped
+    against adjoining material — a blind hole's run-out is meant to notch
+    slightly into the floor, same as a real tap does; a through hole's
+    run-out harmlessly overruns into air.
+
+    The thread's own geometry (major/minor radius, pitch, flank angle) comes
+    entirely from the standard's table, not from the picked face's measured
+    radius — the face only fixes the axis, the start, and the length. That is
+    what lets an edit to the hole or shaft's diameter re-thread identically on
+    the next rebuild (same standard, same cut) rather than drift; it is also
+    why a diameter that no longer plausibly matches the chosen standard has to
+    be caught explicitly, below, rather than falling out of the geometry."""
+    groups = _group_sels_by_body(f["face"], ctx, "Thread")
+    if len(groups) != 1:
+        raise ValueError("Thread: pick one cylindrical face")
+    body, sels = groups[0]
+    faces = resolve_faces(body["shape"], sels, diag=ctx.diagnostics, feature_id=f.get("id"))
+    if not faces:
+        raise GeomError(f"Thread: no face found on {BODY_SLOT} — re-pick the face",
+                        body_id=body["id"], subject=body.get("name"))
+    face = faces[0]
+
+    info = _cylinder_frame(face)
+    if info is None:
+        raise ValueError("Thread: pick a cylindrical face — a hole wall or a shaft")
+    ax3, face_r, v0, v1, uspan = info
+    if abs(uspan - 2.0 * math.pi) > 1e-4:
+        raise ValueError("Thread: the face must run the full way around the hole or shaft")
+    if not (v1 - v0 > 1e-6):
+        raise ValueError("Thread: the face has no length to thread")
+
+    loc, dirn = ax3.Location(), ax3.Direction()
+    centre0 = Vector(loc.X(), loc.Y(), loc.Z())
+    axis = Vector(dirn.X(), dirn.Y(), dirn.Z())
+
+    # Internal (bore) vs external (boss) — see _thread_face_info, which also
+    # backs the frontend's pick-time standard preselect.
+    face_info = _thread_face_info(face)
+    if face_info is None:
+        raise ValueError("Thread: could not tell a hole from a shaft on this face")
+    _face_r2, external = face_info
+
+    rec = thread_standards.lookup(f["standard"])
+    if rec is None:
+        raise ValueError(f"Thread: unknown standard {f['standard']!r}")
+    pitch = rec["pitch"]
+    half_angle = thread_standards.half_angle_rad(rec)
+    major_r = rec["majorDiameter"] / 2.0
+    minor_r = thread_standards.minor_diameter(rec) / 2.0
+    _require_positive("Thread", pitch=pitch, **{"major diameter": rec["majorDiameter"]})
+
+    # A hole is matched by its tap-drill (minor) diameter, a shaft by its
+    # major diameter — the plan's own rule, because that is which surface of
+    # the as-modeled part is supposed to already sit at a standard thread's
+    # un-cut boundary.
+    face_d = face_r * 2.0
+    standard_d = rec["majorDiameter"] if external else (2.0 * minor_r)
+    if abs(face_d - standard_d) > 0.3 * pitch:
+        kind = "shaft" if external else "hole"
+        metric = "major diameter" if external else "tap drill"
+        raise ValueError(
+            f"Thread: the {kind} is {face_d:.3g} mm across, too far from "
+            f"{f['standard']}'s {metric} of {standard_d:.3g} mm. Pick a standard "
+            "that matches, or re-check the diameter."
+        )
+
+    clearance = ctx.val(f.get("clearance", 0.0)) if f.get("fit") == "print" else 0.0
+    if clearance < 0:
+        raise ValueError(f"Thread: clearance can't be negative (got {clearance:g})")
+
+    length = ctx.val(f["length"]) if f.get("length") is not None else (v1 - v0)
+    _require_positive("Thread", length=length)
+    lefthand = bool(f.get("leftHand"))
+
+    radial = _radial_dir(axis)
+    points = _thread_tool_points(major_r, minor_r, pitch, half_angle, not external, clearance)
+    # R2 rule: the tool runs one full pitch before the nominal start and one
+    # full pitch past the nominal end (see this function's own docstring).
+    run_start = centre0 + axis * (v0 - pitch)
+    turns = length / pitch + 2.0
+    prof = _thread_tool_profile(run_start, axis, radial, points)
+    # The helix the tool is swept along runs at the FLAT, controlled boundary
+    # of the profile (major_r for internal, minor_r for external) — the one
+    # edge whose radius is exact and has to trace a precise screw motion. The
+    # OPEN margin edge is free to be approximate (it only reaches into
+    # material already gone), so it is fine for the profile to extend away
+    # from the path on one side only, never straddling it.
+    path_r = major_r if not external else minor_r
+    tool = _sweep_thread(run_start, axis, path_r, pitch, turns, lefthand, prof)
+
+    before_solids = max(1, len(body["shape"].solids()))
+    before_volume = body["shape"].volume
+    result = _serial_bool(body["shape"], tool, "cut")
+    if result.volume >= before_volume - 1e-6:
+        raise ValueError(
+            "Thread: this cut removed nothing. The hole or shaft may no longer "
+            "match the standard — pick a different size, or check the diameter."
+        )
+    if len(result.solids()) > before_solids:
+        raise ValueError(
+            "Thread: this cut breaks the body into pieces — use a shorter length "
+            "or a different size."
+        )
+    if not result.is_valid:
+        raise ValueError("Thread: this cut produced an invalid shape — try a different size.")
+    body["shape"] = result
+
+
 def _blob_top_children(shape):
     """The blob's top-level children, in stored order. Deliberately NOT
     `.solids()`: the manifest binds row i to child i, and a leaf product with no
@@ -9144,6 +9428,7 @@ _FEATURE_HANDLERS = {
     "revolve": _handle_revolve,
     "loft": _handle_loft,
     "sweep": _handle_sweep,
+    "thread": _handle_thread,
     "import": _handle_import,
     "box": _handle_box,
     "cylinder": _handle_cylinder,
@@ -14182,6 +14467,39 @@ def _cylinder_frame(face):
         )
     except Exception:
         return None
+
+
+def _thread_face_info(face):
+    """(radius, external) for a face Thread could cut on, or None.
+
+    `external` is True for a shaft/boss (thread cut inward from the major
+    diameter), False for a hole/bore (thread cut outward from the tap
+    drill) — the picked face's own outward normal compared against the
+    radial direction at its own centre: they point the same way only on a
+    boss (material fills the cylinder), and opposite on a bore (material
+    surrounds it). Split out of `_handle_thread` so `query_geometry` can
+    report the same two numbers at PICK time, before any standard is
+    chosen, for the plan's "preselect the nearest size" rule — it needs
+    only the face itself, no body-wide state. None when the face isn't a
+    full cylinder (`_cylinder_frame` refused) or is pathologically thin
+    (the picked point sits ON the axis, where inside/outside is undefined)."""
+    info = _cylinder_frame(face)
+    if info is None:
+        return None
+    ax3, face_r, _v0, _v1, _uspan = info
+    loc, dirn = ax3.Location(), ax3.Direction()
+    centre0 = Vector(loc.X(), loc.Y(), loc.Z())
+    axis = Vector(dirn.X(), dirn.Y(), dirn.Z())
+    p = face.center()
+    n = face.normal_at(p)
+    vx, vy, vz = p.X - centre0.X, p.Y - centre0.Y, p.Z - centre0.Z
+    t = vx * axis.X + vy * axis.Y + vz * axis.Z
+    rx, ry, rz = vx - t * axis.X, vy - t * axis.Y, vz - t * axis.Z
+    rl = math.sqrt(rx * rx + ry * ry + rz * rz)
+    if rl <= 1e-9:
+        return None
+    external = (n.X * rx + n.Y * ry + n.Z * rz) / rl > 0
+    return (face_r, external)
 
 
 def _straight_cylinder_plan(part, face, d):
@@ -20255,6 +20573,15 @@ def query_geometry(document, items, prefix=False, strict=True):
                     from geom_select import _owner_key
 
                     ent["createdBy"] = owners.get(_owner_key(e))
+                    # Cylindrical faces only: radius + internal/external, for
+                    # the Thread tool's pick-time standard preselect (the
+                    # plan's "nearest size, say how far off" rule). A general
+                    # extension of query, not Thread-specific wire — see
+                    # _thread_face_info.
+                    cyl = _thread_face_info(e)
+                    if cyl is not None:
+                        ent["radius"] = cyl[0]
+                        ent["external"] = cyl[1]
                 ents.append(ent)
             budget_left[0] -= len(ents)
             rec["entities"] = ents

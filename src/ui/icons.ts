@@ -148,6 +148,10 @@ const PATHS = {
   cylinder: `<ellipse cx="12" cy="6.5" rx="7" ry="3"/><path d="M5 6.5v11a7 3 0 0 0 14 0v-11" fill="none"/>`,
   sphere: `<circle cx="12" cy="12" r="8.5"/><ellipse cx="12" cy="12" rx="8.5" ry="3.4"/>`,
   body: `<path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/>`,
+  // The cylinder icon's own silhouette, with three helical grooves standing in
+  // for a screw thread — what sets a tapped hole or a threaded shaft apart from
+  // a plain bore.
+  thread: `<ellipse cx="12" cy="6.5" rx="7" ry="3"/><path d="M5 6.5v11a7 3 0 0 0 14 0v-11" fill="none"/><path d="M5.5 8.7Q12 11.2 18.5 8.7M5.5 11.7Q12 14.2 18.5 11.7M5.5 14.7Q12 17.2 18.5 14.7"/>`,
 
   // --- destructive / removal ---
   deleteFace: `<path d="M4 8l8-4 8 4v8l-8 4-8-4z"/><path d="M9 10.5l6 6M15 10.5l-6 6"/>`,

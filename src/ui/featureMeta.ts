@@ -39,6 +39,7 @@ export const FEATURE_META: Record<FeatureType, { iconName: IconName; label: stri
   mergeSolids: { iconName: "mergeSolids", label: t("tool.mergeSolids") },
   texture: { iconName: "texture", label: t("tool.texture") },
   textOnFace: { iconName: "textOnFace", label: t("tool.textOnFace") },
+  thread: { iconName: "thread", label: t("tool.thread") },
 };
 
 /** What to call a plane an extrude is aimed at: an origin plane by its axes, a

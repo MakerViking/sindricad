@@ -119,6 +119,7 @@ const ARGS: Record<string, unknown[]> = {
   startDraft: [],
   startTexture: [],
   startTextOnFace: [],
+  startThread: [],
   startPattern: [],
   // The ribbon's "Rect Pattern" button already names the kind, so this skips the
   // rect/circular dialog startPattern asks. Exercised with "rect"; "circular"
@@ -205,6 +206,7 @@ function harness(world: World) {
     planeOffset: tool("planeOffset"),
     texture: tool("texture"),
     textOnFace: tool("textOnFace"),
+    thread: tool("thread"),
     split: tool("split"),
     canvas: {
       addEventListener: (t: string) => act(`canvas.on(${t})`),
@@ -481,7 +483,7 @@ describe("a create tool takes the last feature out of the inspector", () => {
     const events: string[] = [];
     const dones: ((id: string | null) => void)[] = [];
     const deps = h.deps as unknown as Record<string, unknown>;
-    for (const name of ["extrude", "edgeFeature", "pressPull", "loftTool", "moveTool", "planeOffset", "texture", "textOnFace", "split"]) {
+    for (const name of ["extrude", "edgeFeature", "pressPull", "loftTool", "moveTool", "planeOffset", "texture", "textOnFace", "thread", "split"]) {
       deps[name] = {
         start: (...a: unknown[]) => {
           events.push(`${name}.start`);

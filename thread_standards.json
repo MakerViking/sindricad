@@ -1,0 +1,394 @@
+{
+  "families": {
+    "metric": {
+      "halfAngleDeg": 30,
+      "depthFrac": 0.541266
+    },
+    "metricFine": {
+      "halfAngleDeg": 30,
+      "depthFrac": 0.541266
+    },
+    "unc": {
+      "halfAngleDeg": 30,
+      "depthFrac": 0.541266
+    },
+    "unf": {
+      "halfAngleDeg": 30,
+      "depthFrac": 0.541266
+    },
+    "trapezoidal": {
+      "halfAngleDeg": 15,
+      "depthFrac": 0.5
+    }
+  },
+  "metric": [
+    {
+      "designation": "M1.6x0.35",
+      "diameter": 1.6,
+      "pitch": 0.35
+    },
+    {
+      "designation": "M2x0.4",
+      "diameter": 2,
+      "pitch": 0.4
+    },
+    {
+      "designation": "M2.5x0.45",
+      "diameter": 2.5,
+      "pitch": 0.45
+    },
+    {
+      "designation": "M3x0.5",
+      "diameter": 3,
+      "pitch": 0.5
+    },
+    {
+      "designation": "M4x0.7",
+      "diameter": 4,
+      "pitch": 0.7
+    },
+    {
+      "designation": "M5x0.8",
+      "diameter": 5,
+      "pitch": 0.8
+    },
+    {
+      "designation": "M6x1",
+      "diameter": 6,
+      "pitch": 1.0
+    },
+    {
+      "designation": "M8x1.25",
+      "diameter": 8,
+      "pitch": 1.25
+    },
+    {
+      "designation": "M10x1.5",
+      "diameter": 10,
+      "pitch": 1.5
+    },
+    {
+      "designation": "M12x1.75",
+      "diameter": 12,
+      "pitch": 1.75
+    },
+    {
+      "designation": "M16x2",
+      "diameter": 16,
+      "pitch": 2.0
+    },
+    {
+      "designation": "M20x2.5",
+      "diameter": 20,
+      "pitch": 2.5
+    },
+    {
+      "designation": "M24x3",
+      "diameter": 24,
+      "pitch": 3.0
+    },
+    {
+      "designation": "M30x3.5",
+      "diameter": 30,
+      "pitch": 3.5
+    },
+    {
+      "designation": "M36x4",
+      "diameter": 36,
+      "pitch": 4.0
+    },
+    {
+      "designation": "M42x4.5",
+      "diameter": 42,
+      "pitch": 4.5
+    },
+    {
+      "designation": "M48x5",
+      "diameter": 48,
+      "pitch": 5.0
+    },
+    {
+      "designation": "M56x5.5",
+      "diameter": 56,
+      "pitch": 5.5
+    },
+    {
+      "designation": "M64x6",
+      "diameter": 64,
+      "pitch": 6.0
+    }
+  ],
+  "metricFine": [
+    {
+      "designation": "M8x1",
+      "diameter": 8,
+      "pitch": 1.0
+    },
+    {
+      "designation": "M10x1.25",
+      "diameter": 10,
+      "pitch": 1.25
+    },
+    {
+      "designation": "M12x1.5",
+      "diameter": 12,
+      "pitch": 1.5
+    },
+    {
+      "designation": "M16x1.5",
+      "diameter": 16,
+      "pitch": 1.5
+    },
+    {
+      "designation": "M20x1.5",
+      "diameter": 20,
+      "pitch": 1.5
+    },
+    {
+      "designation": "M24x2",
+      "diameter": 24,
+      "pitch": 2.0
+    },
+    {
+      "designation": "M30x2",
+      "diameter": 30,
+      "pitch": 2.0
+    },
+    {
+      "designation": "M36x3",
+      "diameter": 36,
+      "pitch": 3.0
+    },
+    {
+      "designation": "M42x3",
+      "diameter": 42,
+      "pitch": 3.0
+    },
+    {
+      "designation": "M48x3",
+      "diameter": 48,
+      "pitch": 3.0
+    },
+    {
+      "designation": "M56x4",
+      "diameter": 56,
+      "pitch": 4.0
+    },
+    {
+      "designation": "M64x4",
+      "diameter": 64,
+      "pitch": 4.0
+    }
+  ],
+  "unc": [
+    {
+      "designation": "#2-56 UNC",
+      "diameterIn": 0.086,
+      "tpi": 56
+    },
+    {
+      "designation": "#3-48 UNC",
+      "diameterIn": 0.099,
+      "tpi": 48
+    },
+    {
+      "designation": "#4-40 UNC",
+      "diameterIn": 0.112,
+      "tpi": 40
+    },
+    {
+      "designation": "#5-40 UNC",
+      "diameterIn": 0.125,
+      "tpi": 40
+    },
+    {
+      "designation": "#6-32 UNC",
+      "diameterIn": 0.138,
+      "tpi": 32
+    },
+    {
+      "designation": "#8-32 UNC",
+      "diameterIn": 0.164,
+      "tpi": 32
+    },
+    {
+      "designation": "#10-24 UNC",
+      "diameterIn": 0.19,
+      "tpi": 24
+    },
+    {
+      "designation": "#12-24 UNC",
+      "diameterIn": 0.216,
+      "tpi": 24
+    },
+    {
+      "designation": "1/4-20 UNC",
+      "diameterIn": 0.25,
+      "tpi": 20
+    },
+    {
+      "designation": "5/16-18 UNC",
+      "diameterIn": 0.3125,
+      "tpi": 18
+    },
+    {
+      "designation": "3/8-16 UNC",
+      "diameterIn": 0.375,
+      "tpi": 16
+    },
+    {
+      "designation": "7/16-14 UNC",
+      "diameterIn": 0.4375,
+      "tpi": 14
+    },
+    {
+      "designation": "1/2-13 UNC",
+      "diameterIn": 0.5,
+      "tpi": 13
+    },
+    {
+      "designation": "9/16-12 UNC",
+      "diameterIn": 0.5625,
+      "tpi": 12
+    },
+    {
+      "designation": "5/8-11 UNC",
+      "diameterIn": 0.625,
+      "tpi": 11
+    },
+    {
+      "designation": "3/4-10 UNC",
+      "diameterIn": 0.75,
+      "tpi": 10
+    },
+    {
+      "designation": "7/8-9 UNC",
+      "diameterIn": 0.875,
+      "tpi": 9
+    },
+    {
+      "designation": "1-8 UNC",
+      "diameterIn": 1.0,
+      "tpi": 8
+    }
+  ],
+  "unf": [
+    {
+      "designation": "#2-64 UNF",
+      "diameterIn": 0.086,
+      "tpi": 64
+    },
+    {
+      "designation": "#3-56 UNF",
+      "diameterIn": 0.099,
+      "tpi": 56
+    },
+    {
+      "designation": "#4-48 UNF",
+      "diameterIn": 0.112,
+      "tpi": 48
+    },
+    {
+      "designation": "#5-44 UNF",
+      "diameterIn": 0.125,
+      "tpi": 44
+    },
+    {
+      "designation": "#6-40 UNF",
+      "diameterIn": 0.138,
+      "tpi": 40
+    },
+    {
+      "designation": "#8-36 UNF",
+      "diameterIn": 0.164,
+      "tpi": 36
+    },
+    {
+      "designation": "#10-32 UNF",
+      "diameterIn": 0.19,
+      "tpi": 32
+    },
+    {
+      "designation": "#12-28 UNF",
+      "diameterIn": 0.216,
+      "tpi": 28
+    },
+    {
+      "designation": "1/4-28 UNF",
+      "diameterIn": 0.25,
+      "tpi": 28
+    },
+    {
+      "designation": "5/16-24 UNF",
+      "diameterIn": 0.3125,
+      "tpi": 24
+    },
+    {
+      "designation": "3/8-24 UNF",
+      "diameterIn": 0.375,
+      "tpi": 24
+    },
+    {
+      "designation": "7/16-20 UNF",
+      "diameterIn": 0.4375,
+      "tpi": 20
+    },
+    {
+      "designation": "1/2-20 UNF",
+      "diameterIn": 0.5,
+      "tpi": 20
+    },
+    {
+      "designation": "9/16-18 UNF",
+      "diameterIn": 0.5625,
+      "tpi": 18
+    },
+    {
+      "designation": "5/8-18 UNF",
+      "diameterIn": 0.625,
+      "tpi": 18
+    },
+    {
+      "designation": "3/4-16 UNF",
+      "diameterIn": 0.75,
+      "tpi": 16
+    },
+    {
+      "designation": "7/8-14 UNF",
+      "diameterIn": 0.875,
+      "tpi": 14
+    },
+    {
+      "designation": "1-12 UNF",
+      "diameterIn": 1.0,
+      "tpi": 12
+    }
+  ],
+  "trapezoidal": [
+    {
+      "designation": "Tr8x8",
+      "diameter": 8,
+      "pitch": 4
+    },
+    {
+      "designation": "Tr8x2",
+      "diameter": 8,
+      "pitch": 2
+    },
+    {
+      "designation": "Tr10x2",
+      "diameter": 10,
+      "pitch": 2
+    },
+    {
+      "designation": "Tr12x3",
+      "diameter": 12,
+      "pitch": 3
+    },
+    {
+      "designation": "Tr16x4",
+      "diameter": 16,
+      "pitch": 4
+    }
+  ]
+}

@@ -76,7 +76,10 @@ export interface QueryResult {
   index: number;
   ok: boolean;
   count: number;
-  entities: { body: string; sel: Selector }[];
+  // `radius`/`external` are present only for a face entity resolved onto a
+  // full cylinder (a hole wall or a shaft) — the Thread tool's own pick-time
+  // standard preselect reads them; nothing else needs to.
+  entities: { body: string; sel: Selector; radius?: number; external?: boolean }[];
   error?: string;
 }
 

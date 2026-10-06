@@ -995,6 +995,28 @@ export type Feature =
   // the END like separate, and the body keeps its id, so no existing body id
   // moves. Pieces that do not touch stay in the body, and the build says so.
   | { id: string; type: "mergeSolids"; body: string }
+  // Cut (internal) or add (external) a real helical thread on a cylindrical
+  // face — a hole wall or a shaft. `face` is a by:"match" fingerprint
+  // selector, NEVER by:"nearest": unlike a plain press/pull target, this
+  // reference has to survive being RE-OPENED for editing after an upstream
+  // change, and a point-based pick silently rebinds to the wrong face
+  // (selector corpus: 26/187 for `nearest`, 0/33 for `match`).
+  //
+  // `internal`/`external` is NOT stored: the sidecar derives it fresh every
+  // rebuild from the picked face's own outward normal, so a boss that
+  // upstream becomes a bore is never silently threaded wrong.
+  //
+  // `fit` is Exact (the default, no clearance) or "print" (loosen the FLAT
+  // boundary of the thread tool's profile by `clearance`, the app's
+  // remembered print-clearance preference AT THE TIME this feature was
+  // created — see threadTool.ts). `clearance` is only read when `fit` is
+  // "print"; absent then means 0.
+  //
+  // `length` is the threaded depth along the axis, mm; absent = the picked
+  // face's own full axial length (the sidecar's default, re-measured every
+  // rebuild so a face that grows or shrinks upstream keeps threading all the
+  // way down it).
+  | { id: string; type: "thread"; face: Selector; body?: string; standard: string; fit?: "exact" | "print"; clearance?: Num; length?: Num; leftHand?: boolean }
   // Printed surface texture: real mesh displacement (not appearance-only), computed
   // by the sidecar at tessellation time. `faces` absent = whole body (then `body`
   // names the target, required); present = the operated face set (mirrors

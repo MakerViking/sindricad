@@ -815,6 +815,41 @@
       },
       "wholeBody": "Whole Body"
     },
+    "thread": {
+      "editTitle": "Thread",
+      "family": {
+        "metric": "ISO Metric",
+        "metricFine": "ISO Metric Fine",
+        "trapezoidal": "Trapezoidal",
+        "unc": "UNC",
+        "unf": "UNF"
+      },
+      "matchHole": "This hole is {diameter} mm across. {designation}'s tap drill is {standard} mm: internal {designation}.",
+      "matchShaft": "This shaft is {diameter} mm across. {designation}'s major diameter is {standard} mm: external {designation}.",
+      "panel": {
+        "clearance": "Clearance",
+        "clearanceTitle": "How much to back the flanks off, split between the two mating threads",
+        "fit": "Fit",
+        "fitExact": "Exact",
+        "fitPrint": "Print",
+        "fitPrintTitle": "Add clearance on the flanks so a printed mating part turns freely",
+        "handedness": "Handedness",
+        "left": "Left-hand",
+        "length": "Length",
+        "lengthTitle": "How far the thread runs. Leave empty to thread the whole face",
+        "reading": "Reading that face",
+        "right": "Right-hand",
+        "standard": "Standard"
+      },
+      "pickPrompt": "Click a cylindrical face: a hole wall or a shaft",
+      "ref": {
+        "failed": "I couldn't read that pick: {why}",
+        "noBody": "I can't tell which body that face belongs to. Pick it again.",
+        "noReply": "I couldn't read that pick. Is the geometry engine running? Try the click again.",
+        "notCylinder": "That's not a full cylindrical face. Pick a hole wall or a shaft that runs all the way around.",
+        "unsupported": "This geometry engine can't store a pick on a body. This tool needs that to find the thread again after a rebuild."
+      }
+    },
     "upTo": {
       "clickPrompt": "Click the face or plane to extrude UP TO (any face, any body) · Esc to go back",
       "pickPrompt": "Pick the face or plane to extrude UP TO (any face, any body) · Esc to go back"
@@ -2189,6 +2224,7 @@
     "textOnFace": "Text on Face",
     "texture": "Texture",
     "thicken": "Thicken",
+    "thread": "Thread",
     "trim": "Trim",
     "vertical": "Vertical",
     "zebra": "Zebra"

@@ -17,6 +17,7 @@ import type { MoveTool } from "./moveTool";
 import type { PlaneOffsetTool } from "./planeOffsetTool";
 import type { TextureTool } from "./textureTool";
 import type { TextOnFaceTool } from "./textOnFaceTool";
+import type { ThreadTool } from "./threadTool";
 import type { SplitTool } from "./splitTool";
 import type { SplitSeed } from "./splitState";
 import { choose } from "../ui/choice";
@@ -65,6 +66,7 @@ export interface FeatureStartersDeps {
   planeOffset: PlaneOffsetTool;
   texture: TextureTool;
   textOnFace: TextOnFaceTool;
+  thread: ThreadTool;
   split: SplitTool;
   canvas: HTMLCanvasElement;
   toolBusy: () => boolean;
@@ -94,6 +96,7 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
     planeOffset,
     texture,
     textOnFace,
+    thread,
     split,
     canvas,
     toolBusy,
@@ -1123,6 +1126,16 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
     clearSelectionForCreate();
   }
 
+  // Thread: click a cylindrical face — a hole wall or a shaft — and cut a real
+  // modeled thread into it. Owns its own face pick, like Text on Face and
+  // Press/Pull, rather than riding the ambient selection.
+  function startThread() {
+    if (busy()) return;
+    if (needsBody(t("tool.thread"))) return;
+    thread.start(created);
+    clearSelectionForCreate();
+  }
+
   // Pattern: replicate the active body — rectangular grid or circular array. Edit
   // counts / spacing / angle in the inspector.
   async function startPattern() {
@@ -1227,6 +1240,7 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
     startDraft,
     startTexture,
     startTextOnFace,
+    startThread,
     startPattern,
     startBodyPattern,
     startExtrude,

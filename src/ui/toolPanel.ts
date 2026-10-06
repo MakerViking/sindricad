@@ -5,11 +5,16 @@
 // Extrude is the first user. Split, Texture and Text on Face still build their
 // own panels and could move onto this one; they have not been rewritten here.
 //
-// Three kinds of row, which between them cover every panel so far:
+// Four kinds of row, which between them cover every panel so far:
 //   - number: a length, angle or count typed in the display unit. It takes an
 //     expression as readily as a number (`31.53+2*1.62`, `wall*2`), read the
 //     way every dimension box reads one (units.parseFieldExpr).
-//   - choice: a segmented set of chips, one of them on.
+//   - choice: a segmented set of chips, one of them on. Chips stop making
+//     sense past a handful of options (a thread standard's ~70 designations),
+//     which is what `select` is for.
+//   - select: a native dropdown, optionally grouped (`group` on an option
+//     renders an <optgroup>, consecutive same-group options share one). Added
+//     for the Thread tool's standard+size picker.
 //   - pick: a box the user makes ACTIVE so the next click in the model fills
 //     it, with a clear button. Split's Body and Tool fields are this.
 //
@@ -27,6 +32,9 @@ import { fieldParams, fieldText, getUnit, numericInput, parseFieldExpr, type Fie
 export type PanelRow =
   | { kind: "number"; id: string; label: string; field?: FieldKind; title?: string }
   | { kind: "choice"; id: string; label: string; options: { value: string; label: string; title?: string }[] }
+  // `group`, when set, renders as that option's <optgroup> label; consecutive
+  // options sharing a group are nested under one. Ungrouped options render flat.
+  | { kind: "select"; id: string; label: string; options: { value: string; label: string; group?: string }[] }
   | { kind: "pick"; id: string; label: string; clearTitle: string };
 
 export interface ToolPanelHandlers {
@@ -35,6 +43,7 @@ export interface ToolPanelHandlers {
    *  tool can treat an EMPTY field as its default. */
   onNumber?: (id: string, value: number | null, raw: string) => void;
   onChoice?: (id: string, value: string) => void;
+  onSelect?: (id: string, value: string) => void;
   /** a pick box was clicked: make it the active one */
   onPick?: (id: string) => void;
   onClear?: (id: string) => void;
@@ -53,13 +62,18 @@ interface ChoiceEls {
   row: HTMLElement;
   chips: Map<string, HTMLButtonElement>;
 }
+interface SelectEls {
+  kind: "select";
+  row: HTMLElement;
+  select: HTMLSelectElement;
+}
 interface PickEls {
   kind: "pick";
   row: HTMLElement;
   value: HTMLSpanElement;
   clear: HTMLButtonElement;
 }
-type RowEls = NumberEls | ChoiceEls | PickEls;
+type RowEls = NumberEls | ChoiceEls | SelectEls | PickEls;
 
 export class ToolPanel {
   private root: HTMLDivElement;
@@ -116,6 +130,7 @@ export class ToolPanel {
     for (const def of rows) {
       if (def.kind === "number") this.rows.set(def.id, this.numberRow(def, h));
       else if (def.kind === "choice") this.rows.set(def.id, this.choiceRow(def, h));
+      else if (def.kind === "select") this.rows.set(def.id, this.selectRow(def, h));
       else this.rows.set(def.id, this.pickRow(def, h));
     }
 
@@ -195,6 +210,39 @@ export class ToolPanel {
     return { kind: "choice", row, chips };
   }
 
+  private selectRow(def: Extract<PanelRow, { kind: "select" }>, h: ToolPanelHandlers): SelectEls {
+    const row = document.createElement("label");
+    row.className = "tool-panel-row";
+    const label = document.createElement("span");
+    label.className = "tool-panel-label";
+    label.textContent = def.label;
+    const select = document.createElement("select");
+    select.className = "tool-panel-select";
+    // Consecutive options sharing a `group` nest under one <optgroup>; an
+    // ungrouped option (or a change of group) starts a fresh container.
+    let container: HTMLElement = select;
+    let openGroup: string | undefined;
+    for (const o of def.options) {
+      if (o.group !== openGroup) {
+        container = o.group
+          ? Object.assign(document.createElement("optgroup"), { label: o.group })
+          : select;
+        if (o.group) select.appendChild(container);
+        openGroup = o.group;
+      }
+      const opt = document.createElement("option");
+      opt.value = o.value;
+      opt.textContent = o.label;
+      container.appendChild(opt);
+    }
+    select.addEventListener("change", () => h.onSelect?.(def.id, select.value));
+    row.appendChild(label);
+    row.appendChild(select);
+    this.root.appendChild(row);
+    this.focusable.add(select);
+    return { kind: "select", row, select };
+  }
+
   private pickRow(def: Extract<PanelRow, { kind: "pick" }>, h: ToolPanelHandlers): PickEls {
     const row = document.createElement("div");
     row.className = "tool-panel-pick";
@@ -257,6 +305,12 @@ export class ToolPanel {
     const r = this.rows.get(id);
     if (r?.kind !== "choice") return;
     for (const [v, b] of r.chips) b.classList.toggle("on", v === value);
+  }
+
+  setSelect(id: string, value: string) {
+    const r = this.rows.get(id);
+    if (r?.kind !== "select") return;
+    r.select.value = value;
   }
 
   setPick(id: string, text: string, opts: { empty: boolean; active: boolean }) {

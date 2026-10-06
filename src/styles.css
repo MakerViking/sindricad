@@ -3351,6 +3351,7 @@ button.finish:hover {
 .tool-panel-label { flex: 0 0 78px; color: var(--text-dim); }
 .tool-panel-number { width: 90px; }
 .tool-panel-number:disabled { opacity: 0.6; }
+.tool-panel-select { flex: 1 1 auto; min-width: 0; }
 .tool-panel-choice { margin-bottom: 6px; }
 .tool-panel-choice .tool-panel-label { display: block; font-size: 11px; margin-bottom: 2px; }
 .tool-panel-chips { display: flex; flex-wrap: wrap; gap: 4px; }

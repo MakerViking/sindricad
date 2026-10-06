@@ -60,6 +60,7 @@ import { SectionTool, type SectionAxis } from "./features/sectionTool";
 import { PlaneOffsetTool } from "./features/planeOffsetTool";
 import { TextureTool } from "./features/textureTool";
 import { TextOnFaceTool } from "./features/textOnFaceTool";
+import { ThreadTool } from "./features/threadTool";
 import { SplitTool } from "./features/splitTool";
 import { diagBodyName, diagnosticText, splitWarningsToShow, toastsWarnings } from "./features/splitWarnings";
 import { createFeatureStarters, TOOL_BUSY_MESSAGE } from "./features/featureStarters";
@@ -244,6 +245,7 @@ const section = new SectionTool(viewport);
 const planeOffset = new PlaneOffsetTool(viewport, store);
 const textureTool = new TextureTool(viewport, store);
 const textOnFaceTool = new TextOnFaceTool(viewport, store, geometry);
+const threadTool = new ThreadTool(viewport, store);
 const splitTool = new SplitTool({
   viewport,
   store,
@@ -275,6 +277,7 @@ if (import.meta.env.DEV) {
   (window as any).pressPull = pressPull;
   (window as any).textureTool = textureTool;
   (window as any).textOnFaceTool = textOnFaceTool;
+  (window as any).threadTool = threadTool;
   (window as any).splitTool = splitTool;
   (window as any).solveSketch = solveSketch;
 }
@@ -623,6 +626,7 @@ function cancelModelingTool() {
   if (moveTool.active) moveTool.cancel();
   if (textureTool.active) textureTool.cancel();
   if (textOnFaceTool.active) textOnFaceTool.cancel();
+  if (threadTool.active) threadTool.cancel();
   if (splitTool.active) splitTool.cancel();
 }
 
@@ -748,7 +752,7 @@ function startFaceOffset(mode: "offsetFace" | "thicken") {
 // inspector edits the OPEN sketch's dimensions through the session on purpose
 // (store.onSketchDimEdit). Neither are Measure and Section, which write nothing.
 function featureToolActive(): boolean {
-  return extrude.active || edgeFeature.active || pressPull.active || faceOffset.active || loftTool.active || planeOffset.active || moveTool.active || textureTool.active || textOnFaceTool.active || splitTool.active || planePick;
+  return extrude.active || edgeFeature.active || pressPull.active || faceOffset.active || loftTool.active || planeOffset.active || moveTool.active || textureTool.active || textOnFaceTool.active || threadTool.active || splitTool.active || planePick;
 }
 
 // Guard predicates checked at the top of every start* tool + interactive helper:
@@ -796,6 +800,7 @@ const starters = createFeatureStarters({
   planeOffset,
   texture: textureTool,
   textOnFace: textOnFaceTool,
+  thread: threadTool,
   split: splitTool,
   canvas,
   toolBusy,
@@ -1615,6 +1620,9 @@ function editFeature(id: string) {
     case "textOnFace":
       if (!textOnFaceTool.startEdit(id, done)) toInspector();
       break;
+    case "thread":
+      if (!threadTool.startEdit(id, done)) toInspector();
+      break;
     // Re-opens the Split Body panel with the split's fields, keep and offset,
     // on the model as it stood before the split. A split had no arm, so its
     // cut could only be deleted and redone.
@@ -1887,6 +1895,9 @@ function handleAction(action: string) {
       break;
     case "text-on-face":
       starters.startTextOnFace();
+      break;
+    case "thread":
+      starters.startThread();
       break;
     case "pattern":
       void starters.startPattern();

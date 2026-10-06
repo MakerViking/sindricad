@@ -439,6 +439,17 @@ This file starts on 2026-08-03. For anything before that, see the
   areas; used as a whole sketch, with no area picked, it keeps its straight
   pieces.
 
+- **Thread.** Click a hole wall or a shaft and cut a real modeled thread into
+  it: ISO metric coarse and fine, UNC/UNF, or metric trapezoidal, with the
+  standard and size chosen in a panel. I preselect the nearest matching size
+  off the face you clicked and say how far it is from the nominal (for
+  example, a 5 mm hole next to M6's 5 mm tap drill). Fit is Exact or Print,
+  where Print backs the flanks off by a clearance I remember as your default
+  and also store with the thread; left-hand threads work the same way. Length
+  defaults to the whole face, or set how far it runs. Editing the hole or
+  shaft's diameter re-threads it, or refuses in words when nothing close
+  enough is left to thread.
+
 - **Insert > Part from File.** Copies the visible bodies of another SindriCAD
   document into the one you have open, so a screw, standoff or insert you
   modelled once can be checked for fit in every project that uses it. Several
