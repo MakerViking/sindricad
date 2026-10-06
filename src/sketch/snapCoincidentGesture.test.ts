@@ -112,6 +112,8 @@ function drawing(
       projectToScreen: (w: THREE.Vector3) => ({ x: w.x * PX, y: w.y * PX }),
       pixelWorldSize: () => 1 / PX,
       beforeNextDraw: (fn: () => void) => { frames.push(fn); },
+      // no imported scan in a sketch-gesture fixture: nothing to snap onto
+      scanVertexAt: () => null,
     },
     plane: {
       plane: null,

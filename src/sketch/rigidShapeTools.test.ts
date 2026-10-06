@@ -72,6 +72,8 @@ const viewport = {
   // mm per pixel, for the size of a hovered point's marker
   pixelWorldSize: () => 1 / PX,
   domElement: { setPointerCapture() {}, releasePointerCapture() {} },
+  // no imported scan in a sketch-gesture fixture: nothing to snap onto
+  scanVertexAt: () => null,
 };
 
 type Ptr = { button: number; clientX: number; clientY: number; ctrlKey: boolean; shiftKey: boolean; pointerId: number; preventDefault(): void; stopPropagation(): void };

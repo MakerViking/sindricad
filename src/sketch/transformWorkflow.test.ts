@@ -60,6 +60,8 @@ const viewport = {
   camera: {},
   domElement: { setPointerCapture() {}, releasePointerCapture() {} },
   hoverEntity() {},
+  // no imported scan in a sketch-gesture fixture: nothing to snap onto
+  scanVertexAt: () => null,
 };
 
 type Ptr = { button: number; clientX: number; clientY: number; ctrlKey: boolean; shiftKey: boolean; metaKey: boolean; pointerId: number; preventDefault(): void; stopPropagation(): void };
