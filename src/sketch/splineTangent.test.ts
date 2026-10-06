@@ -19,7 +19,7 @@ import * as THREE from "three";
 import { compileAndSolve } from "./sketchSolve";
 import { ConstraintTools, splineTangentFor, type ConstraintHost } from "./constraintTools";
 import { constraintGlyphs } from "./glyphs";
-import { applicableConstraints } from "./constraintMenu";
+import { applicableConstraints, menuOperands } from "./constraintMenu";
 import { liveSketch, PX } from "./liveSketch.testkit";
 import { contextMenu, type CtxItem } from "../ui/menu";
 import { toast } from "../ui/toast";
@@ -458,10 +458,12 @@ describe("the rest of the sketcher knows it", () => {
 
   it("the right-click menu offers Tangent for a spline and the line its end meets, and only then", () => {
     const [l, s] = lineIntoJoint();
-    expect(applicableConstraints([l!, s!])).toEqual(["tangent"]);
+    const offered = (sel: ResolvedEntity[]) =>
+      applicableConstraints(menuOperands(sel.map((e) => e.id), new Map(sel.map((e) => [e.id, e]))) ?? []);
+    expect(offered([l!, s!])).toEqual(["tangent"]);
     const loose = SP("s", [[45, 3], [50, 12], [70, 10]]);
-    expect(applicableConstraints([l!, loose])).toEqual([]);
-    expect(applicableConstraints([s!])).toEqual([]);
+    expect(offered([l!, loose])).toEqual([]);
+    expect(offered([s!])).toEqual([]);
   });
 
   it("a menu Tangent on the selection solves the spline onto the line's direction", async () => {

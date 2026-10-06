@@ -2796,6 +2796,9 @@ function joined(
       case "tangent": return { ...c, line: curve(c.line) };
       case "tangent2": return { ...c, a: curve(c.a), b: curve(c.b) };
       case "c2lDistance": return { ...c, line: curve(c.line) };
+      // a spline is never one of the two lines being joined; the curve it
+      // meets can be
+      case "splineTangent": return { ...c, other: curve(c.other) };
       case "coincident": {
         const j1 = isJoint(c.e1, c.p1), j2 = isJoint(c.e2, c.p2);
         if (j1 && j2) return "quiet"; // the pieces' own join
