@@ -7750,7 +7750,7 @@ def _handle_thread(f, ctx):
     if conflict is not None:
         noun = "shaft" if external else "hole"
         raise ValueError(
-            f"Thread: this {noun} already has a thread ({conflict}) — edit that "
+            f"Thread: this {noun} already has a thread ({conflict}): edit that "
             "one instead of adding a second."
         )
 
