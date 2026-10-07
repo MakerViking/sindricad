@@ -7724,20 +7724,37 @@ def _handle_thread(f, ctx):
     minor_r = thread_standards.minor_diameter(rec) / 2.0
     _require_positive("Thread", pitch=pitch, **{"major diameter": rec["majorDiameter"]})
 
-    # A hole is matched by its tap-drill (minor) diameter, a shaft by its
-    # major diameter — the plan's own rule, because that is which surface of
-    # the as-modeled part is supposed to already sit at a standard thread's
-    # un-cut boundary.
+    # A shaft is matched only by its major diameter — a shaft at nominal size
+    # is already the normal, and only, case. A hole is matched by EITHER its
+    # nominal (major) diameter, drawn as modeled for 3D printing with no tap
+    # drilling assumed, OR its tap-drill (minor) diameter, the traditional
+    # machinist convention — whichever the as-modeled bore sits closer to.
+    # `fill_to_tap_drill` says which hole case this is: when the hole sits at
+    # nominal, the bore still has the material between minor and major radius
+    # that the cut below assumes is already gone, so it has to be filled back
+    # down to tap-drill diameter first (see the insertion right before the
+    # cut).
     face_d = face_r * 2.0
-    standard_d = rec["majorDiameter"] if external else (2.0 * minor_r)
-    if abs(face_d - standard_d) > 0.3 * pitch:
-        kind = "shaft" if external else "hole"
-        metric = "major diameter" if external else "tap drill"
-        raise ValueError(
-            f"Thread: the {kind} is {face_d:.3g} mm across, too far from "
-            f"{f['standard']}'s {metric} of {standard_d:.3g} mm. Pick a standard "
-            "that matches, or re-check the diameter."
-        )
+    tap_drill_d = 2.0 * minor_r
+    tol = 0.3 * pitch
+    fill_to_tap_drill = False
+    if external:
+        if abs(face_d - rec["majorDiameter"]) > tol:
+            raise ValueError(
+                f"Thread: the shaft is {face_d:.3g} mm across, too far from "
+                f"{f['standard']}'s major diameter of {rec['majorDiameter']:.3g} mm. "
+                "Pick a standard that matches, or re-check the diameter."
+            )
+    else:
+        nominal_err = abs(face_d - rec["majorDiameter"])
+        tap_err = abs(face_d - tap_drill_d)
+        if min(nominal_err, tap_err) > tol:
+            raise ValueError(
+                f"Thread: the hole is {face_d:.3g} mm across, too far from "
+                f"{f['standard']}. Draw it at {rec['majorDiameter']:.3g} mm or "
+                f"drill it at {tap_drill_d:.3g} mm."
+            )
+        fill_to_tap_drill = nominal_err < tap_err
 
     clearance = ctx.val(f.get("clearance", 0.0)) if f.get("fit") == "print" else 0.0
     if clearance < 0:
@@ -7781,6 +7798,19 @@ def _handle_thread(f, ctx):
         turn_axis = Axis(centre0, axis)
         for k in range(1, starts):
             tools.append(tool.rotate(turn_axis, k * 360.0 / starts))
+
+    if fill_to_tap_drill:
+        # The hole was drawn at nominal size, so the material between the
+        # tap-drill (minor) radius and the as-modeled bore wall is still
+        # there — the cut below assumes it is already gone (see
+        # _thread_tool_points's own docstring on the flat boundary sitting at
+        # major_r). Fill exactly that material in first, over exactly the
+        # picked face's own axial span, so a through-hole's far face is never
+        # touched.
+        tube = _thread_bore_fill_tube(ax3, v0, v1, minor_r, face_r)
+        if tube is None:
+            raise ValueError("Thread: could not fill the hole back to the tap drill diameter")
+        body["shape"] = _serial_bool(body["shape"], tube, "fuse")
 
     before_solids = max(1, len(body["shape"].solids()))
     before_volume = body["shape"].volume
@@ -14829,6 +14859,42 @@ def _offset_cylinder_by_boolean(part, face, d):
     except Exception:
         pass
     return out
+
+
+def _thread_bore_fill_tube(ax3, v0, v1, inner_r, outer_r):
+    """A tube from `inner_r` to `outer_r`, spanning exactly [v0, v1] along
+    `ax3`'s axis, to fuse into a hole that was drawn at its thread's nominal
+    (major) diameter before `_handle_thread` cuts it — the cut's own tool
+    profile assumes the bore is already open to `inner_r` (the tap-drill /
+    minor diameter), so this puts back the material a real tap would have
+    left in place, as far out as the bore wall the user actually drew.
+
+    Spans exactly the PICKED FACE's own [v0, v1], never the cut's run-out
+    range (`v0 - pitch` .. past `v1`): that run-out is safe for a CUT, which
+    only removes material that was there or not, but not for this FUSE, which
+    would otherwise weld a floating plug onto the far side of a through-hole.
+
+    Returns None on any OCCT failure, so the caller can refuse instead of
+    threading a shape it never built."""
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder
+    from OCP.gp import gp_Ax2, gp_Pnt
+
+    direction = ax3.Direction()
+    loc = ax3.Location()
+    base = gp_Pnt(
+        loc.X() + v0 * direction.X(),
+        loc.Y() + v0 * direction.Y(),
+        loc.Z() + v0 * direction.Z(),
+    )
+    ax2 = gp_Ax2(base, direction)
+    length = v1 - v0
+    try:
+        big = BRepPrimAPI_MakeCylinder(ax2, outer_r, length).Shape()
+        small = BRepPrimAPI_MakeCylinder(ax2, inner_r, length).Shape()
+        return _wrap_topods(BRepAlgoAPI_Cut(big, small).Shape())
+    except Exception:
+        return None
 
 
 _RETUNE_ANG_TOL = 1e-6        # |cos| deviation for "parallel" / "perpendicular"

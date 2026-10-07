@@ -39,6 +39,7 @@ export const SHORTCUTS: Shortcut[] = [
   { id: "m.presspull", key: "q", action: "presspull", context: "model", label: t("tool.presspull") },
   { id: "m.fillet", key: "f", action: "fillet", context: "model", label: t("tool.fillet") },
   { id: "m.chamfer", key: "b", action: "chamfer", context: "model", label: t("shortcut.m.chamfer") },
+  { id: "m.thread", key: "t", action: "thread", context: "model", label: t("tool.thread") },
   { id: "m.move", key: "m", action: "move", context: "model", label: t("tool.move") },
   { id: "m.measure", key: "i", action: "measure", context: "model", label: t("tool.measure") },
   { id: "m.split", key: "k", action: "split", context: "model", label: t("tool.split") },

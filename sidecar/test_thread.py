@@ -159,6 +159,22 @@ def _check_thread_volume(label, designation, height, internal, before_volume, af
     print(f"{PASS} {label}: removed {removed:.4f} of {want:.4f} mm3 ({rel:+.1e}){extra}")
 
 
+def _measure_hole_diameters(shape, major_d_hint):
+    """The thread's own measured major (root, the deepest the cut reaches)
+    and minor (crest, the tap-drill radius the tool never touches) diameter,
+    read straight off the cut geometry rather than assumed — every helper
+    body in this file bores and extrudes on the Z axis through the origin,
+    so a vertex's radial distance is just hypot(x, y). Filtered to vertices
+    within 0.65 * major_d_hint of the axis, well past the thread itself but
+    well short of the surrounding test block's own corners (the block is 4x
+    the major diameter wide, so its nearest corner sits at roughly 2.8 *
+    major_d_hint)."""
+    near_r = major_d_hint * 0.65
+    radii = [math.hypot(v.X, v.Y) for v in shape.vertices() if math.hypot(v.X, v.Y) < near_r]
+    assert radii, "no vertices found near the threaded hole"
+    return max(radii) * 2.0, min(radii) * 2.0
+
+
 def test_m6x1_internal_thread_cuts_to_analytic_volume():
     height = 10.0
     doc, body = _bored_body("M6x1", height)
@@ -433,6 +449,132 @@ def test_an_old_m6x1_document_with_no_starts_field_rebuilds_the_same_geometry():
           f"to one with an explicit starts=1 ({shape_a.volume:.4f} mm3)")
 
 
+def test_m6x1_internal_thread_from_a_nominal_diameter_hole_fills_then_cuts():
+    """The bug this fix is for: a hole drawn at the thread's NOMINAL (major)
+    diameter, 6 mm for M6x1, not tap-drilled to the minor diameter first —
+    the way someone modeling for 3D printing actually draws it. Must fill
+    the gap back to the tap drill diameter, then cut the same thread as the
+    tap-drilled path, landing on the same final shape (same volume) either
+    way, with the result's own measured major and minor diameter matching
+    the standard."""
+    height = 10.0
+    rec = thread_standards.lookup("M6x1")
+    doc_tapped, body_tapped = _bored_body("M6x1", height)  # tap-drilled, the old path
+    tapped_shape, _ = _cut_thread(doc_tapped, body_tapped, "M6x1", height)
+
+    doc_nom, body_nom = _bored_body("M6x1", height, bore_d=rec["majorDiameter"])
+    nominal_shape, _ = _cut_thread(doc_nom, body_nom, "M6x1", height)
+
+    assert nominal_shape.is_valid, "the filled-then-threaded block is not a valid solid"
+    assert len(nominal_shape.solids()) == 1, "the fill-and-cut split the body into pieces"
+
+    rel = nominal_shape.volume / tapped_shape.volume - 1
+    assert abs(rel) < 0.005, (
+        f"a nominal-diameter hole threads to a different volume than the tap-drilled "
+        f"path: {nominal_shape.volume:.4f} vs {tapped_shape.volume:.4f} mm3 ({rel:+.2%})")
+
+    major_d, minor_d = _measure_hole_diameters(nominal_shape, rec["majorDiameter"])
+    assert abs(major_d - rec["majorDiameter"]) < 0.05, (
+        f"measured major diameter {major_d:.4f} mm, standard is {rec['majorDiameter']:.4f} mm")
+    minor_want = thread_standards.minor_diameter(rec)
+    assert abs(minor_d - minor_want) < 0.05, (
+        f"measured minor diameter {minor_d:.4f} mm, standard is {minor_want:.4f} mm")
+    print(f"{PASS} a 6 mm (nominal) M6x1 hole fills then cuts to the tap-drilled path's "
+          f"volume ({rel:+.1e}), measured major {major_d:.4f} / minor {minor_d:.4f} mm")
+
+
+def test_m6x1_pair_from_a_nominal_diameter_hole_mates_with_print_clearance():
+    """The mating-pair proof for the bug's own repro: a hole drawn at 6 mm
+    (M6x1's nominal major diameter, not tap-drilled), threaded internal,
+    mated against an M6x1 external thread on a 6 mm shaft — same
+    quarter-pitch assembly phase and print clearance as the tap-drilled
+    pair test above — must not interfere either."""
+    height = 10.0
+    clearance = 0.15
+    rec = thread_standards.lookup("M6x1")
+    doc_in, body_in = _bored_body("M6x1", height, bore_d=rec["majorDiameter"])
+    hole, _ = _cut_thread(doc_in, body_in, "M6x1", height, fit="print", clearance=clearance)
+    doc_ex, body_ex = _shaft_body("M6x1", height)
+    shaft, _ = _cut_thread(doc_ex, body_ex, "M6x1", height, fit="print", clearance=clearance)
+    assert hole.is_valid and shaft.is_valid
+    shaft = Pos(0, 0, rec["pitch"] / 4) * shaft
+
+    one_turn = _analytic_thread_volume(rec, 1.0, True)
+    common = _serial_bool(hole, shaft, "common")
+    assert common.volume < 0.01 * one_turn, (
+        f"the mated pair (nominal-diameter hole) overlaps by {common.volume:.4f} mm3 "
+        f"- more than 1% of one turn ({one_turn:.4f} mm3)")
+    print(f"{PASS} an M6x1 pair from a 6 mm (nominal) hole, screwed together with "
+          f"{clearance} mm print clearance, does not interfere (overlap {common.volume:.2e} mm3)")
+
+
+def test_unc_quarter_20_thread_from_a_nominal_diameter_hole_fills_then_cuts():
+    """Same nominal-diameter repro as M6x1 above, for a UNC standard — a
+    different pitch, and an imperial diameter (6.35 mm, 1/4 inch), but the
+    same 60-degree ISO 68-1 family depth fraction."""
+    height = 12.0
+    rec = thread_standards.lookup("1/4-20 UNC")
+    doc, body = _bored_body("1/4-20 UNC", height, bore_d=rec["majorDiameter"])
+    shape, _ = _cut_thread(doc, body, "1/4-20 UNC", height)
+    assert shape.is_valid, "the filled-then-threaded 1/4-20 UNC block is not a valid solid"
+    major_d, minor_d = _measure_hole_diameters(shape, rec["majorDiameter"])
+    assert abs(major_d - rec["majorDiameter"]) < 0.05, (
+        f"measured major diameter {major_d:.4f} mm, standard is {rec['majorDiameter']:.4f} mm")
+    minor_want = thread_standards.minor_diameter(rec)
+    assert abs(minor_d - minor_want) < 0.05, (
+        f"measured minor diameter {minor_d:.4f} mm, standard is {minor_want:.4f} mm")
+    print(f"{PASS} a {rec['majorDiameter']:.3g} mm (nominal) hole + 1/4-20 UNC measures "
+          f"major {major_d:.4f} / minor {minor_d:.4f} mm")
+
+
+def test_tr8x8_thread_from_a_nominal_diameter_hole_fills_then_cuts():
+    """Same nominal-diameter repro for a 4-start trapezoidal standard — the
+    fill-then-cut path has to hold up for a 30-degree profile and multiple
+    rotated tool copies too, not just the 60-degree single-start families
+    above."""
+    height = 16.0
+    rec = thread_standards.lookup("Tr8x8")
+    doc, body = _bored_body("Tr8x8", height, bore_d=rec["majorDiameter"])
+    shape, _ = _cut_thread(doc, body, "Tr8x8", height)
+    assert shape.is_valid, "the filled-then-threaded Tr8x8 block is not a valid solid"
+    major_d, minor_d = _measure_hole_diameters(shape, rec["majorDiameter"])
+    assert abs(major_d - rec["majorDiameter"]) < 0.05, (
+        f"measured major diameter {major_d:.4f} mm, standard is {rec['majorDiameter']:.4f} mm")
+    minor_want = thread_standards.minor_diameter(rec)
+    assert abs(minor_d - minor_want) < 0.05, (
+        f"measured minor diameter {minor_d:.4f} mm, standard is {minor_want:.4f} mm")
+    print(f"{PASS} an 8 mm (nominal) hole + Tr8x8 measures major {major_d:.4f} / "
+          f"minor {minor_d:.4f} mm")
+
+
+def test_a_4_92mm_hole_still_matches_the_tap_drilled_path_unchanged():
+    """4.92 mm, rounded from M6x1's own tap drill (4.9175 mm), must still
+    land on the EXISTING no-fill path this fix leaves untouched — this fix
+    widens which holes are ACCEPTED, not which ones get filled first."""
+    height = 10.0
+    doc, body = _bored_body("M6x1", height, bore_d=4.92)
+    before = body["shape"].volume
+    shape, _ = _cut_thread(doc, body, "M6x1", height)
+    assert shape.is_valid, "a 4.92 mm (tap drill) bore refused to thread"
+    _check_thread_volume("M6x1 at a 4.92 mm (tap drill) hole", "M6x1", height, True, before, shape.volume)
+
+
+def test_a_hole_between_both_diameters_refuses_naming_both():
+    """5.5 mm sits too far from BOTH of M6x1's accepted diameters (6 mm
+    nominal major, 4.92 mm tap drill) to guess which one was intended. Must
+    refuse with a message naming both, not just one."""
+    height = 10.0
+    doc, body = _bored_body("M6x1", height, bore_d=5.5)
+    sel = _cylindrical_face_selector(body, body["id"])
+    doc = dict(doc, features=doc["features"] + [_thread_feature(sel, "M6x1")])
+    part, err, bodies = rebuild(doc)
+    thread_err = [e for e in err if e.get("feature_id") == "th"]
+    assert thread_err, f"a 5.5 mm hole against M6x1 built without an error: {err}"
+    msg = thread_err[0]["message"]
+    assert "6 mm" in msg and "4.92 mm" in msg, msg
+    print(f"{PASS} a 5.5 mm hole against M6x1 refuses naming both diameters: {msg[:90]}...")
+
+
 if __name__ == "__main__":
     test_m6x1_internal_thread_cuts_to_analytic_volume()
     test_m6x1_external_thread_cuts_to_analytic_volume()
@@ -447,4 +589,10 @@ if __name__ == "__main__":
     test_tr8x2_single_start_nut_does_not_fit_tr8x8_four_start_screw()
     test_a_thirty_mm_tr8x8_thread_cuts_within_the_heartbeat()
     test_an_old_m6x1_document_with_no_starts_field_rebuilds_the_same_geometry()
+    test_m6x1_internal_thread_from_a_nominal_diameter_hole_fills_then_cuts()
+    test_m6x1_pair_from_a_nominal_diameter_hole_mates_with_print_clearance()
+    test_unc_quarter_20_thread_from_a_nominal_diameter_hole_fills_then_cuts()
+    test_tr8x8_thread_from_a_nominal_diameter_hole_fills_then_cuts()
+    test_a_4_92mm_hole_still_matches_the_tap_drilled_path_unchanged()
+    test_a_hole_between_both_diameters_refuses_naming_both()
     print("\nall thread tests passed")

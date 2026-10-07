@@ -134,6 +134,16 @@ describe("ThreadTool — picking a face preselects a standard", () => {
     expect((h.added[0] as { standard: string }).standard).toBe("M6x1");
   });
 
+  it("an internal pick of a 6 mm hole (M6x1's NOMINAL major diameter, drawn as modeled for printing, not tap-drilled) preselects M6x1 — not Tr8x8, whose minor diameter happens to be exactly 6 mm", async () => {
+    const h = harness();
+    h.tool.start(() => {});
+    h.click({ selector: SEL, bodyId: "b1" });
+    const m6 = lookupThread("M6x1")!;
+    await h.resolve([{ index: 0, ok: true, count: 1, entities: [{ body: "b1", sel: SEL, radius: m6.majorDiameter / 2, external: false }] }]);
+    h.commit();
+    expect((h.added[0] as { standard: string }).standard).toBe("M6x1");
+  });
+
   it("a face that isn't a full cylinder refuses the pick, never opening the panel", async () => {
     const h = harness();
     h.tool.start(() => {});

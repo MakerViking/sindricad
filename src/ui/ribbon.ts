@@ -68,6 +68,7 @@ export const MODEL: Group[] = [
       { action: "presspull", label: t("tool.presspull"), iconName: "presspull", key: "Q" },
       { action: "fillet", label: t("tool.fillet"), iconName: "fillet", key: "F" },
       { action: "chamfer", label: t("tool.chamfer"), iconName: "chamfer", key: "B" },
+      { action: "thread", label: t("tool.thread"), iconName: "thread", key: "T" },
       {
         label: t("tool.move"),
         children: [
@@ -91,7 +92,6 @@ export const MODEL: Group[] = [
           { action: "draft", label: t("tool.draft"), iconName: "draft" },
           { action: "offset-face", label: t("tool.offsetFace"), iconName: "offsetFace" },
           { action: "thicken", label: t("tool.thicken"), iconName: "thicken" },
-          { action: "thread", label: t("tool.thread"), iconName: "thread" },
         ],
       },
       { action: "texture", label: t("tool.texture"), iconName: "texture" },

@@ -56,13 +56,25 @@ This file starts on 2026-08-03. For anything before that, see the
   and names the body instead of leaving you looking at an unexplained extra
   body with no word said.
 
-- **Threads now support multiple starts, and Tr8x8 is fixed to the real
-  4-start lead screw almost every printer uses.** I had it as a single-start
-  8 mm pitch thread, which a real Tr8x8 nut (2 mm pitch, 4 interleaved
-  starts, 8 mm lead) will not fit. The size panel shows the start count in
-  the label (e.g. "Tr8x8 (P2, 4 starts)") and lets you override it (1-8) for
-  a custom lead screw; an old thread feature with no stored starts count
-  still resolves to the standard's own natural value.
+- **Thread accepts a hole drawn at its nominal size, matches the size panel
+  to it, and has its own Modify button.** A 6 mm hole threaded as M6x1 used
+  to refuse: "the hole is 6 mm across, too far from M6x1's tap drill of 4.92
+  mm." Most people modeling for printing draw a hole at the size they want
+  the thread to read, not at the tap drill a machinist would leave, so a
+  hole now matches a standard by either diameter, whichever it sits closer
+  to; one drawn at nominal gets the tap-drill material filled back in first,
+  so the cut lands the same thread either way, and the size panel's own
+  guess at a picked face follows the same rule. A hole that matches neither
+  names both sizes it would accept. A shaft still has to sit at nominal size,
+  as before. Threads also now support multiple starts, and Tr8x8 is fixed to
+  the real 4-start lead screw almost every printer uses: I had it as a
+  single-start 8 mm pitch thread, which a real Tr8x8 nut (2 mm pitch, 4
+  interleaved starts, 8 mm lead) will not fit. The size panel shows the
+  start count in the label (e.g. "Tr8x8 (P2, 4 starts)") and lets you
+  override it (1-8) for a custom lead screw; an old thread feature with no
+  stored starts count still resolves to the standard's own natural value.
+  Thread also moved out of Shell's dropdown to sit next to Fillet and
+  Chamfer in Modify, so it's easier to find.
 
 - **Import Mesh is now just Import.** It has always taken STEP files as well as
   meshes, and the old name hid that. Its tooltip lists the formats it reads.

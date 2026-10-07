@@ -131,3 +131,27 @@ describe("the pattern buttons pattern what their name says", () => {
     expect(main, "the generic Pattern action lost its handler").toContain("starters.startPattern()");
   });
 });
+
+// Thread used to hide inside the Shell split button's dropdown, next to
+// Draft and Thicken — a feature a user had to already know existed, and then
+// guess which other tool's arrow it was hiding under, to ever find. It is
+// now its own top-level MODIFY button, beside Fillet and Chamfer.
+describe("Thread is a top-level Modify button, not nested in a dropdown", () => {
+  it("MODIFY lists thread directly in its items", () => {
+    const modify = MODEL.find((g) => g.id === "MODIFY");
+    expect(modify, "MODIFY group not found in the model ribbon").toBeTruthy();
+    const topLevel = modify!.items.some((it) => "action" in it && it.action === "thread");
+    expect(
+      topLevel,
+      "thread is not a top-level item in MODIFY — it may be missing or still nested in a dropdown",
+    ).toBe(true);
+  });
+
+  it("thread is no longer nested inside any MODIFY split button (e.g. Shell)", () => {
+    const modify = MODEL.find((g) => g.id === "MODIFY");
+    const nested = modify!.items.some(
+      (it) => "children" in it && it.children.some((c) => c.action === "thread"),
+    );
+    expect(nested, "thread is still nested inside a MODIFY split button's dropdown").toBe(false);
+  });
+});

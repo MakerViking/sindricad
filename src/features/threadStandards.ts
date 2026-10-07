@@ -89,18 +89,21 @@ export function allThreadDesignations(): ThreadRecord[] {
   return ALL;
 }
 
-/** The designation whose relevant diameter is closest to `diameterMm`: major
- *  diameter for a shaft/boss, minor (tap-drill) diameter for a hole/bore —
- *  the same rule the sidecar's `_handle_thread` matches by. Used to
- *  preselect a standard the instant a face is picked, before the sidecar
- *  round trip that authors the by:"match" selector even returns. Never
- *  undefined — the table is never empty. */
+/** The designation whose relevant diameter is closest to `diameterMm`: for a
+ *  shaft/boss, major diameter only — a shaft at nominal size is already the
+ *  normal, and only, case. For a hole/bore, whichever of major (drawn at
+ *  nominal, for 3D printing) or minor (tap-drill, the machinist convention)
+ *  diameter is closer — the same dual rule the sidecar's `_handle_thread`
+ *  matches by. Used to preselect a standard the instant a face is picked,
+ *  before the sidecar round trip that authors the by:"match" selector even
+ *  returns. Never undefined — the table is never empty. */
 export function nearestThread(diameterMm: number, external: boolean): ThreadRecord {
   let best = ALL[0]!;
   let bestErr = Infinity;
   for (const rec of ALL) {
-    const standardD = external ? rec.majorDiameter : rec.minorDiameter;
-    const err = Math.abs(standardD - diameterMm);
+    const err = external
+      ? Math.abs(rec.majorDiameter - diameterMm)
+      : Math.min(Math.abs(rec.majorDiameter - diameterMm), Math.abs(rec.minorDiameter - diameterMm));
     if (err < bestErr) { best = rec; bestErr = err; }
   }
   return best;
