@@ -122,6 +122,30 @@ def _shaft_body(designation, height, shaft_d=None):
     return doc, bodies[0]
 
 
+def _offset_hole_body(bore_d, height):
+    """Thomas's own document shape, reproduced directly (not read from his
+    cache file, which is not part of the repo): a 60x40 rectangular block
+    with a through-hole bored near a CORNER, not the centre. That off-centre
+    placement is what the double-thread bug needed — on a hole bored dead
+    centre in a symmetric block, a stale `by:"match"` selector lands on a
+    leftover PLANE face instead (already refused elsewhere, as "pick a
+    cylindrical face"); only this off-centre case lands the stale selector
+    on a cylindrical root-land remnant, which is the actual bug."""
+    doc = {"parameters": {}, "features": [
+        {"id": "f1", "type": "sketch", "plane": "XY", "entities": [
+            {"type": "rectangle", "id": "e0", "width": 60, "height": 40, "x": -30, "y": 20}]},
+        {"id": "f2", "type": "extrude", "sketch": "f1", "distance": height, "operation": "new"},
+        {"id": "f3", "type": "sketch",
+         "plane": {"origin": [0, 0, height], "normal": [0, 0, 1], "xdir": [1, 0, 0]},
+         "face": {"kind": "face", "by": "nearest", "point": [-30.34, 19.44, height], "body": "body1"},
+         "entities": [{"type": "circle", "id": "e1", "radius": bore_d / 2, "x": -30, "y": 20}]},
+        {"id": "f4", "type": "extrude", "sketch": "f3", "distance": -(height * 2.86), "operation": "cut"},
+    ]}
+    part, err, bodies = rebuild(doc)
+    assert not err, err
+    return doc, bodies[0]
+
+
 def _cylindrical_face_selector(body, body_id="body1"):
     """The by:"match" selector the app itself would author off the one
     cylindrical face of a freshly bored hole or turned shaft."""
@@ -575,6 +599,68 @@ def test_a_hole_between_both_diameters_refuses_naming_both():
     print(f"{PASS} a 5.5 mm hole against M6x1 refuses naming both diameters: {msg[:90]}...")
 
 
+def test_second_thread_on_an_already_threaded_hole_refuses_naming_the_first():
+    """The bug this fix is for, reproduced at its root: a stale `by:"match"`
+    face selector. Thomas's own document had two Thread features pointing at
+    what was, when each was drawn, the SAME cylindrical face fingerprint —
+    the second authored after a re-pick that copied the first thread's
+    selector rather than deriving a fresh one. By the time the second
+    feature replays, the first cut has already consumed that cylindrical
+    face down to a thin root-land remnant; `by:"match"` never refuses (see
+    geom_select.py's own docstring), so it silently resolved onto that
+    remnant and cut a second, differently-phased thread confined to a few mm
+    near the middle of the hole — exactly Thomas's screenshot. Must now
+    refuse outright, naming the first feature, and leave the body exactly as
+    the first thread alone left it.
+
+    Nominal-diameter (not tap-drilled) on purpose, and bored off-centre: that
+    is the hole Thomas actually drew, and this also exercises the
+    fill-then-cut path, not the bare-removal one — see `_offset_hole_body`
+    for why the off-centre placement matters to reproducing this bug."""
+    height = 25.0
+    rec = thread_standards.lookup("M6x1")
+    doc, body = _offset_hole_body(rec["majorDiameter"], height)
+    sel = _cylindrical_face_selector(body, body["id"])
+
+    doc_one = dict(doc, features=doc["features"] + [_thread_feature(sel, "M6x1", id="th1")])
+    part1, err1, bodies1 = rebuild(doc_one)
+    assert not err1, err1
+    single_shape = next(b for b in bodies1 if b["id"] == body["id"])["shape"]
+
+    doc_two = dict(doc, features=doc["features"] + [
+        _thread_feature(sel, "M6x1", id="th1"),
+        _thread_feature(sel, "M6x1", id="th2"),
+    ])
+    part2, err2, bodies2 = rebuild(doc_two)
+    double_shape = next(b for b in bodies2 if b["id"] == body["id"])["shape"]
+
+    th2_err = [e for e in err2 if e.get("feature_id") == "th2"]
+    assert th2_err, f"a second thread on the same hole built without an error: {err2}"
+    msg = th2_err[0]["message"]
+    assert "already has a thread" in msg and "th1" in msg, msg
+
+    assert double_shape.is_valid, "the refused-second-thread body is not a valid solid"
+    rel = double_shape.volume / single_shape.volume - 1
+    assert rel == 0.0, (
+        f"the refused second thread changed the body's volume by {rel:+.2e} "
+        f"({single_shape.volume:.4f} -> {double_shape.volume:.4f} mm3)")
+    print(f"{PASS} a second thread on an already-threaded hole refuses naming the first "
+          f"({msg[:70]}...), body volume unchanged ({single_shape.volume:.4f} mm3)")
+
+
+def test_an_old_single_thread_document_rebuilds_unchanged_after_the_conflict_fix():
+    """The conflict check this fix adds must never fire on a normal
+    single-Thread document — only a SECOND Thread sharing an already-
+    threaded axis is refused. A plain tap-drilled thread must build to
+    exactly the same volume as it always has."""
+    height = 10.0
+    doc, body = _bored_body("M6x1", height)
+    shape, _ = _cut_thread(doc, body, "M6x1", height)
+    assert shape.is_valid
+    _check_thread_volume("a lone M6x1 thread (no second feature)", "M6x1", height, True,
+                          body["shape"].volume, shape.volume)
+
+
 if __name__ == "__main__":
     test_m6x1_internal_thread_cuts_to_analytic_volume()
     test_m6x1_external_thread_cuts_to_analytic_volume()
@@ -595,4 +681,6 @@ if __name__ == "__main__":
     test_tr8x8_thread_from_a_nominal_diameter_hole_fills_then_cuts()
     test_a_4_92mm_hole_still_matches_the_tap_drilled_path_unchanged()
     test_a_hole_between_both_diameters_refuses_naming_both()
+    test_second_thread_on_an_already_threaded_hole_refuses_naming_the_first()
+    test_an_old_single_thread_document_rebuilds_unchanged_after_the_conflict_fix()
     print("\nall thread tests passed")

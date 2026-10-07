@@ -7641,6 +7641,45 @@ def _sweep_thread(centre, axis, path_r, lead, turns, lefthand, prof):
     return solid
 
 
+def _thread_axis_conflict(body, centre0, axis, v0, v1, tol_pos):
+    """The feature id of an earlier Thread on this body whose cut overlaps
+    this one, or None — `body["_threads"]` is the registry `_handle_thread`
+    appends to below, one record per successful cut: `{feature_id, centre,
+    axis, t0, t1}`, `t0`/`t1` being that cut's own v0/v1 (so `centre + axis *
+    t` reproduces its ends) in ITS OWN axis frame.
+
+    Checked by LINE, not by face: a re-picked `by:"match"` selector on an
+    already-threaded hole lands on whatever leftover scrap of the original
+    cylindrical wall scores lowest-cost today (see this function's caller's
+    docstring) — a thin root-land remnant near the hole's middle, nothing
+    like the face the thread was first cut from. But that remnant is still
+    physically part of the SAME cylinder, so its axis line is identical to
+    the original thread's to float precision; testing the line instead of
+    the face catches this regardless of which scrap the stale selector
+    happens to land on.
+
+    Two non-overlapping threads sharing one collinear axis (both ends of one
+    long shaft, say) are NOT a conflict — only ranges that actually overlap
+    are, projected onto the EARLIER thread's own axis frame so a pick from
+    the opposite end of the same hole still compares apples to apples."""
+    p0 = centre0 + axis * v0
+    p1 = centre0 + axis * v1
+    for rec in body.get("_threads") or ():
+        r_centre, r_axis = rec["centre"], rec["axis"]
+        if abs(abs(axis.dot(r_axis)) - 1.0) > 1e-6:
+            continue  # not even parallel — a different hole
+        off = centre0 - r_centre
+        perp = off - r_axis * off.dot(r_axis)
+        if perp.length > tol_pos:
+            continue  # parallel but offset sideways — a different hole
+        t = lambda p: (p - r_centre).dot(r_axis)
+        lo, hi = sorted((t(p0), t(p1)))
+        r_lo, r_hi = sorted((rec["t0"], rec["t1"]))
+        if hi >= r_lo - 1e-9 and lo <= r_hi + 1e-9:
+            return rec["feature_id"]
+    return None
+
+
 def _handle_thread(f, ctx):
     """A real modeled screw thread cut into a cylindrical face — a hole wall
     (internal) or a shaft (external). Which one it is gets DERIVED fresh from
@@ -7706,6 +7745,14 @@ def _handle_thread(f, ctx):
     if face_info is None:
         raise ValueError("Thread: could not tell a hole from a shaft on this face")
     _face_r2, external = face_info
+
+    conflict = _thread_axis_conflict(body, centre0, axis, v0, v1, max(1e-6, 1e-3 * face_r))
+    if conflict is not None:
+        noun = "shaft" if external else "hole"
+        raise ValueError(
+            f"Thread: this {noun} already has a thread ({conflict}) — edit that "
+            "one instead of adding a second."
+        )
 
     rec = thread_standards.lookup(f["standard"])
     if rec is None:
@@ -7828,6 +7875,16 @@ def _handle_thread(f, ctx):
     if not result.is_valid:
         raise ValueError("Thread: this cut produced an invalid shape — try a different size.")
     body["shape"] = result
+    # Register this cut's axis + span so a later Thread feature on the same
+    # body can be refused by _thread_axis_conflict if it lands on this same
+    # hole/shaft — REBIND, never mutate in place: body dicts are
+    # shallow-copied by rebuild()'s _snapshot() (dict(b)), so appending to an
+    # existing list would corrupt any earlier snapshot's view of "_threads"
+    # through the shared reference (same rule _handle_texture follows for
+    # "_textures").
+    body["_threads"] = (body.get("_threads") or []) + [
+        {"feature_id": f.get("id"), "centre": centre0, "axis": axis, "t0": v0, "t1": v1}
+    ]
 
 
 def _blob_top_children(shape):

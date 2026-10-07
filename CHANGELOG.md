@@ -136,6 +136,18 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ### Fixed
 
+- **A second Thread on an already-threaded hole or shaft now refuses, instead
+  of silently cutting a second, badly misaligned thread into the middle of
+  the first.** A thread's face reference can go stale once the hole is
+  threaded, since there's no longer a plain cylindrical wall left to point
+  at. If a second Thread lands back on the same hole anyway, I now check its
+  axis against every thread already cut on that body and refuse, naming the
+  feature that's already there, rather than cutting a short, out-of-phase
+  second thread wherever the stale reference happened to land. Editing the
+  existing thread, or deleting it first, both still work as before. A
+  document with a single Thread on a hole or shaft rebuilds exactly as it
+  did before this change.
+
 - **A mesh heavy enough to crash the import outright now still comes in, as a
   scan.** One report had a scan STL fail with "the geometry kernel crashed on
   this operation" and no further explanation, twice in a row. That wording was
