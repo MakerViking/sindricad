@@ -138,7 +138,7 @@ const S2 = Math.SQRT1_2;
   await openSketch(sketchDoc([{ id: "r1", type: "rectangle", x: 25, y: 15, width: 30, height: 20 }]));
   const tips = await page.evaluate(() => [...document.querySelectorAll("#palette .palette-row, #palette .palette-btn")]
     .map((el) => ({ label: el.textContent.trim(), title: el.title })));
-  check("the palette has its Look At button and eight switches", tips.length === 9, `${tips.length}`);
+  check("the palette has its Look At button and nine switches", tips.length === 10, `${tips.length}`);
   const untitled = tips.filter((x) => !x.title || x.title === x.label);
   check("every one has a tooltip that is not just its name", untitled.length === 0,
     untitled.map((x) => x.label).join(", ") || tips.map((x) => `${x.label}: ${x.title.slice(0, 30)}…`).join(" | "));
@@ -195,13 +195,17 @@ const S2 = Math.SQRT1_2;
   check("unticking Show Profile takes the open sketch's own profile shading away", fillOff.mode === bg,
     `inside #${fillOn.mode.toString(16)} -> #${fillOff.mode.toString(16)}, canvas #${bg.toString(16)}`);
   // An area you cannot see is not one you can pick, or the click selects
-  // something invisible and carries it on to Extrude.
-  await clickAt(25, 15);
+  // something invisible and carries it on to Extrude. Off-centre (20, 12),
+  // not the rectangle's centroid (25, 15): a press dead on a shape's centre
+  // takes its centre HANDLE instead (the same path a circle's centre always
+  // took), which selects the entity, not the region, and regionsPicked stays
+  // 0 no matter what Show Profile is set to.
+  await clickAt(20, 12);
   check("with it off, a click inside the area picks no area", (await regionsPicked()) === 0,
     `${await regionsPicked()} area(s) picked`);
   await clickRow("Show Profile");
   check("ticking it brings the shading back", (await pixels(inside)).mode === fillOn.mode);
-  await clickAt(25, 15);
+  await clickAt(20, 12);
   check("...and the same click picks the area again", (await regionsPicked()) === 1,
     `${await regionsPicked()} area(s) picked`);
 

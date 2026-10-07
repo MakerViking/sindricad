@@ -403,9 +403,10 @@ const WORST_TANGENCY = `(() => {
   const opened = await where();
   check(Math.hypot(opened.tl.x, opened.tl.y) < 1e-4, "opening the sketch puts the corner back on the origin",
     JSON.stringify(opened.tl));
-  // the RIGHT edge, dragged in and down: at this framing the bottom edge sits
-  // under the timeline and the Sketch Palette covers the canvas up and left
-  const edge = await drag(await screenOf(60, -10), await screenOf(48, -16));
+  // the RIGHT edge, dragged in and down: at this framing the top of the edge
+  // sits under the Sketch Palette (which grew a constraint-tool grid) and the
+  // bottom sits under the timeline, so press mid-edge, clear of both
+  const edge = await drag(await screenOf(60, -35), await screenOf(48, -41));
   check(edge.reachable && edge.armed.body, "the edge press armed a BODY drag", JSON.stringify(edge.armed));
   const dragged = await where();
   check(Math.hypot(dragged.o.x, dragged.o.y) < 1e-9, "the origin is still at 0,0", JSON.stringify(dragged.o));
