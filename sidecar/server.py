@@ -1734,6 +1734,20 @@ def _import_job(path, fmt):
         return _error_from(ex)
 
 
+def _import_as_scan_job(path, fmt):
+    """Worker: the one retry after `_import_job` took the WHOLE WORKER down
+    (see `_is_worker_crash` / the 'import' op in handle()). Skips the solid
+    build entirely and goes straight to the numpy-only reference-scan path,
+    which never touches OCCT and so isn't exposed to the crash that killed the
+    first attempt."""
+    from builder import import_as_reference_scan
+
+    try:
+        return import_as_reference_scan(path, fmt)
+    except Exception as ex:
+        return _error_from(ex)
+
+
 def _insert_document_job(document, name):
     """Worker: another document's visible bodies as an `import` payload (Insert >
     Part from File). Read-only on the open document's cache; see
@@ -2424,6 +2438,22 @@ def _pool_available():
     if _pool is None:
         return {"error": {"message": _INIT_FAIL_MSG, "code": errors_mod.ENGINE_UNAVAILABLE}}
     return None
+
+
+def _is_worker_crash(res):
+    """True iff `res` is _on_broken's generic mid-op-crash reply: the worker
+    came up and then died running THIS job, as opposed to an environment
+    failure (ENGINE_UNAVAILABLE) or a kill by another op's cancel/stall/timeout
+    (STOPPED_BY_OTHER) — both of those carry an explicit `code`; a real crash
+    does not (see _on_broken). Used by the 'import' op to retry onto the
+    mesh-only scan path instead of showing "the geometry kernel crashed on
+    this operation", which named no file and offered no way forward."""
+    err = (res or {}).get("error")
+    return (
+        isinstance(err, dict)
+        and err.get("code") is None
+        and err.get("message") == "the geometry kernel crashed on this operation"
+    )
 
 
 def _on_broken(gen):
@@ -3552,6 +3582,29 @@ async def _dispatch(ws, loop, req, req_id, op):
             loop, _import_job, req["path"], req["format"],
             stall=budget, on_progress=_importing,
         )
+        if _is_worker_crash(res):
+            # Field TA f70e9cf7: a scan STL took the worker down mid-solid-build
+            # with no Python exception to catch (native OCCT crash), and the
+            # generic reply named no file and offered no way forward. _on_broken
+            # already respawned the pool; retry ONCE, forced onto the numpy-only
+            # scan path (_import_as_scan_job), which never reaches OCCT's sewing/
+            # solid-build step and so cannot repeat this crash. Reset the phase
+            # clock: this is a second, independent read of the same file.
+            _ph["i"], _ph["t"] = -1, loop.time()
+            res = await _run_stall(
+                loop, _import_as_scan_job, req["path"], req["format"],
+                stall=budget, on_progress=_importing,
+            )
+            err = (res or {}).get("error")
+            if isinstance(err, dict):
+                # The retry is numpy-only and does not call OCCT, so this is a
+                # genuinely different, rarer failure (an unreadable file, or one
+                # past MAX_MESH_REFERENCE_TRIANGLES) — never repeat "the geometry
+                # kernel crashed", which would be true of neither attempt now.
+                err["message"] = (
+                    "this file was too heavy for me to turn into solid "
+                    "geometry, and reading it as a reference scan failed too"
+                )
         await ws.send(_reply_for(req_id, res))
 
     elif op == "insertDocument":

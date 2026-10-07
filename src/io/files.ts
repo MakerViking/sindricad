@@ -812,6 +812,20 @@ export function describeReferenceImport(res: { reference?: {
           n: formatCount(ref.triangles), limit: formatCount(ref.limit) })
       : t("file.import.reference.scan");
   }
+  // Same scan body, different cause: the mesh was UNDER the triangle limit,
+  // but the solid build still failed (a real scan's degenerate/self-
+  // intersecting triangles defeated the sewing step). No counts to report —
+  // the reason is the mesh's quality, not its size — and still no Thicken.
+  if (ref.why === "failedToBuildSolid") {
+    return t("file.import.reference.failedToBuildSolid");
+  }
+  // Same scan body, rarer and worse cause: the solid build took the whole
+  // geometry worker down (a native crash, no Python exception to catch), and
+  // the sidecar retried as a scan on the worker it respawned. Still no counts,
+  // still no Thicken — the mesh behind this body was never even measured.
+  if (ref.why === "workerCrashed") {
+    return t("file.import.reference.workerCrashed");
+  }
   let why: string | null = null;
   if (ref.why === "tooManyFacetDirections" && isCount(ref.directions)) {
     why = t("file.import.reference.tooManyFacetDirections", { n: formatCount(ref.directions) });

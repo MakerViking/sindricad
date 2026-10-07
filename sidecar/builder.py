@@ -5051,15 +5051,26 @@ def _fit_census(shape):
         return 0, 0
 
 
-def _import_mesh_reference(path, fmt):
-    """The `import` payload for a mesh too dense to become a B-rep.
+def _import_mesh_reference(path, fmt, why="tooManyTriangles"):
+    """The `import` payload for a mesh that is not becoming a B-rep.
 
     Read with numpy, stored as a mesh blob (meshblob.py) and never handed to
     OCCT: sew + unify is what crashes past ~147k triangles. The body it becomes
     is read-only reference geometry for modelling against. `faces` is 0 because
     there is no B-rep face to count, and `reference` carries the reason in the
     same shape `_note_reference` gives the other degrades, so the frontend words
-    it through the one `describeReferenceImport` path."""
+    it through the one `describeReferenceImport` path.
+
+    `why="tooManyTriangles"` (the default) is the triangle-count screen below.
+    `why="failedToBuildSolid"` is the OTHER caller (`import_geometry`'s sew
+    attempt): a mesh UNDER that screen whose solid build still failed (a
+    degenerate/self-intersecting mesh real scan software can produce) lands
+    here too, rather than surfacing the sew step's raw exception — carries no
+    triangle/limit detail, since density was not the reason.
+    `why="workerCrashed"` is `import_as_reference_scan` below: the solid build
+    took the WORKER PROCESS down outright (a native OCCT crash with no Python
+    exception to catch), and this is the retry forced onto this numpy-only path
+    on the fresh worker the server already spun back up."""
     import meshblob
 
     _import_phase(IMPORT_PHASE_READ)
@@ -5070,6 +5081,9 @@ def _import_mesh_reference(path, fmt):
     if ntri > MAX_MESH_REFERENCE_TRIANGLES:
         raise _too_dense_error(ntri)
     _import_phase(IMPORT_PHASE_ENCODE)
+    reference = {"why": "tooManyTriangles", "triangles": ntri, "limit": MAX_IMPORT_TRIANGLES}
+    if why in ("failedToBuildSolid", "workerCrashed"):
+        reference = {"why": why, "triangles": ntri}
     return {
         "geom": meshblob.store(verts, idx),
         "meshOnly": True,
@@ -5077,9 +5091,21 @@ def _import_mesh_reference(path, fmt):
         "faces": 0,
         "triangles": ntri,
         "name": os.path.splitext(os.path.basename(path))[0] or "Imported",
-        "reference": {"why": "tooManyTriangles", "triangles": ntri,
-                      "limit": MAX_IMPORT_TRIANGLES},
+        "reference": reference,
     }
+
+
+def import_as_reference_scan(path, fmt):
+    """Force a mesh-only reference-scan import, never attempting the solid
+    build at all. Called ONLY by the server's one retry after a worker died
+    mid-import (`_import_as_scan_job` in server.py): a native crash in OCCT's
+    sewing/solid-build step takes the whole worker process down with no Python
+    exception to catch, so the broad try/except in `import_geometry` below
+    (which handles the catchable version of this) never runs. This goes
+    straight to the numpy-only path instead, which never touches OCCT and is
+    not subject to the crash that killed the first attempt."""
+    fmt = (fmt or "").lower()
+    return _import_mesh_reference(path, fmt, why="workerCrashed")
 
 
 def import_geometry(path, fmt):
@@ -5146,50 +5172,62 @@ def import_geometry(path, fmt):
             # you model against only needs to be seen, snapped to and measured.
             return _import_mesh_reference(path, fmt)
         fit_report = {}
-        if fmt == "obj":
-            # build123d's Mesher reads ONLY .3mf and .stl, so every .obj import
-            # raised a raw "Unknown file format .obj" — while both file pickers
-            # advertised OBJ (src/io/files.ts). Parse it here and round-trip the
-            # triangles through a temporary STL, exactly as the glTF branch below
-            # does, so OBJ inherits the same sew + unify + refacet recovery
-            # instead of a second copy of it.
-            shape = _sew_obj_file(path, report=fit_report)
-        elif fmt == "stl" and _is_ascii_stl(path):
-            # lib3mf (build123d's Mesher) cannot read ASCII STL, so this used to
-            # fail 100% of the time. Read it with OCCT and round-trip the
-            # triangles through the shared recovery path.
-            pos, idx = _read_stl_triangles(path)
-            shape = _sew_triangles(pos, idx, report=fit_report)
-        else:
-            try:
-                shape = _sew_mesh_file(path, report=fit_report)
-            except Exception as e:
-                # lib3mf refuses a 3MF that carries the material extension, which
-                # is every coloured 3MF a slicer or `project3mf.py` writes. Read
-                # it ourselves and round-trip the triangles through the same
-                # recovery path, exactly as the ASCII-STL and OBJ branches above
-                # do. Narrow by construction: a file lib3mf CAN read never
-                # reaches here, so nothing that imports today changes.
-                if fmt != "3mf" or not _looks_like_lib3mf_refusal(e):
-                    raise
-                fd, tmp = tempfile.mkstemp(suffix=".3mf")
-                os.close(fd)
+        try:
+            if fmt == "obj":
+                # build123d's Mesher reads ONLY .3mf and .stl, so every .obj import
+                # raised a raw "Unknown file format .obj" — while both file pickers
+                # advertised OBJ (src/io/files.ts). Parse it here and round-trip the
+                # triangles through a temporary STL, exactly as the glTF branch below
+                # does, so OBJ inherits the same sew + unify + refacet recovery
+                # instead of a second copy of it.
+                shape = _sew_obj_file(path, report=fit_report)
+            elif fmt == "stl" and _is_ascii_stl(path):
+                # lib3mf (build123d's Mesher) cannot read ASCII STL, so this used to
+                # fail 100% of the time. Read it with OCCT and round-trip the
+                # triangles through the shared recovery path.
+                pos, idx = _read_stl_triangles(path)
+                shape = _sew_triangles(pos, idx, report=fit_report)
+            else:
                 try:
-                    _3mf_without_colour(path, tmp)
-                    shape = _sew_mesh_file(tmp, report=fit_report)
-                except Exception:
-                    # The fallback is a RECOVERY, so its own failure must not
-                    # become the story: a file that is not a zip at all reached
-                    # here only because lib3mf already refused it, and
-                    # "File is not a zip file" is a worse answer than lib3mf's.
-                    # Re-raise what actually rejected the file.
-                    raise e from None
-                finally:
+                    shape = _sew_mesh_file(path, report=fit_report)
+                except Exception as e:
+                    # lib3mf refuses a 3MF that carries the material extension, which
+                    # is every coloured 3MF a slicer or `project3mf.py` writes. Read
+                    # it ourselves and round-trip the triangles through the same
+                    # recovery path, exactly as the ASCII-STL and OBJ branches above
+                    # do. Narrow by construction: a file lib3mf CAN read never
+                    # reaches here, so nothing that imports today changes.
+                    if fmt != "3mf" or not _looks_like_lib3mf_refusal(e):
+                        raise
+                    fd, tmp = tempfile.mkstemp(suffix=".3mf")
+                    os.close(fd)
                     try:
-                        os.unlink(tmp)
-                    except OSError:
-                        pass
-                mesh_colour = _3mf_material_colour(path)
+                        _3mf_without_colour(path, tmp)
+                        shape = _sew_mesh_file(tmp, report=fit_report)
+                    except Exception:
+                        # The fallback is a RECOVERY, so its own failure must not
+                        # become the story: a file that is not a zip at all reached
+                        # here only because lib3mf already refused it, and
+                        # "File is not a zip file" is a worse answer than lib3mf's.
+                        # Re-raise what actually rejected the file.
+                        raise e from None
+                    finally:
+                        try:
+                            os.unlink(tmp)
+                        except OSError:
+                            pass
+                    mesh_colour = _3mf_material_colour(path)
+        except Exception:
+            # The mesh is UNDER the triangle screen above but still defeated the
+            # solid build: a real scan (degenerate/self-intersecting triangles,
+            # near-but-not-exactly-coincident "same" points from separate scan
+            # passes) can do this well below 150k triangles — e.g. build123d's
+            # own Mesher.read() raises a bare "max() iterable argument is empty"
+            # when OCCT's STL reader forms zero shells from it. That is not a
+            # sentence a user should ever see. Degrade exactly like the
+            # too-many-triangles case instead of raising: the file becomes a
+            # read-only reference scan rather than an import failure.
+            return _import_mesh_reference(path, fmt, why="failedToBuildSolid")
     elif fmt == "glb":
         # OCCT's glTF reader returns ONE triangulated FACE per mesh — geometrically
         # correct but a surface body, so a GLB box arrived as 1 face / 0 solids

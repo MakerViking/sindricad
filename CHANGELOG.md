@@ -105,6 +105,18 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ### Fixed
 
+- **A mesh heavy enough to crash the import outright now still comes in, as a
+  scan.** One report had a scan STL fail with "the geometry kernel crashed on
+  this operation" and no further explanation, twice in a row. That wording was
+  for a different failure (an environment problem), not this one, and the
+  import just stopped there. Now, if building a solid from the mesh takes the
+  whole geometry engine down, I retry once on the path that never touches
+  solid-building at all, the same one an over-dense mesh already uses, and the
+  file comes in as a read-only scan instead of failing. You can see it, snap
+  sketch points to it and measure it, but the modelling tools won't change it.
+  Only a second, rarer failure (an unreadable file, or one too dense even for a
+  scan) still fails, and it says so plainly instead of blaming the kernel.
+
 - **Shift-drag at a Break only pulls apart what Break actually cut.** It used
   to pull apart the end of any line, arc or spline, or any sketch point,
   that shared a spot with another curve's end, so Shift-dragging a polyline

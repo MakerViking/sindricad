@@ -733,6 +733,29 @@ describe("describeReferenceImport", () => {
     expect(msg).not.toContain("{");
   });
 
+  it("words a solid-build failure as a scan too, without claiming a density cause", () => {
+    // Field case: a mesh UNDER the triangle cap whose sewing step still failed
+    // (a real scan's degenerate/self-intersecting triangles). Must read like
+    // the other scan wording, and never mention triangle counts it does not
+    // have a true cause for.
+    const msg = describeReferenceImport({ reference: { why: "failedToBuildSolid", triangles: 148512 } });
+    expect(msg).toContain("reference scan");
+    expect(msg).not.toContain("Thicken");
+    expect(msg).not.toContain("{");
+  });
+
+  it("words a worker crash during import as a scan too, never as a kernel crash", () => {
+    // Field TA f70e9cf7: the solid build took the whole geometry worker down
+    // (native OCCT crash, no Python exception). The sidecar retries as a scan
+    // on the respawned worker; the toast must say so, not "the geometry kernel
+    // crashed on this operation" (that string must never reach the user).
+    const msg = describeReferenceImport({ reference: { why: "workerCrashed", triangles: 148512 } });
+    expect(msg).toContain("reference scan");
+    expect(msg).not.toContain("Thicken");
+    expect(msg).not.toContain("{");
+    expect(msg).not.toContain("the geometry kernel crashed on this operation");
+  });
+
   it("says nothing for an import that stayed editable", () => {
     expect(describeReferenceImport({})).toBeNull();
   });
