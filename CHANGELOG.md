@@ -18,6 +18,13 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ## Unreleased
 
+### Fixed
+
+- **The geometry engine starts again.** 0.1.241 left out a file the new Thread
+  tool reads when the engine starts, so on every computer the engine could not
+  start and nothing could be built, opened or imported. The installer now
+  includes it, and every build checks the engine can start before it ships.
+
 ### Changed
 
 - **Trim keeps the curve it trimmed.** The piece you keep is still that curve,

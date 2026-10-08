@@ -62,7 +62,17 @@ for _src in "$SIDE"/*.py; do
   esac
   cp "$_src" "$OUT/app/"
 done
+# Data the sidecar reads at import. thread_standards.json sits at the project root
+# because the frontend imports the same table; the packaged sidecar reads it from
+# app/. Copying only *.py left it out, and 0.1.241's engine could not start at all.
+cp "$REPO/thread_standards.json" "$OUT/app/"
 PYTHONPATH="$OUT/site-packages" "$PY" -m compileall -q "$OUT/app" "$OUT/site-packages" || true
+
+# 5. smoke: import the geometry module with the packaged interpreter from app/, the
+#    way the app launches it, so a file the sidecar needs at import that this script
+#    did not ship fails the build here instead of on every user's machine.
+(cd "$OUT/app" && PYTHONPATH="$OUT/site-packages" "$PY" -c "import builder")
+echo "[runtime] smoke: builder imports"
 
 echo "[runtime] done: $OUT ($(du -sh "$OUT" 2>/dev/null | cut -f1))"
 echo "[runtime] launch: PYTHONPATH=$OUT/site-packages $PY $OUT/app/server.py (cwd=$OUT/app)"

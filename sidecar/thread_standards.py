@@ -41,7 +41,15 @@ import json
 import math
 import os
 
-_PATH = os.path.join(os.path.dirname(__file__), "..", "thread_standards.json")
+# The packaged runtime ships the table next to this module (build-sidecar-runtime
+# copies it into app/); a source checkout keeps the one copy at the project root,
+# shared with the frontend. Next-to-module is tried first so the packaged path never
+# contains "..": on Windows the sidecar runs from a \\?\ path, where ".." is not
+# resolved and open() fails with EINVAL (0.1.241: the engine could not start).
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_PATH = os.path.join(_HERE, "thread_standards.json")
+if not os.path.exists(_PATH):
+    _PATH = os.path.join(_HERE, "..", "thread_standards.json")
 
 _MM_PER_INCH = 25.4
 

@@ -44,6 +44,21 @@ Get-ChildItem -Path (Join-Path $out "site-packages") -Filter "vtk*" -ErrorAction
 New-Item -ItemType Directory -Force -Path (Join-Path $out "app") | Out-Null
 Get-ChildItem -Path (Join-Path $side "*.py") -Exclude "test_*.py", "spike_*.py" |
   Copy-Item -Destination (Join-Path $out "app")
+# Data the sidecar reads at import (see the .sh): thread_standards.json sits at the
+# project root, shared with the frontend, and the packaged sidecar reads it from app\.
+Copy-Item -Path (Join-Path $repo "thread_standards.json") -Destination (Join-Path $out "app")
 & $py -m compileall -q (Join-Path $out "app")
+
+# 5. smoke: import the geometry module with the packaged interpreter from app\, the
+#    way the app launches it (see the .sh). A native exit code does not trip
+#    $ErrorActionPreference, so check it by hand.
+$env:PYTHONPATH = Join-Path $out "site-packages"
+Push-Location (Join-Path $out "app")
+& $py -c "import builder"
+$smoke = $LASTEXITCODE
+Pop-Location
+Remove-Item Env:PYTHONPATH
+if ($smoke -ne 0) { throw "[runtime] smoke: builder failed to import (exit $smoke)" }
+Write-Host "[runtime] smoke: builder imports"
 
 Write-Host "[runtime] done: $out"
