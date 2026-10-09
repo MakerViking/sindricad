@@ -186,6 +186,17 @@ def main():
         check("an unchanged scan is sent as a stub, not 160k triangles again",
               stub.get("unchanged") is True and stub.get("meshOnly") is True, list(stub))
 
+        # 6b. A scan alone in the document. It has no shape, so the build has no
+        #     merged part, and the job used to take that for "nothing built yet"
+        #     and reply with no bodies: a scan imported into an empty document
+        #     showed nothing and said nothing.
+        alone = server._rebuild_job({"parameters": {}, "features": [_scan_feature(res)]}, 0.1)
+        bodies_alone = alone.get("bodies") or []
+        check("a scan alone in the document is in the reply",
+              len(bodies_alone) == 1 and bodies_alone[0].get("meshOnly") is True,
+              [(b.get("id"), b.get("meshOnly")) for b in bodies_alone])
+        check("and the reply has a box to frame it", alone.get("bbox") is not None, alone.get("bbox"))
+
         # 7. Disk resume keeps the scan AND its transform. Without the manifest
         #    carrying `mesh`, it came back as an empty shapeless body.
         import geomstore

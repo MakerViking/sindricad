@@ -24,6 +24,10 @@ This file starts on 2026-08-03. For anything before that, see the
   tool reads when the engine starts, so on every computer the engine could not
   start and nothing could be built, opened or imported. The installer now
   includes it, and every build checks the engine can start before it ships.
+- **A scan imported into an empty document shows up.** A mesh big enough to
+  come in as a read-only scan was dropped from the view when nothing else was
+  in the document, so the import seemed to do nothing. It only appeared once
+  the document had a solid in it.
 
 ### Changed
 

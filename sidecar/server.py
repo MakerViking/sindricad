@@ -1137,10 +1137,15 @@ def _rebuild_job(document, tolerance, known=None):
     if errors and part is None and not bodies:
         # nothing built at all — the document is unusable, surface as fatal
         return _fatal_from(errors)
-    if part is None:
+    if part is None and not any(b.get("mesh") for b in bodies):
         # no solid yet (e.g. only sketches exist) — not an error; the frontend
         # still renders sketch overlays. Projection refresh entries still ride
         # along (a sketchCurve source needs no body at all).
+        #
+        # A scan is a body with no shape, so it never makes a `part`: a document
+        # holding only a scan must still go on to the payloads below. Returning
+        # here dropped it, and a scan imported into an empty document showed
+        # nothing and said nothing (0.1.241-0.1.243).
         result = {"protocol": 2, "bodies": [], "bbox": None}
         if proj:
             result["projectionUpdates"] = proj
