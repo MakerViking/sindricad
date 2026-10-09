@@ -1,0 +1,1817 @@
+{
+  "enginePhase": {
+    "readingFile": "正在读取文件",
+    "simplifyingFaces": "正在简化面",
+    "packaging": "正在打包"
+  },
+  "engineStalled": {
+    "over": "某个操作停顿超过 {seconds} 秒 —— 几何内核已重启；最后一个检查点之前的进度已保留"
+  },
+  "about": {
+    "title": "关于 SindriCAD",
+    "translations": "翻译",
+    "version": "版本 {version}"
+  },
+  "browser": {
+    "bodyTitle": "单击选择（Ctrl+单击可加选）· 双击重命名 · 右键打开 颜色 / 重命名 / 删除 · 眼睛图标显示/隐藏",
+    "empty": {
+      "bodies": "还没有实体",
+      "planes": "还没有平面",
+      "sketches": "还没有草图"
+    },
+    "folder": {
+      "bodies": "实体",
+      "origin": "原点",
+      "palette": "耗材盘",
+      "planes": "平面",
+      "sketches": "草图"
+    },
+    "hideNamed": "隐藏 {name}",
+    "originPlane": "{plane} 平面",
+    "originPlaneTitle": "在 {plane} 平面上新建草图",
+    "palette": {
+      "cantReach": "无法连接打印机：{message}",
+      "diffLine": "槽位 {n}：{from} → {to}",
+      "noFilament": "打印机上没有装载耗材。",
+      "overwrite": "覆盖",
+      "overwriteQuestion": "用打印机上的耗材覆盖本机耗材盘？",
+      "printerConnection": "打印机连接",
+      "printerError": "打印机错误：{error}",
+      "slotCount": {
+        "one": "{count} 个槽位",
+        "other": "{count} 个槽位"
+      },
+      "slotTitle": "耗材槽位 {n} → 工具头 {n}",
+      "slotTitleMaterial": "耗材槽位 {n} → 工具头 {n}（{material}）",
+      "stale": {
+        "one": "同步之后打印机耗材已变化（槽位 {slots}）—— 点击同步按钮重新同步",
+        "other": "同步之后打印机耗材已变化（槽位 {slots}）—— 点击同步按钮重新同步"
+      },
+      "sync": "从打印机同步耗材",
+      "syncQuestion": "用打印机上的耗材同步本机耗材盘？",
+      "synced": "耗材盘已从打印机同步。"
+    },
+    "planeTitle": "构造平面 —— 选中后“分割实体”会以它为界 · 右键打开 切割 / 重命名 / 删除 · 眼睛图标显示/隐藏",
+    "showNamed": "显示 {name}",
+    "sketchTitle": "双击编辑 · 右键打开 编辑 / 重命名 / 删除 · 眼睛图标显示/隐藏",
+    "title": "模型树",
+    "unnamedPart": "零件"
+  },
+  "bug": {
+    "button": "反馈问题",
+    "category": {
+      "label": "这是哪一类反馈？",
+      "bug": "有功能坏了",
+      "translation": "翻译有误或缺失",
+      "other": "其它问题"
+    },
+    "copied": "副本已放入剪贴板 —— 可以在 SindriCAD 的 Discord 里粘贴。",
+    "failed": "反馈发送失败{reason}。",
+    "includeDoc": "附带当前文档（包含你的设计）",
+    "includeLog": "附带几何引擎日志（推荐 —— 其中的用户名会被移除）",
+    "localeLine": "语言：{locale}",
+    "placeholder": "发生了什么？你原本期望什么？",
+    "preview": "将要发送的内容",
+    "send": "发送反馈",
+    "sent": "反馈已发送，谢谢！",
+    "sentDuplicate": "谢谢 —— 这与一个已知问题相同，已更新原有记录。",
+    "stringKey": "字符串（来自你最后指向的元素）",
+    "stringLine": "字符串：{key}",
+    "title": "反馈问题",
+    "translationPlaceholder": "它现在写的是什么？应该写成什么？"
+  },
+  "chrome": {
+    "context": {
+      "sketch": "草图",
+      "solid": "实体"
+    },
+    "fit": "适配",
+    "fitTitle": "适配到视图",
+    "fps": {
+      "idle": "空闲"
+    },
+    "proj": {
+      "auto": "自动",
+      "ortho": "正交",
+      "persp": "透视",
+      "title": "投影：透视 / 正交 / 自动（正对视图时用正交）"
+    },
+    "redo": "重做",
+    "redoTitle": "重做（Ctrl+Y）",
+    "selmode": {
+      "bodies": "实体",
+      "faces": "面",
+      "title": "切换选择“面”还是整个“实体”"
+    },
+    "status": {
+      "connecting": "正在连接…"
+    },
+    "undo": "撤销",
+    "undoTitle": "撤销（Ctrl+Z）",
+    "units": {
+      "label": "单位",
+      "title": "显示单位（几何数据以 mm 存储）"
+    },
+    "view": {
+      "front": "前视",
+      "frontTitle": "前视",
+      "iso": "等轴测",
+      "isoTitle": "等轴测",
+      "right": "右视",
+      "rightTitle": "右视",
+      "top": "俯视",
+      "topTitle": "俯视"
+    }
+  },
+  "common": {
+    "add": "添加",
+    "angle": "角度",
+    "apply": "应用",
+    "bodies": {
+      "one": "{count} 个实体",
+      "other": "{count} 个实体"
+    },
+    "body": "实体",
+    "cancel": "取消",
+    "close": "关闭",
+    "confirm": "确认",
+    "delete": "删除",
+    "diameter": "直径",
+    "discard": "放弃",
+    "done": "完成",
+    "edges": {
+      "one": "{count} 条边",
+      "other": "{count} 条边"
+    },
+    "edit": "编辑",
+    "error": "错误",
+    "escToClose": "按 Esc 关闭",
+    "faces": {
+      "one": "{count} 个面",
+      "other": "{count} 个面"
+    },
+    "features": {
+      "one": "{count} 个特征",
+      "other": "{count} 个特征"
+    },
+    "flip": "翻转",
+    "height": "高度",
+    "hide": "隐藏",
+    "later": "稍后",
+    "length": "长度",
+    "maximize": "最大化",
+    "minimize": "最小化",
+    "no": "否",
+    "none": "无",
+    "off": "关",
+    "ok": "确定",
+    "on": "开",
+    "paletteSlot": "{name}（槽位 {n}）",
+    "planeName": "平面{n}",
+    "radius": "半径",
+    "redo": "重做",
+    "rename": "重命名",
+    "restore": "恢复",
+    "retry": "重试",
+    "select": "选择",
+    "show": "显示",
+    "showHide": "显示/隐藏",
+    "size": "尺寸",
+    "somethingWentWrong": "出错了 —— 详情请看控制台",
+    "thisBody": "此实体",
+    "tryAgain": "再试一次",
+    "undo": "撤销",
+    "unknownError": "未知错误",
+    "untitled": "未命名",
+    "width": "宽度",
+    "yes": "是"
+  },
+  "context": {
+    "color": "颜色",
+    "combineWith": "与…合并",
+    "cutAllBodies": "切割所有实体",
+    "deleteFaceHeal": "删除面（自动愈合）",
+    "deletePlane": "删除平面",
+    "editFeature": "编辑 {name}",
+    "fitView": "适配视图",
+    "hideBody": "隐藏实体",
+    "hidePlane": "隐藏平面",
+    "isolateBody": "隔离显示实体",
+    "look": "外观",
+    "measureFromHere": "从此处测量",
+    "offsetPlane": "偏移平面",
+    "offsetPlaneFromFace": "从面偏移平面",
+    "pressPullFace": "推/拉面",
+    "properties": "属性",
+    "removeBody": "移除实体",
+    "renameEllipsis": "重命名…",
+    "repeat": "重复 {command}",
+    "repeatLast": "重复上一个命令",
+    "selectCoplanar": "选择共面的面",
+    "selectFeature": "选择 {name}",
+    "selectedCoplanar": {
+      "one": "已选择 {count} 个共面面",
+      "other": "已选择 {count} 个共面面"
+    },
+    "showAllBodies": "显示所有实体",
+    "sketchOnFace": "在此面上新建草图",
+    "sketchOnPlane": "在平面上新建草图",
+    "view": {
+      "front": "前视",
+      "isometric": "等轴测",
+      "right": "右视",
+      "top": "俯视"
+    }
+  },
+  "engine": {
+    "death": {
+      "crash": "几何引擎崩溃了{detail}。请先保存工作，然后重启 SindriCAD。",
+      "portInUse": "SindriCAD 无法启动几何引擎：{cause}。可能还有另一个 SindriCAD 实例在运行，请关闭它再重新打开。",
+      "portInUseDefault": "端口已被占用",
+      "startupFailure": "几何引擎无法启动{detail}。在重启 SindriCAD 之前无法建模。如果再次出现，{reportHere}。"
+    },
+    "down": "几何引擎未在运行；请重启 SindriCAD",
+    "error": {
+      "badRequest": "几何引擎拒绝了这个请求（请更新 SindriCAD）",
+      "bodyTooLarge": "这个实体过大，无法处理",
+      "budgetExhausted": "此操作超出了时间预算",
+      "cancelled": "已取消",
+      "connectionLost": "与几何引擎的连接已断开",
+      "engineUnavailable": "几何引擎未在运行；请重启 SindriCAD",
+      "exportCancelled": "导出已取消",
+      "importCancelled": "导入已取消",
+      "importFailed": "导入失败",
+      "kernelCrashed": "几何内核在执行此操作时崩溃",
+      "noMesh": "几何引擎没有返回网格",
+      "replyTooLarge": "结果过大，无法显示",
+      "rustImportUnsupported": "Rust 后端尚不支持几何导入 —— 请在不设置 VITE_GEOM=rust 的情况下运行",
+      "rustInterferenceUnsupported": "Rust 后端尚不支持干涉检查 —— 请在不设置 VITE_GEOM=rust 的情况下运行",
+      "stalled": "几何引擎停止响应",
+      "timedOut": "操作超时 —— 几何过于复杂或退化",
+      "tooLarge": "此模型对几何引擎来说过大：{size} MiB，上限是 {limit} MiB。请移除或简化导入的实体后重试。",
+      "tooLargeRefused": "此模型过大，几何引擎无法接受。请移除或简化导入的实体后重试。",
+      "unknownOp": "几何引擎不认识这个操作（请更新 SindriCAD）"
+    },
+    "reportHere": "点击右下角的反馈按钮，这样我就能拿到日志",
+    "wire": {
+      "incomplete": "几何引擎的回复不完整",
+      "manifestMismatch": "几何引擎发来的实体与其清单不一致",
+      "outOfOrder": "几何引擎的回复顺序错乱",
+      "restarted": "几何引擎在发送回复的中途重新开始了",
+      "stalledMidReply": "几何引擎在回复的中途停止了",
+      "unreadable": "几何引擎发来了无法解析的回复"
+    }
+  },
+  "feature": {
+    "badNumber": "无法解析这个数字 —— 请修正数值，或按 Esc 取消",
+    "dim": {
+      "distance": "D",
+      "radius": "R",
+      "thickness": "T"
+    },
+    "edge": {
+      "dragPrompt": {
+        "distance": "拖动箭头设置距离（按住 Ctrl 可微调）· 输入数值 + 回车 · 点击边可添加/移除 · 点击空白处提交 · Esc 取消",
+        "radius": "拖动箭头设置半径（按住 Ctrl 可微调）· 输入数值 + 回车 · 点击边可添加/移除 · 点击空白处提交 · Esc 取消"
+      },
+      "editPrompt": {
+        "chamfer": "编辑倒角：点击边可添加或移除 · 拖动箭头（Ctrl 微调）或输入数值 · 回车/点击空白处应用 · Esc 取消（编辑期间后续特征会被隐藏）",
+        "fillet": "编辑圆角：点击边可添加或移除 · 拖动箭头（Ctrl 微调）或输入数值 · 回车/点击空白处应用 · Esc 取消（编辑期间后续特征会被隐藏）"
+      },
+      "members": {
+        "creating": {
+          "chamfer": {
+            "one": "正在创建倒角：{count} 条边 · 点击边添加/移除 · 回车/点击空白处提交 · Esc 取消",
+            "other": "正在创建倒角：{count} 条边 · 点击边添加/移除 · 回车/点击空白处提交 · Esc 取消"
+          },
+          "fillet": {
+            "one": "正在创建圆角：{count} 条边 · 点击边添加/移除 · 回车/点击空白处提交 · Esc 取消",
+            "other": "正在创建圆角：{count} 条边 · 点击边添加/移除 · 回车/点击空白处提交 · Esc 取消"
+          }
+        },
+        "editing": {
+          "chamfer": {
+            "one": "编辑倒角：{count} 条边 · 点击边添加/移除 · 回车/点击空白处应用 · Esc 取消",
+            "other": "编辑倒角：{count} 条边 · 点击边添加/移除 · 回车/点击空白处应用 · Esc 取消"
+          },
+          "fillet": {
+            "one": "编辑圆角：{count} 条边 · 点击边添加/移除 · 回车/点击空白处应用 · Esc 取消",
+            "other": "编辑圆角：{count} 条边 · 点击边添加/移除 · 回车/点击空白处应用 · Esc 取消"
+          }
+        }
+      },
+      "noEdges": "未选择任何边 —— 点击一条边添加 · Esc 取消",
+      "pick": {
+        "chamfer": "选择要倒角的边（可先 Ctrl+单击 预选多条）",
+        "fillet": "选择要圆角的边（可先 Ctrl+单击 预选多条）"
+      },
+      "previewFailed": {
+        "chamfer": "⚠ 倒角失败：{text}",
+        "fillet": "⚠ 圆角失败：{text}"
+      }
+    },
+    "extrude": {
+      "dragPrompt": "拖动箭头设置深度 · Ctrl+单击区域可添加/移除 · 输入数值 + 回车 · 负值 = 切除 · T = 拉伸到某个面或平面，Shift-T 清除 · 点击提交 · Esc 取消",
+      "dragPromptAfterTarget": "拖动箭头或输入数值 + 回车 · T = 拉伸到某个面或平面 · 点击提交 · Esc 取消",
+      "edit": {
+        "cannotShow": {
+          "one": "编辑拉伸：其区域无法显示 · 将按保存状态保留 · 你选定的内容会替换它 · 请选择轮廓 · Esc 取消",
+          "other": "编辑拉伸：其 {count} 个区域无法显示 · 将按保存状态保留 · 你选定的内容会替换它们 · 请选择轮廓 · Esc 取消"
+        },
+        "dragPrompt": "编辑拉伸：拖动箭头或输入数值 + 回车 · Ctrl+单击区域可添加/移除 · T = 拉伸到某个面或平面，Shift-T 清除 · 点击提交 · Esc 取消（编辑期间后续特征会被隐藏）",
+        "droppedNewSet": {
+          "one": "编辑拉伸：{count} 个无法显示的区域不再保留 · 你选定的内容即为新集合",
+          "other": "编辑拉伸：{count} 个无法显示的区域不再保留 · 你选定的内容即为新集合"
+        },
+        "droppedPickAgain": {
+          "one": "编辑拉伸：{count} 个未匹配的区域不再保留，如果该特征仍需要它请重新选择 · Ctrl+单击区域可添加/移除 · 拖动箭头或输入数值 + 回车 · 点击提交 · Esc 取消",
+          "other": "编辑拉伸：{count} 个未匹配的区域不再保留，如果该特征仍需要它们请重新选择 · Ctrl+单击区域可添加/移除 · 拖动箭头或输入数值 + 回车 · 点击提交 · Esc 取消"
+        },
+        "droppedThenPick": {
+          "one": "{count} 个未匹配的区域不再保留 · 请选择要拉伸的轮廓 · Ctrl+单击可添加区域 · 回车确认",
+          "other": "{count} 个未匹配的区域不再保留 · 请选择要拉伸的轮廓 · Ctrl+单击可添加区域 · 回车确认"
+        },
+        "foreignRegion": "该区域属于另一个草图 · 一次拉伸只能使用一个草图，因此这次编辑只能用它自己的草图 · 请按 Esc，然后单独拉伸另一个草图",
+        "notFound": {
+          "one": "编辑拉伸：其区域未找到（草图变过？）· 在你选择之前会保留 · 你选定的内容会替换它 · 请选择轮廓 · Esc 取消",
+          "other": "编辑拉伸：其 {count} 个区域未找到（草图变过？）· 在你选择之前会保留 · 你选定的内容会替换它们 · 请选择轮廓 · Esc 取消"
+        },
+        "partlyUnmatched": {
+          "one": "编辑拉伸：{total} 个区域中有 {count} 个已不再匹配草图，将保持不变 · 更改区域集合会丢弃它 · 拖动箭头或输入数值 + 回车 · 点击提交 · Esc 取消",
+          "other": "编辑拉伸：{total} 个区域中有 {count} 个已不再匹配草图，将保持不变 · 更改区域集合会丢弃它们 · 拖动箭头或输入数值 + 回车 · 点击提交 · Esc 取消"
+        }
+      },
+      "needsProfile": "拉伸：请先选择一个面，或创建一个带闭合轮廓的草图",
+      "notCommitted": "拉伸尚未提交 —— 按 回车/✓ 选择操作类型 · Esc 取消",
+      "op": {
+        "cutHint": "移除",
+        "cutNothing": "⚠ 这里没有可切除的部分",
+        "intersectHint": "保留重叠部分",
+        "joinHint": "合并",
+        "joinNoEffect": "⚠ 可能没有效果（轮廓在内部）",
+        "newHint": "独立",
+        "newTextHint": "独立 —— 单独指定它的打印颜色",
+        "title": "拉伸 —— 操作类型"
+      },
+      "pickPrompt": "选择要拉伸的轮廓 · Ctrl+单击可添加区域 · 回车确认",
+      "targetCleared": "已清除“拉伸到”目标，恢复按距离拉伸 · 拖动箭头或输入数值 + 回车 · T = 拉伸到某个面或平面 · 点击提交 · Esc 取消"
+    },
+    "faceOffset": {
+      "drag": {
+        "offsetFace": {
+          "one": "拖动箭头或输入距离 · 点击空白处提交 · Esc 取消",
+          "other": "{count} 个面 —— 拖动箭头或输入距离 · 点击空白处提交 · Esc 取消"
+        },
+        "thicken": {
+          "one": "拖动箭头或输入距离 · S = 对称 · 点击空白处提交 · Esc 取消",
+          "other": "{count} 个面 —— 拖动箭头或输入距离 · S = 对称 · 点击空白处提交 · Esc 取消"
+        },
+        "thickenSymmetric": {
+          "one": "拖动箭头或输入距离 · S = 对称（已开）· 点击空白处提交 · Esc 取消",
+          "other": "{count} 个面 —— 拖动箭头或输入距离 · S = 对称（已开）· 点击空白处提交 · Esc 取消"
+        }
+      },
+      "pick": {
+        "offsetFace": "选择要偏移的面（Ctrl+单击可加选）",
+        "thicken": "选择要加厚的面（Ctrl+单击可加选）"
+      }
+    },
+    "failed": "⚠ {name} 失败：{reason}",
+    "loft": {
+      "first": "放样：点击第一个轮廓 · Esc 取消",
+      "needsTwo": "放样至少需要两个轮廓 · 再点击一个 · Esc 取消",
+      "profiles": {
+        "other": "放样：{count} 个轮廓 · 继续点击可添加，点击已选中的可移除 · 回车完成 · Esc 取消"
+      },
+      "second": "放样：点击第二个轮廓 · Esc 取消"
+    },
+    "measure": {
+      "angle": "角度",
+      "area": "面积",
+      "at": "位置",
+      "centers": "中心",
+      "delta": "ΔX ΔY ΔZ",
+      "distance": "距离",
+      "escToExit": "按 Esc 退出",
+      "length": "长度",
+      "pick": "请选择面或边",
+      "prompt": "测量：点击一个面或边 · 再点击第二个以测量两者之间 · Esc 退出",
+      "promptSecond": "测量：点击第二个面或边以测距离 · Esc 退出"
+    },
+    "move": {
+      "prompt": "拖动轴箭头移动选中的实体 · 输入数值 · 回车提交 · Esc 取消"
+    },
+    "nothingToCommit": "没有可提交的内容 —— 请先拖动箭头或输入距离",
+    "op": {
+      "cut": "切除",
+      "intersect": "相交",
+      "join": "合并",
+      "newBody": "新实体"
+    },
+    "planeOffset": {
+      "dragPrompt": "拖动箭头设置偏移 · 输入数值 · 回车在该平面上新建草图 · Esc 取消",
+      "editPrompt": "拖动箭头移动此平面 · 输入数值 · 回车应用 · Esc 取消"
+    },
+    "pressPull": {
+      "dragPrompt": "拖动箭头 · 输入数值（负值 = 切除）· 点击另一个面 = 拉伸到该面 · T = 拉伸到某个面或平面 · 点击空白处提交 · Esc 取消",
+      "dragPromptAfterTarget": "拖动箭头 · 输入数值 · 点击另一个面 = 拉伸到该面 · T = 拉伸到某个面或平面 · 点击空白处提交 · Esc 取消",
+      "facesAdded": {
+        "one": "{count} 个面 —— 拖动或输入距离 · 点击提交 · Esc 取消",
+        "other": "{count} 个面 —— 拖动或输入距离 · 点击提交 · Esc 取消"
+      },
+      "pickPrompt": "点击面进行推/拉 · 点击草图轮廓进行拉伸 · 点击边进行圆角"
+    },
+    "repickFace": "重新选择面",
+    "rollingBack": "正在回滚以编辑…（编辑期间后续特征会被隐藏）",
+    "section": {
+      "axisTitle": "剖切 —— 沿哪个轴剖开？",
+      "horizontalHint": "水平剖切",
+      "prompt": "剖切：拖动箭头移动剖切位置 · 输入数值 + 回车 · F 翻转保留的一侧 · Esc 关闭"
+    },
+    "starters": {
+      "axis": {
+        "x": "X 轴",
+        "y": "Y 轴",
+        "z": "Z 轴"
+      },
+      "cleanUpAdded": "已添加清理 —— 从此处起实体合并、碎屑被收拢",
+      "combine": {
+        "cutHint": "相减",
+        "intersectHint": "重叠",
+        "joinHint": "并集",
+        "needsTwo": "组合：至少需要两个实体 —— 请建模或导入另一个",
+        "target": "目标实体（保留）",
+        "title": "组合实体",
+        "tools": "工具实体（组合进目标实体）"
+      },
+      "curvedFacePlane": "曲面 —— 此平面位于切向上，不会跟随后续编辑。",
+      "curvedFaceSketch": "曲面 —— 此草图位于切平面上，不会跟随后续编辑。",
+      "cutByPlane": {
+        "name": "切割",
+        "title": "切割 —— 保留哪一侧？"
+      },
+      "draft": {
+        "pickFace": "选择要拔模的面 · Esc 取消"
+      },
+      "keep": {
+        "both": "两侧",
+        "bothHint": "两个实体",
+        "bottom": "底部",
+        "bottomHint": "法线负方向一侧",
+        "top": "顶部",
+        "topHint": "法线正方向一侧"
+      },
+      "mirror": {
+        "needsBody": "镜像：请先创建一个实体",
+        "title": "跨平面镜像"
+      },
+      "move": {
+        "datumPlane": "移动只作用于实体。要移动这个平面，请在属性面板里编辑它的“偏移”。",
+        "selectBody": "移动：请先选择实体（选择过滤器：实体）"
+      },
+      "needsBody": "{tool}：请先创建或导入一个实体",
+      "pattern": {
+        "circular": "圆周",
+        "circularHint": "绕轴阵列",
+        "rect": "矩形",
+        "rectHint": "网格阵列",
+        "title": "阵列类型"
+      },
+      "pickDatumSource": "选择用于基准平面的平面或面",
+      "pickOffsetSource": "选择要偏移起始的平面或面",
+      "pickSketchPlane": "选择要在其上绘图的平面或实体的平面",
+      "primitive": {
+        "boxHint": "长×宽×高",
+        "cylinderHint": "半径, 高",
+        "sphereHint": "半径",
+        "title": "创建基本体"
+      },
+      "repick": {
+        "featureGone": "该特征已不存在 —— 无需重新选择",
+        "pickFace": "请选择此特征应使用的面 · Esc 取消",
+        "referenceChanged": "该引用已经改变 —— 无需重新选择"
+      },
+      "revolve": {
+        "axisTitle": "绕轴旋转",
+        "needsProfile": "旋转：请先选择要旋转的草图轮廓",
+        "opTitle": "旋转 —— 操作类型"
+      },
+      "shell": {
+        "pickFace": "选择要开口的面以进行抽壳 · Esc 取消",
+        "thicknessPrompt": "壁厚 · 回车应用 · Esc 取消",
+        "thicknessZero": "壁厚必须大于零"
+      },
+      "solidOp": {
+        "cutHint": "移除",
+        "joinHint": "合并",
+        "newHint": "独立"
+      },
+      "split": {
+        "pickPlane": "选择用作切割依据的平面或面",
+        "title": "分割实体 —— 保留哪一侧？",
+        "whichBody": "要分割哪个实体？"
+      },
+      "sweep": {
+        "needsPath": "扫掠：请再添加一个含开放曲线的草图作为路径",
+        "needsProfile": "扫掠：请先选择轮廓草图的区域",
+        "pickPath": "请选择路径草图",
+        "sketchLabel": "草图 {n}"
+      },
+      "toolBusy": "请先完成或取消当前工具（Esc）"
+    },
+    "text": {
+      "across": "横向 mm",
+      "align": {
+        "center": "居中",
+        "left": "左对齐",
+        "right": "右对齐"
+      },
+      "angle": "角度 °",
+      "bevel": "倒角 mm",
+      "bevelStyle": {
+        "auto": "自动",
+        "chamfer": "倒角",
+        "fillet": "圆角",
+        "taper": "斜面"
+      },
+      "bevelStyleTitle": "倒角作用在哪些边上。“自动”会为每个字母挑这个字体实际能处理的方式 —— 不同字体结果不同，所以通常选它最稳妥。",
+      "bevelTitle": "0 = 尖锐边缘。单位是 mm，不是度。",
+      "boldItalic": "B / I",
+      "color": "颜色",
+      "defaultFont": "默认字体",
+      "depth": "深度",
+      "editTitle": "编辑面上的文字",
+      "emboss": "浮雕（凸起）",
+      "empty": "请先输入文字 · Esc 取消",
+      "engrave": "凹刻（切进去）",
+      "flat": "平面（仅颜色）",
+      "font": "字体",
+      "inheritColor": "使用实体自身的颜色",
+      "pickPrompt": "点击要把文字放上去的面 · Esc 取消",
+      "placeholder": "输入你的文字",
+      "size": "字号 mm",
+      "style": "样式",
+      "title": "面上的文字",
+      "typePrompt": "输入文字 · Ctrl+回车 应用 · Esc 取消",
+      "up": "纵向",
+      "wrap": "换行",
+      "wrapTitle": "0 = 不换行"
+    },
+    "texture": {
+      "advanced": "高级",
+      "angle": "角度°",
+      "bodyColor": "实体颜色",
+      "browse": "浏览…",
+      "depth": "深度",
+      "dirBoth": "双向",
+      "dirIn": "向内（压印）",
+      "dirOut": "向外（浮雕）",
+      "direction": "方向",
+      "edgeBlend": "边缘过渡",
+      "edgeBlendTitle": "边缘过渡：图案在面边界处渐隐的毫米数。0 = 像机加工一样干净截断。",
+      "faces": "面",
+      "imageFilter": "图像",
+      "invert": "反相",
+      "kind": "类型",
+      "land": "平台",
+      "landTitle": "峰顶的平坦面：0 = 纯 V 形尖峰，1 = 宽平顶",
+      "noBody": "未选择实体 —— 请点击一个实体 · Esc 取消",
+      "noFaces": "未选择面 —— 请点击一个或多个面 · Esc 取消",
+      "noFile": "未选择文件",
+      "note": "预览是按显示精度生成的真实几何 —— 导出时会保留完整细节。",
+      "pickPrompt": "选择要加纹理的面（或切换到“整个实体”）· Esc 取消",
+      "printColor": "打印颜色",
+      "profile": "轮廓",
+      "profileFacet": "棱面（硬表面）",
+      "profileSmooth": "平滑",
+      "randomize": "随机化",
+      "scale": "缩放",
+      "seed": "随机种子",
+      "sharp": "锐度",
+      "sharpTitle": "平滑轮廓的清晰程度",
+      "summary": {
+        "body": "整个实体：{name}",
+        "bodyMany": "整个实体：{name}（使用 {count} 个选中项中的第一个）",
+        "bodyNone": "整个实体：未选择任何对象 —— 请点击一个实体",
+        "faces": {
+          "one": "已选择 {count} 个面",
+          "other": "已选择 {count} 个面"
+        },
+        "facesNone": "未选择面 —— 请点击一个或多个面"
+      },
+      "wholeBody": "整个实体"
+    },
+    "upTo": {
+      "clickPrompt": "点击要“拉伸到”的面或平面（任意面、任意实体）· Esc 返回",
+      "pickPrompt": "选择要“拉伸到”的面或平面（任意面、任意实体）· Esc 返回"
+    }
+  },
+  "file": {
+    "close": {
+      "confirmClose": "关闭此文档前要保存修改吗？",
+      "confirmNew": "新建文档前要保存修改吗？",
+      "confirmOpen": "打开其它文档前要保存修改吗？",
+      "discardHint": "丢弃这些修改。下次不会再提供恢复。",
+      "save": "保存",
+      "saveHint": "先把修改写入磁盘。"
+    },
+    "error": {
+      "couldNotRead": "无法读取文档：{reason}",
+      "export": "导出失败：{reason}",
+      "import": "无法导入 {name}：{reason}",
+      "newerFormat": "{name} 由更新版本的 SindriCAD 保存，其几何以打包文档存储，此版本无法读取。请更新 SindriCAD 后再打开。",
+      "open": "无法打开 {name}：{reason}",
+      "openDocument": "无法打开文档：{reason}",
+      "printExport": "打印导出失败：{reason}",
+      "save": "无法保存 {path}：{reason}",
+      "unreadableFile": "文件无法读取"
+    },
+    "export": {
+      "allInOne": "全部合并到一个文件",
+      "anyway": "仍然导出",
+      "bodiesMerged": {
+        "one": "已合并 {count} 个实体",
+        "other": "已合并 {count} 个实体"
+      },
+      "busy": "正在导出 {name}",
+      "doneTitle": {
+        "one": "已导出 {count} 个文件",
+        "other": "已导出 {count} 个文件"
+      },
+      "doneTitleWarnings": {
+        "one": "已导出 {count} 个文件 —— 但有警告",
+        "other": "已导出 {count} 个文件 —— 但有警告"
+      },
+      "eachSeparately": "每个实体单独导出",
+      "emptySlots": {
+        "one": "槽位 {slots} 在打印机上没有装载耗材",
+        "other": "槽位 {slots} 在打印机上没有装载耗材"
+      },
+      "featureMissing": "⚠ {feature} 失败 —— 其结果未包含在导出中：{reason}",
+      "fileCount": {
+        "one": "{count} 个文件",
+        "other": "{count} 个文件"
+      },
+      "needsSidecar": "彩色 3MF 导出需要 Python 侧车后端（请在不设置 VITE_GEOM=rust 的情况下运行）。",
+      "nothing": "还没有可导出的内容 —— 请先建一个实体。",
+      "pickOne": "请选择一个",
+      "projectDoneWarnings": "已导出工程 —— 但有警告",
+      "specificBody": "指定的某个实体",
+      "unassignedBodies": {
+        "one": "{count} 个实体未指定颜色（默认使用槽位 1）",
+        "other": "{count} 个实体未指定颜色（默认使用槽位 1）"
+      },
+      "unassignedBody": "没有任何实体被指定到耗材槽位，因此将以单色打印。",
+      "unassignedTitle": "要导出为无颜色吗？",
+      "unnamedFeature": "特征",
+      "warnSummary": "已导出，但{details}。",
+      "whichBodies": "导出 —— 导出哪些实体？",
+      "whichBody": "要导出哪个实体？"
+    },
+    "filter": {
+      "allSupported": "所有支持的格式",
+      "document": "SindriCAD 文档",
+      "meshCad": "网格 / CAD",
+      "project3mf": "3MF 工程"
+    },
+    "import": {
+      "busy": "正在导入 {name}",
+      "fitSkipped": {
+        "checks": "我在这里找到了曲面，但重建后的实体没有通过检查，因此保留了棱面导入。",
+        "coarse": "这个网格太粗糙，无法区分曲线与折角，因此所有面都保持棱面。",
+        "dense": "这个网格太密集，我无法查找曲面，因此所有面都保持棱面。"
+      },
+      "fitSummary": "{recognised} {faceted}",
+      "manyBodies": {
+        "one": "已导入 {n} 个实体。3D 视图在约 {smooth} 个实体以内是流畅的，因此旋转视图可能会略显卡顿，其它功能都正常。",
+        "other": "已导入 {n} 个实体。3D 视图在约 {smooth} 个实体以内是流畅的，因此旋转视图可能会略显卡顿，其它功能都正常。"
+      },
+      "noneFaceted": "没有面保持棱面。",
+      "recognised": {
+        "one": "识别出 {n} 个曲面。",
+        "other": "识别出 {n} 个曲面。"
+      },
+      "reference": {
+        "notWatertight": "我根据这些三角面实际所在的平面重建了这个网格，所以它打开得很快、面数也很少，但重建后的表面仍有缝隙，因此它不是闭合实体。",
+        "summary": "{why} 它会作为参考几何导入：可以测量它、以它为基准建模，但不能编辑它的形状。用“加厚”可以把它变成可建模的实体。",
+        "tooManyFacetDirections": "这个网格有 {n} 个不同的棱面方向，而一个干净的 CAD 零件最多只有几百个，所以几乎没有什么能被我识别成曲线或平面。",
+        "tooManyFaces": "我识别出了这里能识别的曲面，无法识别的部分保持棱面；因此这个网格仍然过于精细，{n} 个面超出了 {limit} 的上限，无法编辑。",
+        "tooManyFacesInBody": "我识别出了这里能识别的曲面，但 {count} 个实体中的第 {index} 个仍然过于精细：{n} 个面超出了 {limit} 的上限，无法编辑。",
+        "tooManyTotalFaces": "此文件中每个零件单独看都足够简单，但合起来在 {bodies} 个实体上共有 {n} 个面，超过了此文档能舒适绘制的 {limit}。"
+      },
+      "stayedFaceted": {
+        "one": "{n} 个面保持棱面。",
+        "other": "{n} 个面保持棱面。"
+      },
+      "tooManyBodies": {
+        "one": "已导入 {n} 个实体。3D 视图会比较慢：实测在 {slow} 个实体时为 27-37 fps，而 {smooth} 个实体时为 60 fps。建模、导出与打印不受影响。",
+        "other": "已导入 {n} 个实体。3D 视图会比较慢：实测在 {slow} 个实体时为 27-37 fps，而 {smooth} 个实体时为 60 fps。建模、导出与打印不受影响。"
+      }
+    },
+    "newDocument": "新建文档",
+    "warning": {
+      "newerVersion": "此文件由更新版本的 SindriCAD 创建 —— 如果在这里保存，未知数据（例如参数表达式）可能会丢失。"
+    }
+  },
+  "gpu": {
+    "copied": "已复制",
+    "copy": "复制详细信息",
+    "copyFailed": "复制失败",
+    "nothingReadable": "没有可读信息",
+    "report": "反馈此问题",
+    "reportsLabel": "这台机器报告的信息",
+    "spoofedNote": "上面的渲染器名称来自 Linux webview，它在每台机器上都报告同一个假值，请忽略。WebGL 版本那一行是真实的。",
+    "title": "3D 视图无法启动",
+    "tryThese": "有两件事值得一试。先关闭 SindriCAD，然后在终端里用下面两个前缀之一加在原来的启动命令前面再启动：",
+    "why": {
+      "noWebgl": "这台电脑无法创建任何形式的 3D 上下文。这通常意味着显卡驱动缺失或被拦截，而不是 SindriCAD 本身有问题。",
+      "renderer": "这台电脑报告支持 WebGL 2，但 3D 视图仍然无法创建。这不常见，我想看看这份报告。",
+      "webgl1Only": "这台电脑的显卡驱动只提供 OpenGL ES 2.0，而 3D 视图需要 WebGL 2。这是驱动的限制，不是安装损坏。在 Linux 上通常意味着较老的 NVIDIA 显卡在使用开源的 nouveau 驱动。"
+    },
+    "workaroundNote": "第一个选项用 CPU 软件绘制，大模型上会慢一些，但在驱动不支持的地方能工作。第二个选项关闭 webview 的共享缓冲路径，有些驱动没有正确实现它。"
+  },
+  "help": {
+    "openFailed": "无法打开浏览器。页面地址是 {url}"
+  },
+  "inspector": {
+    "editHint": {
+      "editable": "在属性面板（右侧面板）中编辑 {label} 的数值",
+      "none": "{label} 在属性面板中没有可编辑的数值"
+    },
+    "emptyHint": "在时间轴或模型树中选择一个特征以编辑它的数值。",
+    "exprInputHint": "数值、参数名，或表达式（例如 width/2 + 5）",
+    "featureTitle": "{label} · {id}",
+    "field": {
+      "across": "横向",
+      "angle": "角度",
+      "angleTol": "角度公差",
+      "bevel": "倒角",
+      "boxWidth": "方块宽度",
+      "count": "数量",
+      "countX": "X 方向数量",
+      "countY": "Y 方向数量",
+      "depth": "深度",
+      "distance": "距离",
+      "edgeBlend": "边缘过渡",
+      "factor": "倍数",
+      "height": "高度",
+      "length": "长度",
+      "moveX": "X 移动",
+      "moveY": "Y 移动",
+      "moveZ": "Z 移动",
+      "offset": "偏移",
+      "radius": "半径",
+      "rotateX": "X 旋转",
+      "rotateY": "Y 旋转",
+      "rotateZ": "Z 旋转",
+      "scale": "缩放",
+      "seed": "随机种子",
+      "sharpness": "锐度",
+      "spacingX": "X 间距",
+      "spacingY": "Y 间距",
+      "startOffset": "起始偏移",
+      "taper": "锥度",
+      "targetOffset": "目标偏移",
+      "textSize": "文字大小",
+      "thickness": "厚度",
+      "tolerance": "公差",
+      "up": "纵向",
+      "width": "宽度"
+    },
+    "noFields": "此特征没有可编辑的数值。",
+    "parametersTitle": "参数（{unit}）",
+    "upTo": {
+      "clearAria": "清除“拉伸到”目标",
+      "clearTitle": "清除“拉伸到”目标，改为按距离拉伸",
+      "label": "拉伸到",
+      "originPlane": "{id} 平面",
+      "pickedFace": "已拾取的面"
+    }
+  },
+  "measure": {
+    "camera": {
+      "alt": "打印机摄像头",
+      "hint": "约 1 帧/秒 · Esc 关闭",
+      "title": "摄像头 —— {printer}",
+      "unavailable": "摄像头不可用"
+    },
+    "interference": {
+      "checking": "正在检查干涉…",
+      "clashTitle": {
+        "one": "干涉 —— {count} 处冲突",
+        "other": "干涉 —— {count} 处冲突"
+      },
+      "clickHint": "点击某处冲突可高亮相关实体 · Esc 关闭",
+      "failed": "干涉检查失败：{message}",
+      "found": {
+        "one": "发现 {count} 处干涉",
+        "other": "发现 {count} 处干涉"
+      },
+      "needBody": "干涉检查：请先创建或导入一个实体",
+      "needTwo": "干涉检查：至少需要两个实体",
+      "noOverlap": "没有相互重叠的实体",
+      "none": "未发现干涉",
+      "pair": "{a} ∩ {b}",
+      "title": "干涉"
+    },
+    "overhang": {
+      "buildDir": "打印方向",
+      "hint": "与水平面夹角超过此值的面需要支撑 · 切换“拔模”可关闭",
+      "legend": "红色 = 无支撑的悬垂",
+      "threshold": "阈值",
+      "title": "悬垂分析"
+    },
+    "properties": {
+      "allBodies": "所有实体",
+      "approxHint": "近似值 —— 基于显示网格计算 · Esc 关闭",
+      "approxHintSelect": "近似值 —— 基于显示网格计算 · 选择实体可获得精确值 · Esc 关闭",
+      "boundingBox": "包围盒",
+      "centerOfMass": "质心",
+      "exactHint": "精确值 —— 由几何内核计算 · Esc 关闭",
+      "mass": "质量（≈1 g/cm³）",
+      "needBody": "属性：请先创建或导入一个实体",
+      "surfaceArea": "表面积",
+      "title": "属性 —— {name}",
+      "volume": "体积"
+    }
+  },
+  "menu": {
+    "edit": {
+      "redo": "重做",
+      "suppress": "抑制 / 取消抑制",
+      "title": "编辑",
+      "undo": "撤销"
+    },
+    "file": {
+      "camera": "摄像头…",
+      "close": "关闭",
+      "export": "导出…",
+      "exportPrint": "导出用于打印（3MF）…",
+      "importMesh": "导入网格…",
+      "new": "新建",
+      "open": "打开…",
+      "openInOrca": "在 OrcaSlicer 中打开…",
+      "save": "保存",
+      "saveAs": "另存为…",
+      "sendToPrinter": "发送到打印机…",
+      "title": "文件"
+    },
+    "help": {
+      "about": "关于 SindriCAD",
+      "checkUpdates": "检查更新…",
+      "customizeShortcuts": "自定义快捷键…",
+      "guide": "GitHub 上的使用指南",
+      "shortcuts": "键盘快捷键",
+      "title": "帮助",
+      "tutorials": "教学视频（{count}）"
+    },
+    "tinkeratlas": {
+      "publish": "发布到 TinkerAtlas…",
+      "signIn": "登录…",
+      "signOut": "退出登录",
+      "title": "TinkerAtlas",
+      "welcome": "欢迎页面"
+    },
+    "view": {
+      "cycleProjection": "切换投影（透视 / 正交 / 自动）",
+      "fit": "适配视图",
+      "front": "前视图",
+      "iso": "等轴测视图",
+      "projection": {
+        "auto": "自动",
+        "ortho": "正交",
+        "persp": "透视"
+      },
+      "right": "右视图",
+      "select": {
+        "bodies": "实体",
+        "faces": "面"
+      },
+      "showAllBodies": "显示所有实体",
+      "spaceMouseCamera": "SpaceMouse：移动相机",
+      "spaceMouseObject": "SpaceMouse：移动对象",
+      "spaceMouseSettings": "3D 鼠标设置…",
+      "title": "视图",
+      "toggleSelectMode": "切换“面 / 实体”选择模式",
+      "top": "俯视图"
+    }
+  },
+  "palette": {
+    "lookAt": "正对",
+    "lookAtTitle": "把视图摆正到草图平面",
+    "noMatch": "没有匹配的命令",
+    "options": "选项",
+    "searchPlaceholder": "搜索命令…",
+    "shortcutHelp": "键盘快捷键…",
+    "sketchPalette": "草图面板",
+    "title": "草图面板",
+    "toggle": {
+      "constraints": "显示约束",
+      "construction": "构造几何",
+      "dimensions": "显示尺寸",
+      "grid": "草图网格",
+      "lockView": "锁定到平面",
+      "profile": "显示轮廓",
+      "reference": "参考尺寸",
+      "snap": "吸附"
+    }
+  },
+  "params": {
+    "add": "+ 添加",
+    "applyFailed": "参数修改应用失败 —— 详情请看控制台。",
+    "delete": {
+      "noParameter": "没有名为“{name}”的参数",
+      "referencedBy": "“{name}”被以下引用：{refs}"
+    },
+    "deleteParam": "删除 {name}",
+    "error": {
+      "arityAtLeast": {
+        "one": "{name}() 至少需要 {count} 个参数",
+        "other": "{name}() 至少需要 {count} 个参数"
+      },
+      "arityExact": {
+        "one": "{name}() 需要 {count} 个参数",
+        "other": "{name}() 需要 {count} 个参数"
+      },
+      "arityRange": "{name}() 需要 {lo}–{hi} 个参数",
+      "circularChain": "循环引用：{chain}",
+      "empty": "表达式为空",
+      "invalidNumber": "无效数字“{text}”",
+      "missingParen": "缺少“)”",
+      "missingParenIn": "{name}(…) 中缺少“)”",
+      "notFinite": "计算结果不是有限数值",
+      "notSupportedYet": "暂不支持 {name}()",
+      "qualifiedNames": "不支持带“.”的限定名称",
+      "selfReference": "“{name}”不能引用自身",
+      "unexpectedChar": "意外的字符“{char}”",
+      "unexpectedEnd": "表达式意外结束",
+      "unexpectedToken": "意外的“{token}”",
+      "unitless": "此字段无单位 —— 请直接写普通数字",
+      "unknownFunction": "未知函数“{name}”",
+      "unknownParameter": "未知参数“{name}”"
+    },
+    "header": {
+      "comment": "备注 / 驱动",
+      "expression": "表达式",
+      "name": "名称",
+      "value": "数值"
+    },
+    "hint": "表达式使用 mm / 度；允许后缀 mm cm in deg rad · 表达式中小数点始终是“.”、参数之间用“;”分隔（其它字段可以用逗号）· Esc 关闭",
+    "issue": {
+      "circular": "循环引用",
+      "invalid": "表达式无效",
+      "targetGone": "它对应的尺寸或特征已不存在"
+    },
+    "modelSection": "模型参数",
+    "name": {
+      "dnReserved": "dN 开头的名称保留给模型参数",
+      "exists": "“{name}”已存在",
+      "invalid": "名称只能包含字母、数字和 _（不能以数字开头）",
+      "reserved": "“{name}”是保留名称"
+    },
+    "placeholder": {
+      "expression": "表达式",
+      "name": "名称"
+    },
+    "ref": {
+      "entity": "{sketch} 中的 {type} · {field}",
+      "feature": "{type} {id} · {field}"
+    },
+    "target": {
+      "dimensionIn": "{feature} 中的尺寸",
+      "entityField": "{feature} 中的 {field}",
+      "featureField": "{feature} · {field}",
+      "featureName": "{label} {id}",
+      "patternField": "{feature} 中的阵列 {field}"
+    },
+    "title": "参数",
+    "unitless": "无单位",
+    "userSection": "用户参数"
+  },
+  "print": {
+    "complete": "打印完成：{name}",
+    "error": {
+      "busy": "打印机忙 —— 任务未发送。",
+      "connectionLost": "与打印机的连接已断开。",
+      "generic": "打印机错误：{reason}",
+      "launch": "无法启动 OrcaSlicer：{reason}",
+      "nozzleMismatch": "喷嘴不匹配 —— {reason}",
+      "prepareExport": "无法准备导出：{reason}",
+      "presetRead": "无法读取你的 OrcaSlicer 打印机预设（{reason}）—— Orca 不会预选 U1。",
+      "rejected": "打印被拒绝：{reason}",
+      "sendFailed": "发送失败：{reason}",
+      "unreachable": "无法连接打印机 —— 它开机了吗？",
+      "unreachableReason": "无法连接打印机：{reason}"
+    },
+    "errorOn": "{name} 打印出错",
+    "filamentN": "耗材 {n}",
+    "mapping": {
+      "bedLevel": "自动调平",
+      "flowCalibrate": "流量校准",
+      "timelapse": "延时摄影",
+      "title": "发送到打印机 —— 耗材映射",
+      "toolheadLabel": "{n}：{name}",
+      "toolheadLabelEmpty": "{n}：{name}（空）",
+      "toolheadN": "工具头 {n}",
+      "uploadAndPrint": "上传并打印"
+    },
+    "openedNoPreset": "已在 OrcaSlicer 中打开 —— 选择你的 U1 打印机、切片，然后“上传并打印”。",
+    "openedWithPreset": "已在 OrcaSlicer 中用你的 U1 预设打开 —— 切片，然后“上传并打印”。",
+    "sent": "已发送 {name} —— 正在打印",
+    "showCamera": "显示摄像头",
+    "status": {
+      "paused": "已暂停 {name} —— {pct}%",
+      "printing": "正在打印 {name} —— {pct}%"
+    }
+  },
+  "recovery": {
+    "autosaveFailing": "自动保存持续失败 —— 如果程序崩溃，未保存的工作可能无法恢复",
+    "discardHint": "删除它",
+    "prompt": "要恢复未保存的工作吗？（{from}，约 {age} 分钟前）",
+    "recover": "恢复",
+    "recoverHint": "还原该快照",
+    "recovered": "已恢复未保存的工作 —— 请用“另存为”保存到你想要的位置",
+    "unsavedDocument": "未保存的文档"
+  },
+  "ribbon": {
+    "abbrev": {
+      "patternCircular": "圆周阵列",
+      "perpendicular": "垂直"
+    },
+    "alsoHere": "这里还有：{tools}",
+    "context": {
+      "sketch": "草图",
+      "solid": "实体"
+    },
+    "group": {
+      "constraints": "约束",
+      "construct": "构造",
+      "create": "创建",
+      "finish": "完成",
+      "insert": "插入",
+      "inspect": "检查",
+      "modify": "修改",
+      "palette": "耗材盘",
+      "pattern": "阵列",
+      "print": "打印",
+      "select": "选择"
+    },
+    "hint": {
+      "cancelSketch": "离开该草图并丢弃它。你刚创建的偏移平面会保留。",
+      "datumPlane": "只创建平面 —— 不新建草图。",
+      "offsetPlane": "创建平面并在其上开始一个新草图。"
+    },
+    "moreFamilyTools": "更多 {name} 工具",
+    "moreTools": "更多工具",
+    "toolWithKey": "{label}（{key}）"
+  },
+  "settings": {
+    "appearance": {
+      "label": "外观",
+      "auto": "跟随系统",
+      "dark": "深色",
+      "light": "浅色"
+    },
+
+    "language": {
+      "label": "语言",
+      "pseudoHint": "伪语言仅用于版式测试：所有文字都会加方括号并被拉长。",
+      "restartNote": "SindriCAD 需要重启才能切换语言。",
+      "restartNow": "立即重启",
+      "saveFirst": "请先保存文档，然后重启 SindriCAD 以应用新语言。",
+      "system": "系统默认（{name}）"
+    },
+    "menuItem": "设置…",
+    "spaceMouse": {
+      "action": {
+        "orbitAz": "旋转 ←→",
+        "orbitPolar": "旋转 ↑↓",
+        "panX": "平移 ←→",
+        "panY": "平移 ↑↓",
+        "roll": "翻滚 ↻",
+        "zoom": "缩放"
+      },
+      "axis": {
+        "rx": "俯仰（Rx）",
+        "ry": "侧倾/翻滚（Ry）",
+        "rz": "扭转（Rz）",
+        "tx": "左右滑动（Tx）",
+        "ty": "推/拉（Ty）",
+        "tz": "升降 ↑↓（Tz）"
+      },
+      "axisMapping": "轴映射",
+      "crossAxis": "跨轴过滤",
+      "crossAxisHint": "当某个轴远强于另一个轴时忽略较弱的轴，这样用力倾斜时不会同时缩放。",
+      "deadzone": "死区",
+      "flip": "反向",
+      "liveAxes": "实时轴状态 —— 请操作摇杆",
+      "liveHint": "推/倾/扭动手柄，观察哪个条形在响应，然后在下面为它指定动作。",
+      "mode": "模式",
+      "moveCamera": "移动相机",
+      "moveObject": "移动对象",
+      "pan": "平移",
+      "resetDefaults": "恢复默认",
+      "rotate": "旋转",
+      "sensitivity": "灵敏度",
+      "suppressed": "{axis}：已被跨轴过滤抑制",
+      "test": "测试 —— 旋转立方体",
+      "title": "3D 鼠标设置",
+      "zoom": "缩放"
+    },
+    "title": "设置"
+  },
+  "shortcut": {
+    "context": {
+      "global": "全局",
+      "model": "建模",
+      "sketch": "草图"
+    },
+    "g": {
+      "fit": "适配视图",
+      "fit2": "适配视图（备用键）",
+      "help": "快捷键帮助"
+    },
+    "hud": {
+      "always": "始终可用",
+      "cancelClear": "取消 / 清除选择",
+      "deleteFaceFeature": "删除面（自动愈合）/ 特征",
+      "foot": "这些都可以在「帮助 ▸ 自定义快捷键…」里重新绑定。",
+      "newOpenExport": "新建 / 打开 / 导出",
+      "palette": "命令面板",
+      "saveSaveAs": "保存 / 另存为",
+      "title": "键盘快捷键",
+      "undoRedo": "撤销 / 重做"
+    },
+    "m": {
+      "arc": "草图：圆弧",
+      "chamfer": "倒角",
+      "circle": "草图：圆",
+      "combine": "组合（并集）",
+      "hide": "隐藏选中的实体",
+      "line": "草图：直线",
+      "project": "草图：投影",
+      "rectangle": "草图：矩形",
+      "selbodies": "选择实体",
+      "selfaces": "选择面",
+      "showall": "显示所有实体"
+    },
+    "s": {
+      "chain": "选择链",
+      "extrude": "完成并拉伸",
+      "fillet": "草图上圆角",
+      "presspull": "完成并推/拉"
+    },
+    "settings": {
+      "allRestored": "所有快捷键已恢复默认。",
+      "conflict": "{key} 已用于{label}（{context}）。请先清除那一个，再设置这里。",
+      "intro": "点击某个按键即可录制新键。建模与草图两套按键互相独立 —— 同一个键在两边可以表示不同功能 —— 因此只有可能同时触发的绑定才会被判为冲突。",
+      "modifiersReserved": "Ctrl、Alt、Cmd 组合键已被保留（撤销、保存、打开、命令面板）。",
+      "noKey": "未绑定",
+      "pressAKey": "请按下一个键…",
+      "pressKey": "请按下要绑定的键。Esc 取消。",
+      "recordingCancelled": "已取消录制。",
+      "resetAll": "全部重置",
+      "revertAria": "将{label}恢复为默认",
+      "revertTitle": "恢复默认按键",
+      "rowAria": "{label}：{key}。点击可录制新键。",
+      "title": "键盘快捷键",
+      "unbindAria": "取消{label}的绑定",
+      "unbindTitle": "取消绑定（该工具将没有快捷键）",
+      "unbound": "{label} 没有快捷键。它的功能区与菜单入口仍然可用。"
+    }
+  },
+  "sketch": {
+    "cancel": {
+      "confirm": "要离开此草图并丢弃你在其中绘制的内容吗？",
+      "discard": "丢弃草图",
+      "keep": "继续编辑",
+      "title": "取消草图"
+    },
+    "check": {
+      "clean": "未发现问题",
+      "cleanSub": "没有开放的、重叠的、自交的或过小而无法构成实体的部分。",
+      "close": "关闭草图检查",
+      "hintRows": "点击某一行可选中它 · Esc 关闭",
+      "issue": {
+        "crossing": "这两条曲线在此处交叉，因此它们所围成的任何区域都会被拆成多个独立区域。",
+        "duplicate": "这条曲线与另一条完全重合，是它的重复副本。",
+        "more": {
+          "one": "还有 {count} 项未列出。请先修复这些，再重新检查。",
+          "other": "还有 {count} 项未列出。请先修复这些，再重新检查。"
+        },
+        "openEnd": "这个端点没有连接任何东西，因此链条保持开放。",
+        "openPair": "这两个端点相差一段距离没有接上，因此轮廓无法闭合。",
+        "openSingle": "这个端点与最近的端点之间差一段距离，因此轮廓无法闭合。",
+        "overlap": "这两条曲线在此处重叠。追踪器只保留一条共享边，因此它两侧的区域仍然闭合。",
+        "selfCross": "这条曲线在此处自交，因此它围不成单一区域。",
+        "tiny": "这一段太短，轮廓追踪时可能会被丢弃。"
+      },
+      "notes": {
+        "one": "{count} 条提示",
+        "other": "{count} 条提示"
+      },
+      "problems": {
+        "one": "{count} 个问题",
+        "other": "{count} 个问题"
+      },
+      "results": "草图检查结果",
+      "title": "草图检查"
+    },
+    "constraint": {
+      "alreadyPicked": "这就是你已经选过的那个点 —— 请选择第二个点来做镜像。",
+      "angle": "角度",
+      "c2cDistance": "边缘到边缘距离",
+      "c2lDistance": "边缘到直线距离",
+      "coincident": "重合",
+      "coincidentMiss": "“重合”用于连接两个“点” —— 请点击直线的端点、矩形的角点或圆的圆心，而不是它们的中部。若要让两条直线彼此贴合，请使用“共线”。",
+      "collinear": "共线",
+      "collinearApplied": "两条直线：已应用“共线”（“重合”用于连接端点）。",
+      "concentric": "同心",
+      "conflict": "该约束与草图上已有的约束冲突，因此未应用。",
+      "deleteConstraint": "删除约束",
+      "diameter": "直径",
+      "distance": "长度",
+      "equal": "相等",
+      "equalMismatch": "“相等”需要两条直线，或两个圆/圆弧 —— 长度与半径不可比较。",
+      "equalRadius": "等半径",
+      "filletRadiusConflict": "圆角已创建，但它的半径无法在不与此草图已有约束冲突的情况下被约束。",
+      "fix": "固定",
+      "glyphConflict": "冲突的约束 —— 点击可删除",
+      "glyphDelete": "点击删除此约束（若它压在几何上，可双击或右键）",
+      "glyphOver": "冗余（过定义）约束 —— 点击可删除",
+      "glyphPending": "点击后将应用",
+      "horizontal": "水平",
+      "midpoint": "中点",
+      "miss": "这里没有可约束的对象 —— {tool} 需要{wants}。",
+      "offset": "偏移",
+      "p2cDistance": "点到边缘距离",
+      "p2lDistance": "到直线的距离",
+      "p2pDistance": "距离",
+      "p2pDistanceX": "水平距离",
+      "p2pDistanceY": "竖直距离",
+      "parallel": "平行",
+      "perpendicular": "垂直",
+      "radialGap": "径向间隙",
+      "radius": "半径",
+      "samePointTwice": "这是同一个点被点了两次 —— “重合”用于连接两个“不同”的点。",
+      "sameShape": "这是同一个形状上的两个点 —— 连接它们会让该形状塌陷。",
+      "secondEndpoint": "请点击第二个“端点”来完成这次重合，或按 Esc 重新开始。",
+      "symmetric": "对称",
+      "tangent": "相切",
+      "tangentSpan": "我无法让该圆保持与它相切的那条边接触，因此此约束未应用。我找到的唯一解都会让接触点离开那条边。",
+      "vertical": "竖直",
+      "wants": {
+        "coincident": "两个端点、矩形的角点，或圆/圆弧的圆心",
+        "collinear": "两条直线（矩形边也算）",
+        "concentric": "两个圆或圆弧",
+        "default": "一个目标",
+        "equal": "两条直线，或两个圆/圆弧",
+        "fix": "一个点、一个端点或一个圆心",
+        "horizontal": "一条直线，或一条矩形边",
+        "midpoint": "一个点、端点或圆心，然后是要居中的那条直线",
+        "parallel": "两条直线（矩形边也算）",
+        "perpendicular": "两条直线（矩形边也算）",
+        "symmetric": "两个点、端点或圆心，然后是作为对称轴的直线",
+        "tangent": "一个圆或圆弧，然后是它应相切的直线或曲线",
+        "vertical": "一条直线，或一条矩形边"
+      }
+    },
+    "dimConflict": {
+      "addConflicts": "无法添加此{what}：新数值与此草图已有约束冲突。",
+      "addHeld": "无法添加此{what}：{reasons}，因此它无法采用该新数值。",
+      "centreFixed": "它的圆心已被固定",
+      "changeConflicts": "无法修改此{what}：新数值与此草图已有约束冲突。",
+      "changeHeld": "无法修改此{what}：{reasons}，因此它无法采用该新数值。",
+      "heldBy": "它受{list}约束",
+      "heldItem": {
+        "one": "一个{name}约束",
+        "other": "{count} 个{name}约束"
+      },
+      "kind": {
+        "angle": "角度",
+        "c2cDistance": "边缘到边缘距离",
+        "c2lDistance": "边缘到直线距离",
+        "diameter": "直径",
+        "dimension": "尺寸",
+        "distance": "长度",
+        "offset": "偏移",
+        "p2cDistance": "点到边缘距离",
+        "p2lDistance": "到直线的距离",
+        "p2pDistance": "距离",
+        "p2pDistanceX": "水平距离",
+        "p2pDistanceY": "竖直距离",
+        "radialGap": "径向间隙",
+        "radius": "半径"
+      },
+      "leftAt": "该尺寸保持为 {value}。",
+      "pointFixed": "它的某个点已被固定"
+    },
+    "dimension": {
+      "appliedDirectly": "在没有约束求解器时，长度或直径会直接作用于形状，不会作为可实时驱动的尺寸保存。求解器运行时它会正确地驱动几何。",
+      "applyFailed": "草图尺寸应用失败 —— 详情请看控制台。",
+      "boundValue": "fx：{value}",
+      "cancelEsc": "取消（Esc）",
+      "confirmEnter": "确认（回车）",
+      "delete": "删除尺寸",
+      "drivenReference": "从动（参考）",
+      "drivenValue": "（{value}）",
+      "error": {
+        "centreOnLine": "该圆的圆心在直线上 —— 不存在边到边的距离可标注。",
+        "coincidentPoints": "这两个点重合 —— 距离为 0，没有可驱动的量。",
+        "collinearLines": "这两条直线共线 —— 距离为 0，没有可驱动的量。",
+        "concentric": "这两个圆同心 —— 圆心距离为 0。请分别标注各自的直径，或在每次拾取前右键选择“拾取圆/圆弧相切”以标注径向间隙（壁厚）。",
+        "degenerate": "该{what}的长度为 0 —— 没有可驱动的量。",
+        "invalidValue": "数值无效",
+        "lineCrosses": "该直线穿过圆 —— 不存在边到边的距离可标注。请改标注圆心到直线的距离。",
+        "lineTangent": "该直线与圆相切 —— 边到边的距离为 0，没有可驱动的量。",
+        "mustBeNonZero": "计算结果必须非零",
+        "mustBePositive": "计算结果必须为正数",
+        "noDocument": "没有文档",
+        "noEntity": "没有图元",
+        "noExpression": "此尺寸暂时无法使用表达式",
+        "notEditable": "不可编辑",
+        "overlapping": "这两个圆相互重叠 —— 不存在边到边的间隙可标注。请标注它们的圆心距离，或各自直径。",
+        "ownCentreAndRim": "这是同一个圆的圆心与圆周 —— 请改标注它的半径。",
+        "pointAtCentre": "该点位于圆心 —— 它到圆周的距离正是半径，请改标注半径。",
+        "pointOnCircle": "该点位于圆上 —— 到边缘的距离为 0，没有可驱动的量。",
+        "pointOnLine": "该点位于直线上 —— 距离为 0，没有可驱动的量。",
+        "rimsTouch": "这两个圆周相接触 —— 边到边的距离为 0，没有可驱动的量。",
+        "sameCircleTwice": "这是同一个圆被点了两次 —— 请再选一个图元作为测量对象。",
+        "sameRim": "这两个圆周是同一个圆 —— 径向间隙为 0。",
+        "unsupported": "暂时无法标注{kind} —— 请选择直线、圆弧、圆或矩形边。"
+      },
+      "expressionDropped": "尺寸表达式“{expr}”已被丢弃：{reason}",
+      "fixedEndsNotApplied": "两端都是固定的参考几何，因此此尺寸只能测量 —— 你输入的数值未被应用。",
+      "geometryGone": "此尺寸引用的几何已不存在 —— 已取消标注",
+      "hint": {
+        "angle": "角度：输入夹角 · 点击放置",
+        "arc": "圆弧：输入直径，或选择第二个图元 · 点击放置",
+        "arcRadius": "圆弧：输入半径，或选择第二个图元 · 点击放置",
+        "circle": "圆：输入直径，或选择第二个图元 · 点击放置",
+        "circleRadius": "圆：输入半径，或选择第二个图元 · 点击放置",
+        "distance": "距离：输入数值 · 点击放置",
+        "distanceToLine": "到直线的距离：输入数值 · 点击放置",
+        "driven": "{hint} · 参考几何 —— 将创建为从动尺寸",
+        "edgeToEdge": "边到边间隙：输入数值 · 点击放置",
+        "edgeToLine": "边缘到直线距离：输入数值 · 点击放置",
+        "line": "直线：输入长度，或选择第二个图元 · 点击放置",
+        "minRadialClearance": "最小径向间隙：输入数值 · 点击放置",
+        "parallelLines": "平行线：输入距离 · 点击放置",
+        "pointToEdge": "点到边缘距离：输入数值 · 点击放置",
+        "projectedPair": "投影几何是固定的 —— 需“断开链接”才能编辑 —— 请选择第二个图元以便对它标注",
+        "radialGap": "径向间隙（壁厚）：输入数值 · 点击放置",
+        "rectEdge": "矩形边：输入长度，或选择第二个图元 · 点击放置",
+        "referenceOn": "{hint} · 参考尺寸已开启 —— 此尺寸只测量，不驱动",
+        "secondPoint": "请再选一个点或一条直线，以标注它们之间的距离"
+      },
+      "label": {
+        "count": "N",
+        "countX": "Nx",
+        "countY": "Ny",
+        "distance": "D",
+        "gap": "间隙",
+        "height": "H",
+        "length": "L",
+        "radius": "R",
+        "rings": "环数",
+        "width": "W"
+      },
+      "lock": "锁定尺寸",
+      "notCreated": "未创建尺寸 —— {error}",
+      "referenceNotSupported": "直线长度 / 圆的直径暂时还不能作为参考尺寸 —— 已按驱动尺寸创建。",
+      "referenceOnNotApplied": "参考尺寸已开启，因此此尺寸只测量 —— 你输入的数值未被应用。请关闭“参考尺寸”，或右键该标注并选择“锁定尺寸”。",
+      "retype": "这已经是另一个尺寸了 —— 请重新输入数值",
+      "tangentArmed": "已启用相切拾取 —— 点击圆或圆弧即可测量到它的“边缘”",
+      "tangentCleared": "已取消相切拾取",
+      "tangentPick": "拾取圆/圆弧相切",
+      "title": {
+        "bound": "= {expr} · 点击编辑",
+        "editable": "点击编辑，拖动移动",
+        "measured": "测量值 —— 没有任何东西固定它。点击编辑，右键锁定，拖动移动",
+        "reference": "参考尺寸（只测量，不驱动）",
+        "referenceLock": "参考尺寸（只测量，不驱动）—— 右键可锁定"
+      },
+      "unlock": "解锁（改为参考）"
+    },
+    "entity": {
+      "arc": "圆弧",
+      "circle": "圆",
+      "edge": "边",
+      "line": "直线",
+      "point": "点",
+      "polygon": "多边形",
+      "projected": "投影几何",
+      "rectangle": "矩形",
+      "slot": "槽",
+      "spline": "样条",
+      "text": "文字"
+    },
+    "guard": {
+      "dragFlattens": "该移动会把受约束的几何压平或翻转，因此未应用",
+      "originFixed": "草图原点是固定的参考几何 —— 可以吸附并对它施加约束，但不能编辑",
+      "pointFixed": "该点已被固定 —— 请删除它的“固定”约束才能移动",
+      "projectedFixed": "投影几何是固定的 —— 需“断开链接”才能编辑"
+    },
+    "history": {
+      "nothingToRedo": "此草图中没有可重做的操作",
+      "nothingToUndo": "此草图中没有可撤销的操作"
+    },
+    "menu": {
+      "breakLink": "断开链接",
+      "breakLinkCount": "断开链接（{count}）",
+      "deleteEntities": {
+        "one": "删除",
+        "other": "删除 {count} 个图元"
+      }
+    },
+    "offset": {
+      "chainOff": "链选择已关闭 —— 只偏移点击到的那条曲线",
+      "chainOn": "链选择已开启 —— 整个相连轮廓作为一个整体偏移",
+      "chainSelection": "链选择",
+      "clickCurve": "偏移：点击要偏移的曲线",
+      "collapses": "偏移：该距离会使几何塌陷",
+      "noPoint": "偏移需要一条曲线，而不是一个点",
+      "noText": "偏移不适用于草图文字",
+      "prompt": "偏移：移动鼠标选择方向，或输入距离 · 点击 / 回车应用 · Esc 取消",
+      "rigidCopy": "已创建偏移副本 —— 未与源对象关联（该形状类型是刚性的）",
+      "typeDistance": "偏移：输入距离，或按 Esc 取消"
+    },
+    "pattern": {
+      "editPrompt": "编辑阵列 —— 拖动/输入以修改 · 点击提交 · Delete 移除 · Esc 保留",
+      "removed": {
+        "one": "有一个阵列被移除：它的源图元已不存在",
+        "other": "有 {count} 个阵列被移除：它们的源图元已不存在"
+      },
+      "selectFirst": "请先选择图元，再选择阵列工具"
+    },
+    "project": {
+      "curveDup": "该曲线已投影进此草图",
+      "edgeDup": "该边已投影进此草图",
+      "edges": "边与面",
+      "edgesSkipped": {
+        "one": "已跳过 {count} 条已投影的边",
+        "other": "已跳过 {count} 条已投影的边"
+      },
+      "engineUnavailable": "几何引擎不可用",
+      "failed": "投影失败",
+      "ownCurves": "无法投影当前草图自身的曲线",
+      "patternCopy": "阵列副本无法投影 —— 请选择阵列的源曲线",
+      "silhouette": "实体轮廓",
+      "silhouetteDup": "该实体的轮廓已投影进此草图",
+      "sketchCurves": "草图曲线"
+    },
+    "projection": {
+      "lostSource": "{name} 中的投影几何丢失了源对象 —— 保留上一次的形状",
+      "refreshFailed": "投影几何刷新失败 —— 详情请看控制台。",
+      "valveClosed": "投影几何在每次重建时都在变化 —— 已暂停自动刷新（编辑模型或执行“全部重算”可重试）。"
+    },
+    "prompt": {
+      "arc": "圆弧：点击起点，点击终点，再点击它经过的某一点 · Esc",
+      "break": "打断：点击要分割的直线或圆弧（圆会断开成圆弧）· Esc",
+      "centerRectangle": "中心矩形：点击中心，再点击一个角点 · Esc",
+      "chamfer": "倒角：点击两条直线，然后输入退让距离 + 回车 · Esc",
+      "circle": "圆：点击圆心，然后确定半径 · 输入 ⌀ · 回车 · Esc",
+      "circle2": "圆（两点）：点击直径上的两个点 · Esc",
+      "circle3": "圆（三点）：点击圆经过的三个点 · Esc",
+      "coincident": "重合：点击两个端点使它们重合 · Esc",
+      "collinear": "共线：点击两条直线使它们位于同一轴线上 · Esc",
+      "concentric": "同心：点击两个圆/圆弧使它们同心 · Esc",
+      "copy": "复制：选择图元，然后点击基点与目标点（保留原对象）· Esc",
+      "dimension": "尺寸：点击直线（长度）或圆（⌀），输入数值 + 回车 · Esc",
+      "equal": "相等：点击两条直线（等长）或两个圆/圆弧（等半径）· Esc",
+      "extend": "延伸：点击直线或圆弧靠近端点处，把它延伸到最近的交点 · Esc",
+      "fillet": "圆角：点击两条直线，然后输入半径 + 回车 · Esc",
+      "fix": "固定：点击一个点、端点或圆/圆弧的圆心以固定它的位置 · Esc",
+      "horizontal": "水平：点击一条直线使其水平 · Esc",
+      "line": "直线：点击各点 · 输入长度 + Tab + 角度 · 回车提交 · 点击起点可闭合 · Esc",
+      "midpoint": "中点：点击一个点/端点，再点击一条直线 —— 该点将位于直线中点 · Esc",
+      "mirror": "镜像：选中图元后，点击作为镜像轴的直线 · Esc",
+      "move": "移动：先选择图元，然后点击基点与目标点 · Esc",
+      "offset": "偏移：点击一条曲线，然后输入偏移距离 + 回车 · Esc",
+      "parallel": "平行：点击两条直线，使第二条平行于第一条 · Esc",
+      "perpendicular": "垂直：点击两条直线 · Esc",
+      "point": "点：点击放置一个参考点（可吸附、可约束）· Esc",
+      "polygon": "多边形：点击中心，再点击一个顶点（六边形，内接）· Esc",
+      "rectangle": "矩形：点击两个角点 · 输入 W、Tab、H · 回车 · Esc",
+      "rotate": "旋转：选中图元，点击旋转中心，然后输入角度 + 回车 · Esc",
+      "scale": "缩放：选中图元，点击基点，然后输入倍数 + 回车 · Esc",
+      "select": "选择：点击几何以选中 · 拖动可移动 · Delete 删除 · 或选择工具：直线 (L) · 矩形 (R) · 圆 (C) · 圆弧 (A)",
+      "slot": "槽：点击两个圆弧的圆心，再点击一点确定宽度 · Esc",
+      "spline": "样条：点击放置拟合点 · 点击最后一个点或按回车结束 · Esc 取消",
+      "symmetric": "对称：点击两个端点，然后点击作为对称轴的直线 · Esc",
+      "tangent": "相切：点击两条曲线（直线、圆或圆弧）使它们相切 · Esc",
+      "trim": "修剪：点击一条曲线（直线/圆弧/圆）把它裁到最近的交点 · Esc",
+      "vertical": "竖直：点击一条直线使其竖直 · Esc"
+    },
+    "solver": {
+      "cspBlocked": "2D 约束求解器无法启动：此构建的安全策略阻止了它初始化所需的代码。这是 SindriCAD 的缺陷，不是你的系统问题，因此更新 webview 或显卡驱动都没有用。草图仍可使用，但没有约束、尺寸和点拖动。",
+      "failed": "2D 约束求解器无法启动：{detail}",
+      "stopped": "2D 约束求解器停止响应 —— 草图继续工作，但没有约束"
+    },
+    "text": {
+      "align": {
+        "center": "居中",
+        "left": "左对齐",
+        "right": "右对齐"
+      },
+      "angleDeg": "角度°",
+      "bold": "B",
+      "boxWidth": "文本框宽度（mm）",
+      "defaultFont": "默认字体",
+      "italic": "I",
+      "noBox": "0 = 不加文本框",
+      "placeholder": "文字…"
+    },
+    "transform": {
+      "clickDestination": "点击目标点",
+      "rotatePrompt": "旋转：输入角度（度）",
+      "scalePrompt": "缩放：输入倍数（例如 2 或 0.5）",
+      "selectFirstMove": "请先选择图元，再使用 移动/复制",
+      "selectFirstRotate": "请先选择图元，再使用 旋转",
+      "selectFirstScale": "请先选择图元，再使用 缩放"
+    }
+  },
+  "status": {
+    "bodiesSelected": {
+      "one": "已选择 {count} 个实体 —— 按 M 用“移动”拖动 · Esc 清除",
+      "other": "已选择 {count} 个实体 —— 按 M 用“移动”拖动 · Esc 清除"
+    },
+    "buildError": "⚠ {id}：{message}",
+    "chainNothingToGrow": "请先选中链的一部分 —— 然后按 G 会取整条轮廓（或双击它）",
+    "componentColorsOff": "组件颜色已关闭",
+    "componentColorsOn": "组件颜色已开启",
+    "computeAll": "全部重算 —— 正在从头重建所有内容…",
+    "connecting": "正在连接侧车…",
+    "curvatureOff": "曲率梳已关闭",
+    "curvatureOn": "曲率梳已开启（边的弯曲可视化）",
+    "deletingFace": "正在删除面…",
+    "draftAnalysisOff": "拔模分析已关闭",
+    "edgesSelected": {
+      "one": "已选择 {count} 条边 —— 可应用圆角或倒角 · Esc 清除",
+      "other": "已选择 {count} 条边 —— 可应用圆角或倒角 · Esc 清除"
+    },
+    "enterSketchToCheck": "请进入一个草图再检查",
+    "enterSketchToModify": "请进入一个草图再使用修改工具",
+    "enterSketchToSelect": "请进入一个草图再选择草图几何",
+    "faceHit": "按 Del 删除此面（移除并自动愈合）· 用“拉伸”推/切它",
+    "hideSelectFirst": "隐藏：请先选择实体（按 2 切换到实体选择）",
+    "needBody": {
+      "componentColors": "组件颜色：请先创建或导入一个实体",
+      "curvature": "曲率梳：请先创建或导入一个实体",
+      "draftAnalysis": "拔模分析：请先创建或导入一个实体",
+      "generic": "请先创建或导入一个实体",
+      "measure": "测量：请先创建或导入一个实体",
+      "section": "剖切：请先创建或导入一个实体",
+      "zebra": "斑马纹：请先创建或导入一个实体"
+    },
+    "overhang": "悬垂：红色 = 与水平面夹角超过 {threshold}° 的无支撑区域（打印方向 {dir}）",
+    "ready": "就绪",
+    "rebuilding": "正在重建",
+    "regionsSelected": {
+      "one": "已选择 {count} 个轮廓区域 —— 按 E 拉伸 · Ctrl+单击可添加 · Esc 清除",
+      "other": "已选择 {count} 个轮廓区域 —— 按 E 拉伸 · Ctrl+单击可添加 · Esc 清除"
+    },
+    "rollForwardToEdit": "请把时间轴向前滚动以编辑此特征",
+    "sketchCancelled": "草图已取消",
+    "sketchUnsatisfied": "草图 {id}：尺寸无法满足 —— 几何保持不变",
+    "spaceMouseBlocked": "找到了“{name}”但无法读取它 —— 请见 README 的 SpaceMouse 一节（Linux 需要一次性 udev 规则；正在运行的 spacenavd/3Dconnexion 驱动也会占用该设备）",
+    "unsuppressToEdit": "请取消抑制该特征再编辑",
+    "zebraOff": "斑马纹已关闭",
+    "zebraOn": "斑马纹已开启（表面连续性）"
+  },
+  "texture": {
+    "kind": {
+      "hex": "六边形",
+      "image": "图像高度图",
+      "knurl": "滚花",
+      "noise": "噪波（Perlin）",
+      "ribs": "棱纹",
+      "voronoi": "泰森多边形",
+      "waves": "波纹"
+    }
+  },
+  "timeline": {
+    "building": "正在构建…",
+    "buildingProgress": "正在构建 {done}/{total}",
+    "busyPercent": "{label} {pct}%",
+    "chip": "{index} · {name}",
+    "chipHint": "右键查看更多",
+    "chipHintEditable": "双击编辑 · 右键查看更多",
+    "chipNote": "⚠ {note}",
+    "empty": "你的建模历史会显示在这里。先从一个草图开始。",
+    "failed": "失败",
+    "failingFeatures": "失败的特征 —— 点击可跳到下一个",
+    "markerTitle": "拖动可把模型回滚 / 前滚",
+    "meshingProgress": "正在生成网格 {done}/{total}",
+    "repickFace": "重新选择面…",
+    "rollPastHere": "滚动越过此处",
+    "rollToEnd": "前滚到末尾",
+    "rollToHere": "滚动到此处",
+    "rollToStart": "回滚到开头",
+    "stepBack": "后退一个特征",
+    "stepForward": "前进一个特征",
+    "stopOperation": "停止正在进行的操作",
+    "suppress": "抑制",
+    "unsuppress": "取消抑制"
+  },
+  "tinkeratlas": {
+    "error": {
+      "expired": "TinkerAtlas 登录已过期或被撤销",
+      "unreachable": "无法连接 TinkerAtlas —— 请检查网络",
+      "unreachableRetry": "无法连接 TinkerAtlas —— 请检查网络后重试。"
+    },
+    "publish": {
+      "descriptionPlaceholder": "描述（可选）",
+      "failed": "发布失败：{reason}",
+      "featureMissing": "⚠ {feature} 失败 —— 其结果未包含在上传内容中：{reason}",
+      "formatPrompt": "发布 —— 用哪种模型格式？",
+      "inProgress": "正在发布到 TinkerAtlas…",
+      "needsNative": "发布需要桌面应用",
+      "nothing": "还没有可发布的内容 —— 请先建一个实体",
+      "postPublicly": "公开发布（关闭 = 私有草稿）",
+      "published": "已发布到 TinkerAtlas",
+      "recommended": "推荐",
+      "savedDraft": "已保存到 TinkerAtlas 作为草稿",
+      "submit": "发布",
+      "title": "发布到 TinkerAtlas",
+      "titlePlaceholder": "标题",
+      "titleTooShort": "标题至少需要 3 个字符。",
+      "untitled": "未命名设计",
+      "view": "在 TinkerAtlas 上查看",
+      "warningsTitle": "发布但有警告"
+    },
+    "signIn": {
+      "action": "登录…",
+      "button": "使用 TinkerAtlas 登录",
+      "failed": "登录失败：{reason}",
+      "hint": "用你的 TinkerAtlas 账号直接在 SindriCAD 里发布设计。",
+      "pasteFirst": "请先粘贴令牌。",
+      "register": "创建免费账号",
+      "title": "连接 TinkerAtlas",
+      "tokenToggle": "有桌面令牌？改为粘贴它",
+      "unauthorized": "TinkerAtlas 没有接受这次登录 —— 请重试。",
+      "useToken": "使用令牌",
+      "waiting": "请在浏览器中完成登录。",
+      "waitingAuthorize": "当你点击“授权 SindriCAD”后，此对话框会自动完成。",
+      "waitingSignup": "想先注册账号？不着急 —— 如果这里超时了，之后再点一次“登录”即可。"
+    },
+    "signOut": {
+      "confirm": "退出登录",
+      "done": "已退出 TinkerAtlas",
+      "failed": "退出登录失败：{reason}",
+      "prompt": "要退出 TinkerAtlas 登录吗（{user}）？"
+    },
+    "signedInAs": "已登录为 {name}"
+  },
+  "tool": {
+    "analyze": "分析",
+    "arc": "圆弧",
+    "bodyColors": "实体颜色",
+    "boltCircle": "螺栓孔圈",
+    "box": "方块",
+    "break": "打断",
+    "cancelSketch": "取消草图",
+    "centerRectangle": "中心矩形",
+    "chamfer": "倒角",
+    "checkSketch": "检查",
+    "circle": "圆",
+    "circle2": "两点圆",
+    "circle3": "三点圆",
+    "cleanUp": "清理",
+    "coincident": "重合",
+    "collinear": "共线",
+    "combine": "组合",
+    "computeAll": "全部重算",
+    "concentric": "同心",
+    "constrain": "约束",
+    "copy": "复制",
+    "curvature": "曲率",
+    "cylinder": "圆柱",
+    "datumPlane": "基准平面",
+    "deleteFace": "删除面",
+    "dimension": "尺寸",
+    "draft": "拔模",
+    "equal": "相等",
+    "extend": "延伸",
+    "extrude": "拉伸",
+    "fillet": "圆角",
+    "finishSketch": "完成草图",
+    "fix": "固定",
+    "gridHoles": "网格孔",
+    "hexHoles": "六边形孔",
+    "honeycomb": "蜂窝",
+    "horizontal": "水平",
+    "import": "导入",
+    "importMesh": "导入网格",
+    "interference": "干涉",
+    "line": "直线",
+    "loft": "放样",
+    "measure": "测量",
+    "midpoint": "中点",
+    "mirror": "镜像",
+    "move": "移动",
+    "offset": "偏移",
+    "offsetFace": "偏移面",
+    "offsetPlane": "偏移平面",
+    "openInOrca": "在 OrcaSlicer 中打开",
+    "overhang": "悬垂",
+    "parallel": "平行",
+    "parameters": "参数",
+    "pattern": "阵列",
+    "patternCircular": "圆周阵列",
+    "patternRect": "矩形阵列",
+    "point": "点",
+    "polygon": "多边形",
+    "presspull": "推/拉",
+    "primitive": "基本体",
+    "printProject": "打印工程",
+    "project": "投影",
+    "properties": "属性",
+    "rectangle": "矩形",
+    "removeBody": "移除实体",
+    "revolve": "旋转",
+    "rotate": "旋转",
+    "scale": "缩放",
+    "section": "剖切",
+    "select": "选择",
+    "sendToPrinter": "发送到打印机",
+    "shell": "抽壳",
+    "simplifyMesh": "简化网格",
+    "sketch": "草图",
+    "sketchPalette": "草图面板",
+    "slot": "槽",
+    "sphere": "球体",
+    "spline": "样条",
+    "split": "分割实体",
+    "sweep": "扫掠",
+    "symmetric": "对称",
+    "tangent": "相切",
+    "text": "文字",
+    "textOnFace": "面上文字",
+    "texture": "纹理",
+    "thicken": "加厚",
+    "trim": "修剪",
+    "vertical": "竖直",
+    "zebra": "斑马纹"
+  },
+  "update": {
+    "available": "有可用更新 {version}",
+    "cannotSelfUpdate": "此安装无法自我更新。请下载最新构建，或改用 AppImage（它支持自我更新）。",
+    "checkFailed": "检查更新失败：{reason}",
+    "downloading": "正在下载更新…",
+    "install": "重启并更新",
+    "needsPackaged": "检查更新需要打包版本的应用",
+    "noBrowser": "无法打开浏览器。页面地址是 {url}",
+    "openDownloads": "打开下载页",
+    "upToDate": "SindriCAD {version} 已是最新版本。"
+  },
+  "viewport": {
+    "contextLost": "3D 视图丢失了图形上下文，正在尝试恢复。",
+    "cube": {
+      "back": "后",
+      "bottom": "底",
+      "front": "前",
+      "left": "左",
+      "noFace": "那里没有面 —— 请点击模型上的面（Esc 取消）",
+      "pickFace": "点击模型上的面以设为“{side}”（Esc 取消）",
+      "resetDefault": "恢复默认",
+      "right": "右",
+      "setFromFace": "由面设置“{side}”…",
+      "top": "顶"
+    },
+    "fps": {
+      "gpu": "GPU：{gpu}",
+      "idle": "空闲",
+      "idleTitle": "视口只在有变化时绘制 —— 当前没有需要渲染的内容。",
+      "reading": "{fps} fps · {ms} ms",
+      "title": "最近 {span}ms 内绘制了 {count} 帧。视口按需渲染，因此这里只统计实际绘制的帧。"
+    },
+    "pivot": {
+      "hint": {
+        "cursor": "拖动开始时鼠标指针下方的点",
+        "model": "整个模型的中心",
+        "origin": "世界原点（0, 0, 0）",
+        "view": "视图中心（默认）"
+      },
+      "label": "旋转中心：{mode}",
+      "mode": {
+        "cursor": "指针",
+        "model": "模型",
+        "origin": "原点",
+        "view": "视图"
+      },
+      "title": "围绕{where}旋转 —— 点击可切换"
+    },
+    "selectionMode": {
+      "bodies": "实体",
+      "faces": "面"
+    }
+  },
+  "welcome": {
+    "connecting": "正在连接 TinkerAtlas…",
+    "recent": "最近",
+    "showOnStartup": "启动时显示此页面",
+    "signIn": "使用 TinkerAtlas 登录",
+    "unreachable": "无法连接 TinkerAtlas —— 你可能离线了，或服务不可用。"
+  }
+}
