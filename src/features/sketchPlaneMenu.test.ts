@@ -527,6 +527,18 @@ describe("Move sketch plane", () => {
     expect(toasts).toEqual([t("feature.starters.sketchPlaneDetached")]);
   });
 
+  it("counts a Mirror across the datum as another user of it, so the mirror stays where it was (GH #64)", () => {
+    const d0: Datum = { id: "d0", type: "datumPlane", plane: "XY", offset: 10 };
+    const onD0 = { planeId: "d0", plane: { origin: [0, 0, 10], normal: [0, 0, 1], xdir: [1, 0, 0] } } as const;
+    const m1 = { id: "m1", type: "mirror", plane: "d0" } as Feature;
+    const w = world(moveDoc(structuredClone(onD0) as Partial<Sketch>, [d0], [m1]));
+    w.choose("s1", MOVE);
+    w.typeAndEnter(5);
+    expect(w.feature<Datum>("d0").offset, "the mirror's plane moved with the sketch").toBe(10);
+    expect(w.feature<Sketch>("s1").planeId).not.toBe("d0");
+    expect(toasts).toEqual([t("feature.starters.sketchPlaneDetached")]);
+  });
+
   it("refuses, naming the parameter, when the sketch's own datum is driven by an expression", () => {
     const doc = moveDoc({ planeId: "d0", plane: { origin: [0, 0, 20], normal: [0, 0, 1], xdir: [1, 0, 0] } },
       [{ id: "d0", type: "datumPlane", plane: "XY", offset: 20 }]);

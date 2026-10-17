@@ -7261,7 +7261,17 @@ def _handle_clean_up(f, ctx):
 
 def _handle_mirror(f, ctx):
     act = ctx.require_active("Mirror")
-    act["shape"] = act["shape"] + mirror(act["shape"], about=_plane_of(f["plane"], ctx.datums))
+    ref = f.get("plane")
+    # A datum that is not registered HERE: it comes later in the timeline, it is
+    # suppressed, or it failed to build. _plane_of's own "unknown plane
+    # reference: f12" put an internal id in front of the user (as on Split).
+    if isinstance(ref, str) and ref not in PLANES and ref not in ctx.datums:
+        raise GeomError(
+            "Mirror: the plane it mirrors across does not exist at this point in "
+            "the timeline. Move the mirror after that plane, or delete it and "
+            "mirror again.",
+            errors_mod.MIRROR_NO_PLANE)
+    act["shape"] = act["shape"] + mirror(act["shape"], about=_plane_of(ref, ctx.datums))
 
 
 def _handle_revolve(f, ctx):

@@ -722,7 +722,10 @@ export type Feature =
   // plane target alike.
   | { id: string; type: "press-pull"; face: Selector | Selector[]; distance: Num; operation: "join" | "cut"; body?: string; upTo?: Selector; upToPlane?: string; upToOffset?: Num }
   | { id: string; type: "deleteFace"; face: Selector | Selector[]; body?: string }
-  | { id: string; type: "mirror"; plane: Plane3 }
+  // `plane`: a base plane, or a datumPlane feature id (GH #64), resolved where
+  // the mirror runs so it follows the plane. A datum not built by then makes the
+  // mirror fail with mirrorNoPlane.
+  | { id: string; type: "mirror"; plane: Plane3 | string }
   // `operation` is threaded through the same New/Join/Cut/Intersect boolean as
   // extrude (`_boolean_into_bodies`); absent = legacy feature, defaults to "new"
   // in the builder (old behavior was a silent overwrite of the active body's

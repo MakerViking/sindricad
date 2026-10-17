@@ -77,6 +77,7 @@ and on `ResolveDiag` entries.
 | `splitDamagedAllMore` | the same, with damaged parts crossing in `count` bodies (`{body}` the first) and `parts` damaged parts in all |
 | `splitFailed` | the kernel failed on `{body}`; the split changed nothing |
 | `splitNoPlane` | the plane a split cuts along does not exist at its place in the timeline (a datum made after it, suppressed or failed) |
+| `mirrorNoPlane` | the construction plane a body Mirror reflects across does not exist at its place in the timeline (a datum made after it, suppressed or failed) |
 | `splitFaceGone` | the face a split's plane is anchored to belongs to a body that does not exist at its place in the timeline |
 | `splitCrashed` | the worker died while a split was cutting |
 | `splitNoBody` | none of the bodies a split names exists at its place in the timeline |

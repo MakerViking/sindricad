@@ -877,6 +877,7 @@ const menus = createContextMenus({
   getLastAction: () => lastAction,
   setLastAction: (a) => { lastAction = a; },
   startSplit: starters.startSplit,
+  startMirror: starters.startMirror,
   offsetPlaneFromFace: starters.offsetPlaneFromFace,
   copySketchToPlane: starters.copySketchToPlane,
   moveSketchPlane: starters.moveSketchPlane,

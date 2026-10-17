@@ -31,6 +31,7 @@ import { moveSketchPlaneBlocker } from "../document/sketchPlaneEdits";
 import { resolveEntities, resolveNum } from "../sketch/resolve";
 import { entityPolyline } from "../sketch/region";
 import { t } from "../i18n";
+import { planeLabel } from "../ui/featureMeta";
 import { fieldText, getUnit } from "../ui/units";
 
 /** Said out loud whenever a plane is picked off a curved face. The plane itself
@@ -658,20 +659,28 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
     clearSelectionForCreate();
   }
 
-  // Mirror: choose the symmetry plane (the backend honors XY/XZ/YZ; the old tool
-  // was hard-coded to YZ). Mirrors the active body and unions the reflection.
-  async function startMirror() {
+  // Mirror: choose the symmetry plane, XY/XZ/YZ or a construction plane by id
+  // (GH #64; the sidecar resolves the id where the mirror runs, so the mirror
+  // follows the plane). Mirrors the active body and unions the reflection.
+  // `planeId` (a construction plane's right-click entry) skips the chooser.
+  async function startMirror(planeId?: string) {
     if (busy()) return;
     const hasSolid = hasBody();
     if (!hasSolid) {
       setStatus(t("feature.starters.mirror.needsBody"), "");
       return;
     }
+    // Only the planes that exist where the mirror lands: it is inserted at the
+    // rollback marker, and a suppressed plane is not built.
+    const datums = store.document.features
+      .filter((f, i) => i < store.rollbackIndex && !store.isSuppressed(f.id) && f.type === "datumPlane")
+      .map((f) => ({ value: f.id, label: planeLabel(store.document.features, f.id) }));
     // XY / XZ / YZ are plane names, not prose — they stay as written.
-    const plane = await choose<"XY" | "XZ" | "YZ">(t("feature.starters.mirror.title"), [
+    const plane = planeId ?? await choose<string>(t("feature.starters.mirror.title"), [
       { value: "XY", label: "XY" },
       { value: "XZ", label: "XZ" },
       { value: "YZ", label: "YZ" },
+      ...datums,
     ]);
     if (!plane) return;
     store.addFeature({ id: store.nextId(), type: "mirror", plane } as Feature);
