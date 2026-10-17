@@ -57,10 +57,15 @@ const spoke: string[] = [];
 // startPrimitive's choice dialog defaults to "no shape picked" (null) for the
 // generic ratchet below; the dedicated primitive-hint tests further down set
 // this to "box" to drive the add-feature path.
-const { chooseResolution } = vi.hoisted(() => ({ chooseResolution: { value: null as string | null } }));
+const { chooseResolution, chooseOffered } = vi.hoisted(() => ({
+  chooseResolution: { value: null as string | null },
+  // the options the last choose() put on screen, as [value, label]
+  chooseOffered: [] as [string, string][],
+}));
 vi.mock("../ui/choice", () => ({
-  choose: (title: string) => {
+  choose: (title: string, options: { value: string; label: string }[] = []) => {
     if (title) spoke.push(`choose(${title})`);
+    chooseOffered.splice(0, chooseOffered.length, ...options.map((o): [string, string] => [o.value, o.label]));
     return Promise.resolve(chooseResolution.value);
   },
   chooseMulti: (title: string) => {
@@ -169,7 +174,7 @@ function harness(world: World) {
       document: { features: world.features },
       buildState: { result: { bodies: world.bodies } },
       rollbackIndex: world.features.length,
-      isSuppressed: () => false,
+      isSuppressed: (_id: string) => false,
       isBodyVisible: () => true,
       bodyName: () => null,
     },
@@ -638,5 +643,54 @@ describe("primitive placement points at Move", () => {
       spoke.filter((s) => s.startsWith("toast(")).length,
       "hinted a second time in the same session — it should have spoken once and stayed quiet",
     ).toBe(0);
+  });
+});
+
+// GH #64: Mirror across a construction plane. The chooser lists the planes that
+// exist where the mirror will land (before the rollback marker, not
+// suppressed) after XY / XZ / YZ, named as the rest of the app names them; the
+// datum's right-click entry hands its id straight in and asks nothing.
+describe("Mirror across a construction plane", () => {
+  function mirrorWorld() {
+    const h = harness({
+      busy: false,
+      bodies: [{ id: "body1", name: "Body1" }],
+      features: [
+        { id: "f1", type: "sketch", plane: "XY", entities: [] },
+        { id: "d1", type: "datumPlane" },
+        { id: "d2", type: "datumPlane" }, // suppressed
+        { id: "d3", type: "datumPlane" }, // after the rollback marker
+      ],
+      regions: 0,
+    });
+    h.deps.store.rollbackIndex = 3;
+    h.deps.store.isSuppressed = (id: string) => id === "d2";
+    const added: Record<string, unknown>[] = [];
+    h.deps.store.addFeature = (f: { type: string }) => added.push(f);
+    return { starters: createFeatureStarters(h.deps as never), added };
+  }
+
+  it("offers the construction planes that exist here, and picking one writes its id", async () => {
+    const { starters, added } = mirrorWorld();
+    chooseResolution.value = "d1";
+    await starters.startMirror();
+    chooseResolution.value = null;
+    expect(chooseOffered).toEqual([["XY", "XY"], ["XZ", "XZ"], ["YZ", "YZ"], ["d1", "Plane1"]]);
+    expect(added).toEqual([{ id: "new1", type: "mirror", plane: "d1" }]);
+  });
+
+  it("still writes a base plane as XY / XZ / YZ", async () => {
+    const { starters, added } = mirrorWorld();
+    chooseResolution.value = "XZ";
+    await starters.startMirror();
+    chooseResolution.value = null;
+    expect(added).toEqual([{ id: "new1", type: "mirror", plane: "XZ" }]);
+  });
+
+  it("mirrors across a plane it is handed without asking", async () => {
+    const { starters, added } = mirrorWorld();
+    await starters.startMirror("d1");
+    expect(spoke.filter((s) => s.startsWith("choose("))).toEqual([]);
+    expect(added).toEqual([{ id: "new1", type: "mirror", plane: "d1" }]);
   });
 });

@@ -41,6 +41,15 @@ This file starts on 2026-08-03. For anything before that, see the
   drag a part that big, it follows the cursor unsolved and settles when you let go,
   so the view never freezes mid-drag.
 
+### Modelling
+
+- **Mirror works across a construction plane, not only XY, XZ and YZ (#64).** Mirror
+  (under Move in the Modify group) lists your construction planes after the three base
+  planes, and right-clicking a plane offers Mirror across this plane. The mirror follows
+  the plane when you change its offset or the face it sits on. If the plane comes after
+  the mirror in the timeline, the mirror says so instead of showing an internal id. Your
+  first rebuild after updating is a slow one.
+
 ### Welcome screen
 
 - **The offline message is plain, and its Retry button is button-sized.** It used to

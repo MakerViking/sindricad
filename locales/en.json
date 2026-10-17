@@ -202,6 +202,7 @@
     "mergeSolidsEach": {
       "other": "Merge each of the {count} bodies into one solid of its own"
     },
+    "mirrorAcrossPlane": "Mirror across this plane",
     "moveSketchPlane": "Move sketch plane…",
     "offsetPlane": "Offset plane",
     "offsetPlaneFromFace": "Offset plane from face",
@@ -292,6 +293,7 @@
       "mergeSeparatePieces": {
         "other": "{body} is now {count} separate pieces that do not touch. Separate into bodies splits them apart."
       },
+      "mirrorNoPlane": "Mirror: the plane it mirrors across does not exist at this point in the timeline. Move the mirror after that plane, or delete it and mirror again.",
       "noMesh": "geometry engine returned no mesh",
       "replyTooLarge": "the result is too large to display",
       "rustImportUnsupported": "geometry import isn't supported by the Rust backend yet — run without VITE_GEOM=rust",

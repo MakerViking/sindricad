@@ -55,6 +55,7 @@ SPLIT_DAMAGED_ALL = "splitDamagedAll"       # several bodies: nothing cut; `coun
 SPLIT_DAMAGED_ALL_MORE = "splitDamagedAllMore"  # same, `count` bodies with damaged parts crossed ({body} first), `parts` in all
 SPLIT_FAILED = "splitFailed"                # the kernel failed on {body}; nothing was changed
 SPLIT_NO_PLANE = "splitNoPlane"              # the plane it cuts along is not there at this point in the timeline
+MIRROR_NO_PLANE = "mirrorNoPlane"            # the plane a body Mirror reflects across is not there at this point in the timeline
 SPLIT_FACE_GONE = "splitFaceGone"           # the face its plane is anchored to belongs to a body not there
 SPLIT_CRASHED = "splitCrashed"              # the worker died while a split was cutting
 SPLIT_NO_BODY = "splitNoBody"               # none of the bodies it names exists at its place in the timeline
@@ -106,7 +107,7 @@ ALL = frozenset({
     MERGE_DROPPED_SURFACES, MERGE_DAMAGED_LEFT_OUT, MERGE_SEPARATE_PIECES,
     SEPARATE_DROPPED_SURFACES, SEPARATE_DROPPED_FACES, CUT_ONLY_HIDDEN, CUT_LOST_PROJECTION,
     JOIN_ONLY_HIDDEN, JOIN_PIECES_LEFT_OUT, JOIN_PIECES_APART, INSERT_NOTHING_BUILT, INSERT_NO_BODIES,
-    BLEND_CORNER_TAKEN,
+    BLEND_CORNER_TAKEN, MIRROR_NO_PLANE,
 })
 
 # --- the body slot -----------------------------------------------------------

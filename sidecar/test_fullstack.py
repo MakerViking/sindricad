@@ -80,6 +80,11 @@ async def main(token):
         r = await rebuild(ws, [sketch_rect("s", 10, 10, x=20), {"id": "e", "type": "extrude", "sketch": "s", "distance": 6, "operation": "new"},
                                {"id": "mr", "type": "mirror", "plane": "YZ"}])
         check("mirror", r["ok"] and nbodies(r) == 1)
+        # mirror across a construction plane 15 above XY (GH #64): the 6 mm block reflects to z 24..30
+        r = await rebuild(ws, [sketch_rect("s", 10, 10, x=20), {"id": "e", "type": "extrude", "sketch": "s", "distance": 6, "operation": "new"},
+                               {"id": "dp", "type": "datumPlane", "plane": "XY", "offset": 15},
+                               {"id": "mr", "type": "mirror", "plane": "dp"}])
+        check("mirror across a datum plane", r["ok"] and nbodies(r) == 1 and abs(r["result"]["bbox"]["max"][2] - 30) < 1e-3)
 
         # shell (open top)
         box20 = [sketch_rect("s", 20, 20), {"id": "e", "type": "extrude", "sketch": "s", "distance": 20, "operation": "new"}]

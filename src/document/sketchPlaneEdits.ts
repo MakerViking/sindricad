@@ -172,10 +172,12 @@ export function copySketch(d: CadDocument, srcId: string, newId: string, target:
 // --- Move sketch plane ------------------------------------------------------
 
 /** Ids of every feature that names datum `id` as its plane: a sketch or a
- *  split sitting on it, an extrude or press/pull going up to it. */
+ *  split sitting on it, an extrude or press/pull going up to it, a mirror
+ *  across it. */
 function datumUsers(features: readonly Feature[], id: string): string[] {
   return features
-    .filter((f) => (f as { planeId?: string }).planeId === id || (f as { upToPlane?: string }).upToPlane === id)
+    .filter((f) => (f as { planeId?: string }).planeId === id || (f as { upToPlane?: string }).upToPlane === id
+      || (f.type === "mirror" && f.plane === id))
     .map((f) => f.id);
 }
 

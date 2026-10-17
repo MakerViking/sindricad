@@ -42,6 +42,7 @@ export interface ContextMenusDeps {
   getLastAction: () => string | null;
   setLastAction: (action: string) => void;
   startSplit: (seed?: SplitSeed) => void;
+  startMirror: (planeId?: string) => Promise<void>;
   offsetPlaneFromFace: (face: PlaneDef, anchor?: Selector) => void;
   copySketchToPlane: (sketchId: string) => void;
   moveSketchPlane: (sketchId: string) => void;
@@ -68,6 +69,7 @@ export function createContextMenus(deps: ContextMenusDeps) {
     getLastAction,
     setLastAction,
     startSplit,
+    startMirror,
     offsetPlaneFromFace,
     copySketchToPlane,
     moveSketchPlane,
@@ -99,6 +101,7 @@ export function createContextMenus(deps: ContextMenusDeps) {
       // no way to say which: on an imported assembly that is hundreds of
       // bodies for one click.
       { label: t("context.splitWithPlane"), onClick: unlessBusy(() => { setLastAction("split"); startSplit({ planeId: datumId }); }) },
+      { label: t("context.mirrorAcrossPlane"), onClick: unlessBusy(() => { setLastAction("mirror"); void startMirror(datumId); }) },
       // enter BY ID: the def is only the cached placement, so passing the datum
       // id too is what makes the sketch follow later edits to its offset
       { label: t("context.sketchOnPlane"), disabled: !f, onClick: unlessBusy(() => { if (f) sketch.enter(datumPlaneDef(f), store, undefined, f.id); }) },
