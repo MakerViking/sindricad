@@ -21,6 +21,7 @@ function fakeStore(over: Partial<Record<string, unknown>> = {}) {
     buildDocument: () => BUILT,
     rollbackIndex: 99,
     isBodyVisible: () => true,
+    bodyName: () => undefined,
     buildState: {
       building: false,
       errorMessage: null,
@@ -253,6 +254,36 @@ describe("what an agent can tell about the model it is reading", () => {
     const bodies = (r.result as { bodies: { id: string; hidden?: boolean }[] }).bodies;
     expect(bodies.find((b) => b.id === "body2")!.hidden).toBe(true);
     expect(bodies.find((b) => b.id === "body1")!.hidden).toBeUndefined();
+  });
+});
+
+describe("body names", () => {
+  it("doc.read and geom.measure name a body the way the Browser does, rename included", async () => {
+    // The sidecar only knows a body's BUILT name. A rename (or a split piece's
+    // derived name) lives in the store, so both tools reported "Body1" for a
+    // body the user sees as "Bracket": the agent and the human could not even
+    // agree on what to call it.
+    const massProperties = vi.fn().mockResolvedValue({
+      ok: true,
+      result: { bodies: [{ id: "body1", name: "Body1", volume: 1 }] },
+    });
+    const store = fakeStore({
+      bodyName: (id: string) => (id === "body1" ? "Bracket" : undefined),
+      buildState: {
+        building: false,
+        errorMessage: null,
+        errorFeatureId: null,
+        result: { bodies: [{ id: "body1", name: "Body1", faceCount: 6 }], featureErrors: [] },
+      },
+    });
+    const deps = { store, geometry: { massProperties } as unknown as GeometryBackend };
+    const d = await handleTool("doc.read", {}, deps);
+    const m = await handleTool("geom.measure", {}, deps);
+    expect(d.ok && m.ok).toBe(true);
+    if (!d.ok || !m.ok) return;
+    const shown = "⟦untrusted:name⟧Bracket⟦/untrusted⟧";
+    expect((d.result as { bodies: { name: string }[] }).bodies[0]!.name).toBe(shown);
+    expect((m.result as { bodies: { name: string }[] }).bodies[0]!.name).toBe(shown);
   });
 });
 

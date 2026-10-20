@@ -190,7 +190,7 @@ function docRead(store: DocumentStore): unknown {
     // Hidden bodies are still built and measurable, but an export leaves them out.
     bodies: (store.buildState.result?.bodies ?? []).map((b) => ({
       id: b.id,
-      name: envelope(b.name, "name"),
+      name: envelope(store.bodyName(b.id) ?? b.name, "name"),
       faceCount: b.faceCount,
       ...(store.isBodyVisible(b.id) ? {} : { hidden: true }),
     })),
@@ -209,10 +209,14 @@ function docRead(store: DocumentStore): unknown {
  * marking them at all: a reader who sees the same body name marked by one tool
  * and unmarked by another learns that unmarked means trusted.
  *
+ * A body is named the way the Browser names it (`store.bodyName`, a rename or a
+ * split piece's derived name), as doc.read does: the sidecar only knows the
+ * built name, so the agent and the human called one body two things.
+ *
  * Rebuilt field-by-field rather than mutated: the reply is a wire object the
  * caller also holds, and this must not depend on knowing every key it carries.
  */
-function envelopeMeasured(result: unknown): unknown {
+function envelopeMeasured(result: unknown, store: DocumentStore): unknown {
   if (!result || typeof result !== "object") return result;
   const r = result as Record<string, unknown>;
   const mark = (v: unknown, key: string, kind: string) => {
@@ -220,9 +224,17 @@ function envelopeMeasured(result: unknown): unknown {
     const o = v as Record<string, unknown>;
     return key in o ? { ...o, [key]: envelope(o[key], kind) } : o;
   };
+  const shownName = (b: unknown) => {
+    if (!b || typeof b !== "object") return b;
+    const o = b as Record<string, unknown>;
+    const shown = typeof o.id === "string" ? store.bodyName(o.id) : undefined;
+    return shown === undefined ? o : { ...o, name: shown };
+  };
   return {
     ...r,
-    ...(Array.isArray(r.bodies) ? { bodies: r.bodies.map((b) => mark(b, "name", "name")) } : {}),
+    ...(Array.isArray(r.bodies)
+      ? { bodies: r.bodies.map((b) => mark(shownName(b), "name", "name")) }
+      : {}),
     ...(Array.isArray(r.warnings)
       ? { warnings: r.warnings.map((w) => mark(w, "subject", "subject")) }
       : {}),
@@ -242,7 +254,7 @@ async function geomMeasure(deps: BridgeDeps, params: Record<string, unknown>): P
     ...(bodies ? { bodies } : {}),
     ...(checks ? { checks } : {}),
   });
-  return r.ok ? { ok: true, result: envelopeMeasured(r.result) } : fail("measureFailed", r.message ?? "measure failed");
+  return r.ok ? { ok: true, result: envelopeMeasured(r.result, deps.store) } : fail("measureFailed", r.message ?? "measure failed");
 }
 
 async function geomQuery(deps: BridgeDeps, params: Record<string, unknown>): Promise<ToolResult> {
