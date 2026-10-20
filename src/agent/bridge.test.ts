@@ -1,7 +1,8 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { DocumentStore } from "../document/store";
+import { DocumentStore } from "../document/store";
 import type { GeometryBackend } from "../geometry/client";
+import type { CadDocument, Feature } from "../types";
 import { handleTool } from "./bridge";
 
 /**
@@ -19,6 +20,7 @@ function fakeStore(over: Partial<Record<string, unknown>> = {}) {
     document: RAW,
     buildDocument: () => BUILT,
     rollbackIndex: 99,
+    isBodyVisible: () => true,
     buildState: {
       building: false,
       errorMessage: null,
@@ -203,5 +205,99 @@ describe("handleTool", () => {
     // alone is what made a flat selector the natural first call, and a flat
     // selector used to match every entity on the body with ok:true.
     expect(JSON.stringify(s.tools["geom.query"])).toContain("sel");
+  });
+});
+
+describe("what an agent can tell about the model it is reading", () => {
+  it("build.status carries a revision that moves with the built model and only with it", async () => {
+    // The schema always promised a document revision and build.status never
+    // returned one, so an agent could not tell whether the model changed between
+    // two calls, and a fingerprint it held could be about a model that is gone.
+    let built: CadDocument = BUILT as CadDocument;
+    const store = fakeStore({ buildDocument: () => built });
+    const rev = async () => {
+      const r = await handleTool("build.status", {}, { store, geometry: {} as GeometryBackend });
+      expect(r.ok).toBe(true);
+      return (r as { result: { revision: string } }).result.revision;
+    };
+    const a = await rev();
+    expect(typeof a).toBe("string");
+    expect(a.length).toBeGreaterThan(8);
+    expect(await rev()).toBe(a); // the control: asking twice is not a change
+    built = { ...BUILT, parameters: { t: 6 } } as CadDocument;
+    const b = await rev();
+    expect(b).not.toBe(a);
+    built = BUILT as CadDocument; // undone: the same model, so the same revision
+    expect(await rev()).toBe(a);
+  });
+
+  it("doc.read says which bodies are hidden, since exports and measures differ on them", async () => {
+    const store = fakeStore({
+      isBodyVisible: (id: string) => id !== "body2",
+      buildState: {
+        building: false,
+        errorMessage: null,
+        errorFeatureId: null,
+        result: {
+          bodies: [
+            { id: "body1", name: "A", faceCount: 6 },
+            { id: "body2", name: "B", faceCount: 6 },
+          ],
+          featureErrors: [],
+        },
+      },
+    });
+    const r = await handleTool("doc.read", {}, { store, geometry: {} as GeometryBackend });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const bodies = (r.result as { bodies: { id: string; hidden?: boolean }[] }).bodies;
+    expect(bodies.find((b) => b.id === "body2")!.hidden).toBe(true);
+    expect(bodies.find((b) => b.id === "body1")!.hidden).toBeUndefined();
+  });
+});
+
+describe("an agent request against a real store", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it("never dirties or edits the document, so it can neither raise nor skip the save prompt", async () => {
+    // The close guard asks about unsaved work off `store.dirty`. A read that
+    // marked the document dirty would put a Save/Discard prompt in front of a
+    // user who changed nothing; one that cleared it would let a close throw
+    // their work away. Every tool, against the real DocumentStore.
+    vi.useFakeTimers();
+    vi.stubGlobal("window", { setTimeout, clearTimeout });
+    const geometry = {
+      async rebuild() {
+        return { ok: false, error: { message: "stub" } };
+      },
+      async init() {},
+      onStatus() {
+        return () => {};
+      },
+      connected: true,
+      massProperties: vi.fn().mockResolvedValue({ ok: true, result: { bodies: [] } }),
+      queryForAgent: vi.fn().mockResolvedValue({ ok: true, result: { results: [] } }),
+    } as unknown as GeometryBackend;
+    const doc: CadDocument = {
+      parameters: {},
+      features: [{ id: "b1", type: "box", length: 10, width: 10, height: 10 }] as Feature[],
+    };
+    const store = new DocumentStore(geometry, doc);
+    for (const dirtyBefore of [false, true]) {
+      if (dirtyBefore) store.setBodyVisibility("body1", false); // a real unsaved change
+      expect(store.dirty).toBe(dirtyBefore);
+      const docAt = JSON.stringify(store.document);
+      const undoAt = store.canUndo;
+      for (const tool of ["sindri.schema", "build.status", "doc.read", "geom.measure", "geom.query"]) {
+        const r = await handleTool(tool, { items: [] }, { store, geometry });
+        expect(r.ok, tool).toBe(true);
+      }
+      expect(store.dirty).toBe(dirtyBefore);
+      expect(JSON.stringify(store.document)).toBe(docAt);
+      expect(store.canUndo).toBe(undoAt);
+    }
   });
 });

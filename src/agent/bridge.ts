@@ -75,11 +75,16 @@ function schema(): unknown {
       "sindri.schema": { params: {}, returns: "this document" },
       "build.status": {
         params: {},
-        returns: "whether a rebuild is in flight, the last error, body count, document revision",
+        returns:
+          "whether a rebuild is in flight, the last error, body count, and `revision`: a digest " +
+          "of the built model. Equal revisions mean the same model; compare it before reusing a " +
+          "fingerprint from an earlier call.",
       },
       "doc.read": {
         params: {},
-        returns: "the feature tree and the live bodies (ids, names, kinds)",
+        returns:
+          "the feature tree and the live bodies (ids, names, face counts; `hidden: true` on a " +
+          "body the user hid, which is still built and measured but left out of an export)",
       },
       "geom.measure": {
         params: { bodies: "string[]?  body ids; omit for all", checks: "boolean?  validity + watertightness, much slower" },
@@ -93,17 +98,30 @@ function schema(): unknown {
         params: {
           items:
             'query items. ONE item is {"kind":"face"|"edge", "sel":{…selector…}, ' +
-            '"where":{…predicate…}?, "limit":N?, "body":"id"?, "id":"yours"?} — the ' +
-            "selector goes INSIDE `sel`, and a `by`/`dir`/`fp` written on the item " +
-            "itself is refused rather than ignored. An item with neither `sel` nor " +
-            "`where` deliberately matches every entity of `kind`.",
+            '"where":{…predicate…}?, "limit":1..5000 (default 200)?, "body":"id"?, ' +
+            '"id":"yours"?} — the selector goes INSIDE `sel`, and a `by`/`dir`/`fp` ' +
+            "written on the item itself is refused rather than ignored, as is a key in " +
+            "`sel` that its form does not read. An item with neither `sel` nor `where` " +
+            "deliberately matches every entity of `kind`.",
         },
         returns: "which faces or edges match, as storable by:\"match\" references",
       },
     },
     selectors: {
-      face: ['by:"normal" dir + optional deg (PLANAR faces only; default 8.1°)', 'by:"nearest" point', 'by:"match" fp', 'by:"all"'],
-      edge: ['by:"axis"', 'by:"all"', 'by:"nearest" point', 'by:"match" fp', 'by:"tangentChain" seed', 'by:"ofFace" face'],
+      face: [
+        'by:"normal" dir, deg? (PLANAR faces only; default 8.1°)',
+        'by:"nearest" point, nth?',
+        'by:"match" fp, nth?',
+        'by:"all"',
+      ],
+      edge: [
+        'by:"axis" axis ("X"|"Y"|"Z")',
+        'by:"all"',
+        'by:"nearest" point, nth?',
+        'by:"match" fp, nth?',
+        'by:"tangentChain" seed (an edge reference from geom.query, or its fp)',
+        'by:"ofFace" face (a face reference from geom.query, or its fp)',
+      ],
     },
     traps: [
       "A fingerprint you INVENTED will resolve to something rather than fail. Never author " +
@@ -111,6 +129,9 @@ function schema(): unknown {
       'by:"nearest" is not judged. The centroid of a face with a hole in it need not lie on ' +
         "that face, so feeding a reported centroid back can select a different face.",
       'by:"normal" matches ALL co-normal planar faces, not one, and skips curved faces entirely.',
+      "An edge fingerprint's `dir` is the tangent at its midpoint. On a circle that is NOT the " +
+        "circle's axis, so neither `fp.dir` nor `where.dir` filters circles by axis. Nothing " +
+        "here reports a circle's axis yet; do not infer it from `dir`.",
       "geom.measure's volume/area/com are exact kernel values; its `bbox` is derived from the " +
         "display MESH and is only conservative. On a textured part the two disagree by design — " +
         "the texture displaces the mesh and owns no kernel face — so \"how much material will " +
@@ -122,10 +143,23 @@ function schema(): unknown {
   };
 }
 
-function buildStatus(store: DocumentStore): unknown {
+/**
+ * A digest of the built document: equal values mean the same model was asked
+ * about, so a fingerprint taken from one call still describes the other. A
+ * content hash rather than a counter, so an undo back to a model reads as that
+ * model again, and a rebuild that changed nothing is not a change.
+ */
+async function revisionOf(doc: unknown): Promise<string> {
+  const bytes = new TextEncoder().encode(JSON.stringify(doc));
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+  return Array.from(digest.subarray(0, 8), (x) => x.toString(16).padStart(2, "0")).join("");
+}
+
+async function buildStatus(store: DocumentStore): Promise<unknown> {
   const b = store.buildState;
   return {
     building: b.building,
+    revision: await revisionOf(liveDoc(store)),
     bodies: b.result?.bodies?.length ?? 0,
     // The composed sentence, not the raw one: it is the same text the human is
     // looking at, with the `{body}` slot already filled.
@@ -153,10 +187,12 @@ function docRead(store: DocumentStore): unknown {
         ? { name: envelope((f as { name?: string }).name, "name") }
         : {}),
     })),
+    // Hidden bodies are still built and measurable, but an export leaves them out.
     bodies: (store.buildState.result?.bodies ?? []).map((b) => ({
       id: b.id,
       name: envelope(b.name, "name"),
       faceCount: b.faceCount,
+      ...(store.isBodyVisible(b.id) ? {} : { hidden: true }),
     })),
     parameters: Object.keys(doc.parameters ?? {}),
     suppressed: store.rollbackIndex < doc.features.length ? { rollbackIndex: store.rollbackIndex } : null,
@@ -231,7 +267,7 @@ export async function handleTool(
     case "sindri.schema":
       return { ok: true, result: schema() };
     case "build.status":
-      return { ok: true, result: buildStatus(deps.store) };
+      return { ok: true, result: await buildStatus(deps.store) };
     case "doc.read":
       return { ok: true, result: docRead(deps.store) };
     case "geom.measure":

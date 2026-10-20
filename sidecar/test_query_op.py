@@ -477,6 +477,77 @@ def test_totals_cap_bounds_the_whole_reply():
     print(PASS, f"the whole reply is capped at {_QUERY_MAX_TOTAL} entities")
 
 
+def test_offace_and_tangentchain_take_the_reference_query_returns():
+    """geom.query hands back {kind, by:"match", fp} as a storable reference, and
+    by:"ofFace"/"tangentChain" used to want only the BARE fp inside it. Passing
+    the reference as returned died with a bare KeyError, `error: "'centroid'"`,
+    which names no parameter. Both shapes now resolve, and to the same edges."""
+    top = _q(BOX, {"id": "t", "kind": "face",
+                   "sel": {"kind": "face", "by": "normal", "dir": [0, 0, 1]}})[0]
+    assert top["ok"] and top["count"] == 1, top
+    ref = top["entities"][0]["sel"]
+    assert ref["by"] == "match" and "fp" in ref, ref
+
+    as_ref = _q(BOX, {"id": "q", "kind": "edge",
+                      "sel": {"kind": "edge", "by": "ofFace", "face": ref}})[0]
+    as_fp = _q(BOX, {"id": "q", "kind": "edge",
+                     "sel": {"kind": "edge", "by": "ofFace", "face": ref["fp"]}})[0]
+    assert as_ref["ok"], f"ofFace refused the reference geom.query returned: {as_ref}"
+    assert as_fp["ok"] and as_fp["count"] == 4, as_fp
+    assert as_ref["count"] == as_fp["count"], (as_ref["count"], as_fp["count"])
+    assert as_ref["match"].get("via") == "ofFace", as_ref["match"]
+
+    edge = _q(TUBE, {"id": "e", "kind": "edge",
+                     "where": {"curve": "circle", "radius": {"min": 9, "max": 11}},
+                     "limit": 1})[0]
+    eref = edge["entities"][0]["sel"]
+    chain_ref = _q(TUBE, {"id": "q", "kind": "edge",
+                          "sel": {"kind": "edge", "by": "tangentChain", "seed": eref}})[0]
+    chain_fp = _q(TUBE, {"id": "q", "kind": "edge",
+                         "sel": {"kind": "edge", "by": "tangentChain", "seed": eref["fp"]}})[0]
+    assert chain_ref["ok"], f"tangentChain refused the reference: {chain_ref}"
+    assert chain_ref["count"] == chain_fp["count"] >= 1, (chain_ref, chain_fp)
+    print(PASS, "ofFace and tangentChain take the reference geom.query returns, or its bare fp")
+
+
+def test_stray_selector_keys_are_refused_like_stray_predicates():
+    """Unknown keys inside `where` were refused by name while unknown keys inside
+    `sel` were swallowed: {"by":"normal","dir":…,"degrees":30} quietly ran at the
+    default 8.1 deg. Same module, two standards. The control is that every key
+    the app itself writes (body, nth) still resolves."""
+    stray = _q(BOX, {"id": "q", "kind": "face",
+                     "sel": {"kind": "face", "by": "normal", "dir": [0, 0, 1], "degrees": 30}})[0]
+    assert not stray["ok"] and stray["code"] == "badRequest", stray
+    assert "`degrees`" in stray["error"], stray["error"]
+
+    # a key that belongs to ANOTHER selector form is just as unread here
+    wrong_form = _q(BOX, {"id": "q", "kind": "face",
+                          "sel": {"kind": "face", "by": "normal", "dir": [0, 0, 1],
+                                  "point": [0, 0, 10]}})[0]
+    assert not wrong_form["ok"] and "`point`" in wrong_form["error"], wrong_form
+
+    fine = _q(BOX, {"id": "q", "kind": "face",
+                    "sel": {"kind": "face", "by": "nearest", "point": [0, 0, 10],
+                            "body": "body1", "nth": 0}})[0]
+    assert fine["ok"] and fine["count"] == 1, fine
+    print(PASS, "a stray key inside `sel` is refused by name, as inside `where`")
+
+
+def test_limit_zero_is_refused_not_quietly_defaulted():
+    """`limit: 0` read as falsy and became the default 200, while `limit: -1`
+    refused: the documented range is 1..5000, so enforce exactly that."""
+    zero = _q(BOX, {"id": "q", "kind": "face", "limit": 0})[0]
+    assert not zero["ok"] and zero["code"] == "badRequest", zero
+    assert "1..5000" in zero["error"], zero["error"]
+    neg = _q(BOX, {"id": "q", "kind": "face", "limit": -1})[0]
+    assert not neg["ok"] and neg["code"] == "badRequest", neg
+    one = _q(BOX, {"id": "q", "kind": "face", "limit": 1})[0]
+    assert one["ok"] and one["count"] == 6 and len(one["entities"]) == 1, one
+    default = _q(BOX, {"id": "q", "kind": "face"})[0]
+    assert default["ok"] and len(default["entities"]) == 6, default
+    print(PASS, "limit is 1..5000; 0 refuses instead of meaning 200")
+
+
 def main():
     print("Query-op tests")
     test_a_returned_reference_survives_a_mutation()
@@ -500,6 +571,9 @@ def main():
     test_strict_false_restores_the_old_confident_wrong_answer()
     test_expect_can_assert_identity_not_just_cardinality()
     test_totals_cap_bounds_the_whole_reply()
+    test_offace_and_tangentchain_take_the_reference_query_returns()
+    test_stray_selector_keys_are_refused_like_stray_predicates()
+    test_limit_zero_is_refused_not_quietly_defaulted()
     print("ALL PASS")
 
 

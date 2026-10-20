@@ -908,14 +908,14 @@ def resolve_edges(part, sel, diag=None, feature_id=None):
         _push_diag(diag, feature_id, "edge", 1 if best else 0, conf, lossy, reason)
         return [best] if best is not None else []
     if by == "ofFace":
-        faces = _faces_matching(part, sel["face"], diag, feature_id)
+        faces = _faces_matching(part, ref_fp(sel["face"]), diag, feature_id)
         out = {}
         for f in faces:
             for e in f.edges():
                 out.setdefault(_edge_dedup_key(e), e)
         return list(out.values())
     if by == "tangentChain":
-        fp = sel["seed"]
+        fp = ref_fp(sel["seed"])
         edges = list(part.edges())
         tol_pos = POS_DRIFT + REL_DRIFT * _bbox_diag(part)
         rank_of = _circle_center_groups(edges, tol_pos)
@@ -994,6 +994,16 @@ def resolve_faces(part, sel, diag=None, feature_id=None):
     if by == "match":
         return _faces_matching(part, sel["fp"], diag, feature_id, nth=sel.get("nth"))
     raise errors.GeomError(f"unknown face selector: {by}", errors.BAD_REQUEST)
+
+
+def ref_fp(ref):
+    """The fingerprint inside an inner reference (ofFace's `face`, tangentChain's
+    `seed`). Stored documents hold the bare fp; the query op hands back the whole
+    {kind, by:"match", fp} reference, and an agent passes on what it was given.
+    Taking only the bare one failed as a KeyError naming no parameter."""
+    if isinstance(ref, dict) and ref.get("by") == "match" and isinstance(ref.get("fp"), dict):
+        return ref["fp"]
+    return ref
 
 
 def _faces_matching(part, fp, diag, feature_id, nth=None):
