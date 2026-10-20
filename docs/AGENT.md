@@ -6,19 +6,34 @@ protocol and nothing on the path imports `DocumentStore.mutate()`.
 
 ## Configure a client
 
-`sindri-mcp` is installed beside the app (on Linux it lands on `$PATH` as
-`/usr/bin/sindri-mcp`; on macOS inside the bundle; on Windows next to the exe):
+`sindri-mcp` is installed beside the app:
+
+| install | where it is |
+|---|---|
+| Linux `.deb` / `.rpm` | `/usr/bin/sindri-mcp`, on `$PATH` |
+| macOS | `/Applications/SindriCAD.app/Contents/MacOS/sindri-mcp` |
+| Windows | next to `SindriCAD.exe` in the install folder |
+| Linux AppImage | inside the image only, so not reachable; use a `.deb` or build it |
 
 ```jsonc
 { "mcpServers": { "sindricad": { "command": "sindri-mcp" } } }
 ```
+
+With Claude Code: `claude mcp add sindricad -- sindri-mcp` (give the full path
+on macOS and Windows). The shim finds the running app by itself: it reads
+`handshake.json` (socket path + per-launch token) from the app's data folder,
+`$XDG_DATA_HOME/dev.sindricad.app/agent/` on Linux (default
+`~/.local/share/...`), `~/Library/Application Support/dev.sindricad.app/agent/`
+on macOS and `%APPDATA%\dev.sindricad.app\agent\` on Windows.
+`SINDRI_AGENT_HANDSHAKE` points it at another file.
 
 The server starts whether or not SindriCAD is running. If the app is closed, the
 tools say so and start working the moment you open it — a client launches its MCP
 servers at startup, long before you open a CAD app, and refusing to start would
 present as "the MCP server is broken".
 
-Building it yourself: `cargo build --release --bin sindri-mcp`, or
+Building it yourself: `cargo build --release --manifest-path
+src-tauri/sindri-mcp/Cargo.toml` (its own crate, see the script), or
 `scripts/stage-sindri-mcp.sh` to put it where a local `tauri build` expects it.
 
 ## The tools
@@ -26,8 +41,8 @@ Building it yourself: `cargo build --release --bin sindri-mcp`, or
 | tool | answers |
 |---|---|
 | `sindri_schema` | the tool list, the selector vocabulary, and the traps. Call it first. |
-| `build_status` | is a rebuild in flight, what failed, how many bodies |
-| `doc_read` | the feature tree and the live bodies |
+| `build_status` | is a rebuild in flight, what failed, how many bodies, and a `revision` of the built model |
+| `doc_read` | the feature tree and the live bodies, named as the Browser names them, hidden ones marked |
 | `geom_measure` | exact kernel volume, area, centre of mass, bbox, entity counts |
 | `geom_query` | which faces or edges match a description, as storable references |
 
@@ -164,3 +179,8 @@ Not done:
 - a demonstration of a model *authoring a feature* against this surface. The
   reference-selection half is measured above; P2 is read-only, so building
   something with those references is P3's question, not this one.
+- a socket path that does not fit. A Unix socket path is limited to 107 bytes
+  (103 on macOS), and the socket lives in the app's data folder, so an
+  unusually deep `$XDG_DATA_HOME` leaves the bridge off, said once on stderr
+  and nowhere else. Found by launching the app with a long test data folder;
+  the default paths are well inside the limit.

@@ -540,6 +540,14 @@ Reply:
   `by:"nearest"` is not judged at all. And on a tie, `candidateFps` carries only the winner;
   the losing candidates are not enumerable at this layer.
 - `where` keys combine as **AND**. `sel` is applied **before** `where`.
+- **The selector goes inside `sel`, and only its own keys.** A `by`/`dir`/`fp`/… written on
+  the item itself is refused (it used to leave `sel` unset, which matched every entity with
+  `ok:true`), and so is a key inside `sel` its form does not read: beyond `kind`, `by` and
+  `body`, `normal` reads `dir`/`deg`/`tol`, `nearest` `point`/`nth`, `match` `fp`/`nth`,
+  `axis` `axis`, `ofFace` `face`, `tangentChain` `seed`. Checked here only, never on a
+  saved document's selectors at rebuild.
+- `ofFace`'s `face` and `tangentChain`'s `seed` take a bare fingerprint (what a saved
+  document holds) or the whole `{kind, by:"match", fp}` reference this op returns.
 - **`normal` matches PLANAR faces only.** A single direction is meaningless on a curved
   face — a cylinder lying on its side reports "up" at one point of its surface, which is
   why a part whose text sits on a barrel cannot be found by any direction query at all.
@@ -586,7 +594,8 @@ Reply:
   **tautology**, because that selector always resolves exactly one — it asserts cardinality
   and is silent about which entity you got. A miss returns `ok:false` with
   `code:"expectFailed"` and still reports what it found.
-- Bounded: at most 64 items, `limit` at most 5000, and a **total of 5000 entities across
+- Bounded: at most 64 items, `limit` 1..5000 (default 200; `0` is refused, not read as
+  the default), and a **total of 5000 entities across
   the whole request** — per-item limits multiply, and this op replies on a path with no
   outbound frame-size guard. There is also a wall-clock budget; items that run past it
   return `code:"budgetExhausted"` with their partial results.
