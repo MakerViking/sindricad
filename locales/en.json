@@ -1448,6 +1448,11 @@
     "toolWithKey": "{label} ({key})"
   },
   "settings": {
+    "agent": {
+      "allowEdits": "Let AI agents edit documents",
+      "note": "AI agents connected through sindri-mcp can read the document you have open. They cannot edit it yet; once they can, only with this switched on.",
+      "saveFailed": "Could not save this setting, so it is unchanged."
+    },
     "extrude": {
       "keepSketchVisible": "Keep the sketch visible after Extrude"
     },

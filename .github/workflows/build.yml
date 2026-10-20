@@ -1156,6 +1156,14 @@ jobs:
           SC_CHROME: /usr/bin/google-chrome
         run: node e2e/unsaved_changes_guard_e2e.cjs
 
+      # "Let AI agents edit documents" only exists under Tauri (Rust owns the
+      # setting), so a fake IPC floor holds it; the menu, dialog and box are real.
+      - name: Agent edits setting end-to-end
+        env:
+          SC_TOKEN: citoken
+          SC_CHROME: /usr/bin/google-chrome
+        run: node e2e/agent_writes_setting_e2e.cjs
+
       # The funding pill only exists under Tauri, so the same kind of fake IPC
       # floor answers the goal; what it checks is layout and focus a unit test
       # cannot: the pill appearing moves nothing else in the title bar, the panel
