@@ -338,7 +338,9 @@ pub fn run() {
         tinkeratlas::ta_bug_report,
         tinkeratlas::ta_funding_goal,
         spacemouse::spacemouse_inventory,
-        agent_ipc::agent_result
+        agent_ipc::agent_result,
+        agent_ipc::agent_writes_get,
+        agent_ipc::agent_writes_set
     ]);
     #[cfg(not(feature = "rust-geom"))]
     let builder = builder.invoke_handler(tauri::generate_handler![
@@ -382,7 +384,9 @@ pub fn run() {
         tinkeratlas::ta_bug_report,
         tinkeratlas::ta_funding_goal,
         spacemouse::spacemouse_inventory,
-        agent_ipc::agent_result
+        agent_ipc::agent_result,
+        agent_ipc::agent_writes_get,
+        agent_ipc::agent_writes_set
     ]);
 
     let app = builder

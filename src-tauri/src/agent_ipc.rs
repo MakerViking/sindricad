@@ -26,8 +26,8 @@
 //! defends against other users and against web content, not against you.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -73,6 +73,9 @@ struct RequestEvent {
     seq: u64,
     tool: String,
     params: Value,
+    /// "Let AI agents edit documents", read HERE for every request: this side
+    /// owns the setting, so the webview never decides it on its own.
+    writes: bool,
 }
 
 pub struct AgentIpc {
@@ -80,6 +83,71 @@ pub struct AgentIpc {
     seq: AtomicU64,
     pending: Mutex<HashMap<u64, oneshot::Sender<Value>>>,
     handshake: PathBuf,
+    /// The socket file to remove on exit (None for a Windows pipe, which goes
+    /// with its last handle). Not always beside the handshake: see socket_path.
+    socket: Option<PathBuf>,
+}
+
+/// The Settings toggle "Let AI agents edit documents" (off by default). Owned by
+/// Rust, not the webview, because the broker has to read it too: once there are
+/// write tools it refuses them here when the toggle is off, as a second wall that
+/// does not depend on the webview being honest. Managed whether or not the
+/// bridge itself starts, so the Settings dialog always has something to ask.
+pub struct AgentSettings {
+    writes: AtomicBool,
+    /// None when the app data folder could not be made: the toggle then stays
+    /// off and cannot be turned on, and says so.
+    path: Option<PathBuf>,
+}
+
+/// The toggle as a settings file reads: on ONLY when it says `true` in so many
+/// words. A missing, unreadable or hand-mangled file is off, never on.
+fn writes_enabled_in(text: Option<&str>) -> bool {
+    text.and_then(|t| serde_json::from_str::<Value>(t).ok())
+        .and_then(|v| v.get("writesEnabled").and_then(Value::as_bool))
+        .unwrap_or(false)
+}
+
+/// Write the toggle, keeping any other key in the file (a newer build may have
+/// added one). Written beside and renamed over, so a crash mid-write leaves the
+/// old file rather than half a file.
+fn save_writes_enabled(path: &Path, on: bool) -> Result<(), String> {
+    let mut v = std::fs::read_to_string(path)
+        .ok()
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        .filter(Value::is_object)
+        .unwrap_or_else(|| json!({}));
+    v["writesEnabled"] = Value::Bool(on);
+    let tmp = path.with_extension("json.tmp");
+    let text = serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?;
+    std::fs::write(&tmp, text).map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, path).map_err(|e| e.to_string())
+}
+
+/// Whether agents may edit documents. Read by the Settings dialog.
+#[tauri::command]
+pub fn agent_writes_get(state: tauri::State<'_, AgentSettings>) -> bool {
+    state.writes.load(Ordering::SeqCst)
+}
+
+/// Turn agent edits on or off, kept across restarts.
+#[tauri::command]
+pub fn agent_writes_set(state: tauri::State<'_, AgentSettings>, on: bool) -> Result<(), String> {
+    let path = state.path.as_ref().ok_or("the app data folder is not available")?;
+    save_writes_enabled(path, on)?;
+    state.writes.store(on, Ordering::SeqCst);
+    println!("[agent] edits by agents turned {}", if on { "on" } else { "off" });
+    Ok(())
+}
+
+/// Read the toggle at launch and manage it. Never fails: no folder, no file or
+/// a bad file all mean off.
+fn load_settings(app: &AppHandle) -> AgentSettings {
+    let path = agent_dir(app).ok().map(|d| d.join("settings.json"));
+    let text = path.as_ref().and_then(|p| std::fs::read_to_string(p).ok());
+    let on = writes_enabled_in(text.as_deref());
+    println!("[agent] edits by agents: {}", if on { "on" } else { "off" });
+    AgentSettings { writes: AtomicBool::new(on), path }
 }
 
 impl AgentIpc {
@@ -125,8 +193,12 @@ async fn dispatch(app: &AppHandle, tool: String, params: Value) -> Value {
         return err("bridgeUnavailable", "the agent bridge is not running");
     };
     let (seq, rx) = state.park();
+    let writes = app
+        .try_state::<AgentSettings>()
+        .map(|s| s.writes.load(Ordering::SeqCst))
+        .unwrap_or(false);
 
-    if app.emit(REQUEST_EVENT, RequestEvent { seq, tool, params }).is_err() {
+    if app.emit(REQUEST_EVENT, RequestEvent { seq, tool, params, writes }).is_err() {
         state.abandon(seq);
         return err("bridgeUnavailable", "the app window is not accepting requests");
     }
@@ -247,6 +319,7 @@ fn write_handshake(path: &PathBuf, body: &str) -> std::io::Result<()> {
 /// guarantee is what this function advertises, so it is enforced here rather
 /// than left to every future line inside `setup` being careful.
 pub fn start(app: &AppHandle) {
+    app.manage(load_settings(app));
     let handle = app.clone();
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| setup(&handle)));
     match outcome {
@@ -256,10 +329,61 @@ pub fn start(app: &AppHandle) {
     }
 }
 
+/// The longest path a Unix socket can be bound at: `sun_path` holds 108 bytes
+/// on Linux and 104 on macOS, the last one a NUL.
+#[cfg(all(unix, target_os = "macos"))]
+const SUN_PATH_MAX: usize = 103;
+#[cfg(all(unix, not(target_os = "macos")))]
+const SUN_PATH_MAX: usize = 107;
+
+/// Where to bind the socket: beside the handshake in `dir`, or, when that path
+/// is too long for a Unix socket (a deep `XDG_DATA_HOME`, a long macOS user
+/// name), in `private`, the per-user runtime folder, named for this process.
+/// The handshake says where it went, so the shim needs to know nothing.
+///
+/// A fallback that other users can reach is refused rather than used: that is
+/// the world-writable /tmp this module avoids (see agent_dir), and the token
+/// would be the only barrier left.
+#[cfg(unix)]
+fn socket_path(dir: &Path, private: Option<&Path>, pid: u32) -> Result<PathBuf, String> {
+    let beside = dir.join("sock");
+    if beside.as_os_str().len() <= SUN_PATH_MAX {
+        return Ok(beside);
+    }
+    let too_long = format!(
+        "{beside:?} is too long for a Unix socket ({} bytes, at most {SUN_PATH_MAX})",
+        beside.as_os_str().len()
+    );
+    let Some(run) = private else {
+        return Err(format!("{too_long}, and there is no private runtime folder to use instead"));
+    };
+    let fallback = run.join(format!("sindricad-agent-{pid}.sock"));
+    if fallback.as_os_str().len() > SUN_PATH_MAX {
+        return Err(format!("{too_long}, and so is {fallback:?}"));
+    }
+    use std::os::unix::fs::PermissionsExt;
+    let mode = std::fs::metadata(run).map_err(|e| format!("{too_long}; {run:?}: {e}"))?.permissions().mode();
+    if mode & 0o077 != 0 {
+        return Err(format!("{too_long}, and {run:?} is open to other users (mode {:o})", mode & 0o777));
+    }
+    Ok(fallback)
+}
+
+/// The per-user folder a too-long socket path falls back to: `$XDG_RUNTIME_DIR`
+/// on Linux (0700 by the spec), the per-user `$TMPDIR` on macOS (under
+/// /var/folders, 0700). socket_path checks the mode either way.
+#[cfg(unix)]
+fn private_runtime_dir() -> Option<PathBuf> {
+    if cfg!(target_os = "macos") {
+        return Some(std::env::temp_dir());
+    }
+    std::env::var_os("XDG_RUNTIME_DIR").filter(|v| !v.is_empty()).map(PathBuf::from)
+}
+
 #[cfg(unix)]
 fn setup(app: &AppHandle) -> Result<PathBuf, String> {
     let dir = agent_dir(app)?;
-    let sock = dir.join("sock");
+    let sock = socket_path(&dir, private_runtime_dir().as_deref(), std::process::id())?;
     let handshake = dir.join("handshake.json");
     let token = random_token();
 
@@ -277,6 +401,7 @@ fn setup(app: &AppHandle) -> Result<PathBuf, String> {
         seq: AtomicU64::new(1),
         pending: Mutex::new(HashMap::new()),
         handshake: handshake.clone(),
+        socket: Some(sock.clone()),
     });
 
     // BIND INSIDE THE RUNTIME, not here. `tauri::Builder::setup` runs before the
@@ -452,11 +577,17 @@ fn setup(app: &AppHandle) -> Result<PathBuf, String> {
     .map_err(|e| e.to_string())?;
     write_handshake(&handshake, &body).map_err(|e| format!("handshake {handshake:?}: {e}"))?;
 
+    // Built before anything is advertised: without it the pipe would get the
+    // default DACL, which is broader than the Unix socket's 0600.
+    let mut security = pipe_security::PipeSecurity::for_current_user()
+        .map_err(|e| format!("cannot restrict the agent pipe to this user: {e}"))?;
+
     app.manage(AgentIpc {
         token,
         seq: AtomicU64::new(1),
         pending: Mutex::new(HashMap::new()),
         handshake: handshake.clone(),
+        socket: None,
     });
 
     let app2 = app.clone();
@@ -465,12 +596,11 @@ fn setup(app: &AppHandle) -> Result<PathBuf, String> {
         // `first_pipe_instance` makes creation FAIL if something already owns
         // this name, rather than quietly joining it — which is the Windows
         // shape of the squatting attack the Unix side avoids by not using
-        // world-writable /tmp.
-        let mut server = match ServerOptions::new()
-            .first_pipe_instance(true)
-            .reject_remote_clients(true)
-            .create(&pipe)
-        {
+        // world-writable /tmp. Every instance carries the user-only DACL.
+        let first = ServerOptions::new().first_pipe_instance(true).reject_remote_clients(true).clone();
+        // SAFETY: the attributes and the descriptor they point at are owned by
+        // `security`, which lives for this whole task.
+        let mut server = match unsafe { first.create_with_security_attributes_raw(&pipe, security.as_raw()) } {
             Ok(s) => s,
             Err(e) => {
                 eprintln!("[agent] cannot create {pipe}: {e} — bridge unavailable");
@@ -490,7 +620,9 @@ fn setup(app: &AppHandle) -> Result<PathBuf, String> {
             // the shape that differs from an accept() loop, and getting it
             // wrong means only one client ever connects.
             let connected = server;
-            server = match ServerOptions::new().reject_remote_clients(true).create(&pipe) {
+            let next = ServerOptions::new().reject_remote_clients(true).clone();
+            // SAFETY: as for the first instance, `security` outlives the call.
+            server = match unsafe { next.create_with_security_attributes_raw(&pipe, security.as_raw()) } {
                 Ok(s) => s,
                 Err(e) => {
                     eprintln!("[agent] cannot re-arm {pipe}: {e} — bridge stopping");
@@ -506,6 +638,105 @@ fn setup(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(handshake)
 }
 
+/// The DACL of the agent pipe in SDDL: protected (no inherited entries) and one
+/// entry, full access for `user_sid`, so only this user's processes can open it,
+/// the Windows shape of the socket's 0600 in a 0700 folder. None for anything
+/// that is not a plain SID string, which would otherwise be spliced into the
+/// descriptor as more entries.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn pipe_sddl(user_sid: &str) -> Option<String> {
+    let tail = user_sid.strip_prefix("S-1-")?;
+    if tail.is_empty() || !tail.chars().all(|c| c.is_ascii_digit() || c == '-') {
+        return None;
+    }
+    Some(format!("D:P(A;;GA;;;{user_sid})"))
+}
+
+#[cfg(windows)]
+mod pipe_security {
+    use std::ffi::c_void;
+    use windows::core::{PCWSTR, PWSTR};
+    use windows::Win32::Foundation::{CloseHandle, LocalFree, HANDLE, HLOCAL};
+    use windows::Win32::Security::Authorization::{
+        ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+    };
+    use windows::Win32::Security::{GetTokenInformation, TokenUser, PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER};
+    use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    /// A security descriptor admitting only the current user, and the
+    /// SECURITY_ATTRIBUTES that hand it to CreateNamedPipe. Boxed so the pointer
+    /// given out stays put; the descriptor is freed on drop.
+    pub struct PipeSecurity {
+        descriptor: PSECURITY_DESCRIPTOR,
+        attributes: Box<SECURITY_ATTRIBUTES>,
+    }
+
+    // SAFETY: both are plain heap blocks owned by this value and only read by
+    // CreateNamedPipe; nothing else holds them.
+    unsafe impl Send for PipeSecurity {}
+
+    impl PipeSecurity {
+        pub fn for_current_user() -> Result<Self, String> {
+            let sid = current_user_sid()?;
+            let sddl = super::pipe_sddl(&sid).ok_or_else(|| format!("unexpected SID {sid:?}"))?;
+            let wide: Vec<u16> = sddl.encode_utf16().chain(Some(0)).collect();
+            let mut descriptor = PSECURITY_DESCRIPTOR::default();
+            // SAFETY: `wide` is NUL-terminated and outlives the call.
+            unsafe {
+                ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                    PCWSTR(wide.as_ptr()),
+                    SDDL_REVISION_1,
+                    &mut descriptor,
+                    None,
+                )
+            }
+            .map_err(|e| e.to_string())?;
+            let attributes = Box::new(SECURITY_ATTRIBUTES {
+                nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+                lpSecurityDescriptor: descriptor.0,
+                bInheritHandle: false.into(),
+            });
+            Ok(Self { descriptor, attributes })
+        }
+
+        pub fn as_raw(&mut self) -> *mut c_void {
+            &mut *self.attributes as *mut SECURITY_ATTRIBUTES as *mut c_void
+        }
+    }
+
+    impl Drop for PipeSecurity {
+        fn drop(&mut self) {
+            // SAFETY: allocated by ConvertStringSecurityDescriptorToSecurityDescriptorW.
+            unsafe {
+                let _ = LocalFree(HLOCAL(self.descriptor.0));
+            }
+        }
+    }
+
+    /// This process's user as a SID string ("S-1-5-21-…").
+    fn current_user_sid() -> Result<String, String> {
+        // SAFETY: every out-pointer is a live local; the token handle is
+        // closed on every path; the SID string is freed after it is copied.
+        unsafe {
+            let mut token = HANDLE::default();
+            OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token).map_err(|e| e.to_string())?;
+            let mut len = 0u32;
+            let _ = GetTokenInformation(token, TokenUser, None, 0, &mut len);
+            // u64s, so the TOKEN_USER read out of it is aligned
+            let mut buf = vec![0u64; (len as usize).div_ceil(8)];
+            let got = GetTokenInformation(token, TokenUser, Some(buf.as_mut_ptr().cast()), len, &mut len);
+            let _ = CloseHandle(token);
+            got.map_err(|e| e.to_string())?;
+            let user = &*(buf.as_ptr() as *const TOKEN_USER);
+            let mut text = PWSTR::null();
+            ConvertSidToStringSidW(user.User.Sid, &mut text).map_err(|e| e.to_string())?;
+            let sid = text.to_string().map_err(|e| e.to_string());
+            let _ = LocalFree(HLOCAL(text.0.cast()));
+            sid
+        }
+    }
+}
+
 // Neither Unix nor Windows: nothing to do, and the app runs exactly as before.
 #[cfg(not(any(unix, windows)))]
 fn setup(_app: &AppHandle) -> Result<PathBuf, String> {
@@ -517,8 +748,8 @@ fn setup(_app: &AppHandle) -> Result<PathBuf, String> {
 pub fn shutdown(app: &AppHandle) {
     if let Some(state) = app.try_state::<AgentIpc>() {
         let _ = std::fs::remove_file(&state.handshake);
-        if let Some(dir) = state.handshake.parent() {
-            let _ = std::fs::remove_file(dir.join("sock"));
+        if let Some(sock) = &state.socket {
+            let _ = std::fs::remove_file(sock);
         }
     }
 }
@@ -543,6 +774,83 @@ mod tests {
         assert_eq!(a.len(), 64, "32 bytes hex-encoded");
         assert_ne!(a, b, "two launches must not share a token");
         assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    // --- "Let AI agents edit documents" -----------------------------------
+
+    #[test]
+    fn agent_writes_are_off_unless_the_file_says_on() {
+        assert!(!writes_enabled_in(None), "no file: off");
+        assert!(!writes_enabled_in(Some("")), "empty: off");
+        assert!(!writes_enabled_in(Some("not json")), "garbage: off, never on by accident");
+        assert!(!writes_enabled_in(Some("{}")), "no key: off");
+        assert!(!writes_enabled_in(Some(r#"{"writesEnabled": "yes"}"#)), "wrong type: off");
+        assert!(!writes_enabled_in(Some(r#"{"writesEnabled": false}"#)));
+        assert!(writes_enabled_in(Some(r#"{"writesEnabled": true}"#)));
+    }
+
+    #[test]
+    fn the_toggle_survives_a_restart_and_keeps_other_keys() {
+        let dir = std::env::temp_dir().join(format!("sindri-agent-settings-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        std::fs::write(&path, r#"{"future": 7}"#).unwrap();
+
+        save_writes_enabled(&path, true).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(writes_enabled_in(Some(&text)));
+        assert_eq!(serde_json::from_str::<Value>(&text).unwrap()["future"], 7, "a key a newer build wrote is kept");
+        save_writes_enabled(&path, false).unwrap();
+        assert!(!writes_enabled_in(std::fs::read_to_string(&path).ok().as_deref()));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_request_carries_the_toggle_to_the_webview() {
+        let ev = RequestEvent { seq: 3, tool: "build.status".into(), params: json!({}), writes: false };
+        assert_eq!(serde_json::to_value(&ev).unwrap()["writes"], false);
+    }
+
+    // --- socket path ---------------------------------------------------------
+
+    #[cfg(unix)]
+    #[test]
+    fn a_short_app_data_path_keeps_the_socket_beside_the_handshake() {
+        let dir = std::path::Path::new("/home/u/.local/share/dev.sindricad.app/agent");
+        assert_eq!(socket_path(dir, None, 42).unwrap(), dir.join("sock"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_path_too_long_for_a_unix_socket_falls_back_to_the_private_runtime_dir() {
+        let deep = std::path::PathBuf::from("/tmp/".to_string() + &"d".repeat(120)).join("agent");
+        assert!(deep.join("sock").as_os_str().len() > SUN_PATH_MAX);
+        let run = std::env::temp_dir().join(format!("sindri-agent-run-{}", std::process::id()));
+        std::fs::create_dir_all(&run).unwrap();
+        restrict(&run, 0o700).unwrap();
+        assert_eq!(socket_path(&deep, Some(&run), 42).unwrap(), run.join("sindricad-agent-42.sock"));
+
+        // a fallback anyone else can reach is no better than /tmp: refused
+        restrict(&run, 0o755).unwrap();
+        let e = socket_path(&deep, Some(&run), 42).unwrap_err();
+        assert!(e.contains("too long"), "{e}");
+
+        // and with no fallback at all it says why, rather than failing to bind
+        assert!(socket_path(&deep, None, 42).unwrap_err().contains("too long"));
+        std::fs::remove_dir_all(&run).ok();
+    }
+
+    // --- Windows pipe DACL -----------------------------------------------------
+
+    #[test]
+    fn the_pipe_dacl_admits_only_the_user_sid() {
+        let sid = "S-1-5-21-3623811015-3361044348-30300820-1013";
+        assert_eq!(pipe_sddl(sid).unwrap(), format!("D:P(A;;GA;;;{sid})"));
+        // anything but a SID would be spliced into the descriptor: refused
+        assert!(pipe_sddl("S-1-5-21)(A;;GA;;;WD").is_none());
+        assert!(pipe_sddl("WD").is_none());
+        assert!(pipe_sddl("").is_none());
     }
 
     /// The property the whole handshake rests on: the secret is never briefly

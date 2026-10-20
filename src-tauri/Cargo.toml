@@ -97,11 +97,13 @@ webkit2gtk = { version = "2", features = ["v2_20"] }
 
 # Windows-only: a Job Object with KILL_ON_JOB_CLOSE reaps the sidecar (and its
 # ProcessPoolExecutor workers) when the app exits or crashes. Unix uses a process
-# group + PR_SET_PDEATHSIG instead (no extra dep).
+# group + PR_SET_PDEATHSIG instead (no extra dep). Win32_Security_Authorization:
+# the agent pipe's user-only DACL is written in SDDL (agent_ipc.rs).
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [
     "Win32_Foundation",
     "Win32_Security",
+    "Win32_Security_Authorization",
     "Win32_System_JobObjects",
     "Win32_System_Threading",
 ] }

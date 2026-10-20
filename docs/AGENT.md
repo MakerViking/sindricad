@@ -170,17 +170,31 @@ they match to the last digit.
 (`\\.\pipe\sindricad-agent-…`, `first_pipe_instance` + `reject_remote_clients`),
 and only the transport differs — the protocol, the auth and the dispatch are the
 same generic code. Its API usage is type-checked against the Windows target, and
-CI's Windows leg compiles it, but nobody has run it on Windows. One gap is known
-and unclosed: a named pipe's default DACL is broader than the Unix socket's
-`0600`, so on Windows the token is doing more of the work.
+CI's Windows leg compiles it, but nobody has run it on Windows. The pipe is
+created with its own DACL, built in SDDL from the current user's SID (`D:P`, one
+entry, full access for that user), so only this user's processes can open it:
+the Windows shape of the socket's `0600` in a `0700` folder. If that descriptor
+cannot be built, the bridge stays off rather than fall back to the default DACL.
 
 Not done:
 
 - a demonstration of a model *authoring a feature* against this surface. The
   reference-selection half is measured above; P2 is read-only, so building
   something with those references is P3's question, not this one.
-- a socket path that does not fit. A Unix socket path is limited to 107 bytes
-  (103 on macOS), and the socket lives in the app's data folder, so an
-  unusually deep `$XDG_DATA_HOME` leaves the bridge off, said once on stderr
-  and nowhere else. Found by launching the app with a long test data folder;
-  the default paths are well inside the limit.
+
+A socket path that does not fit is handled. A Unix socket path is limited to 107
+bytes (103 on macOS), and the socket normally sits in the app's data folder, so
+an unusually deep `$XDG_DATA_HOME` (or a long macOS user name) used to leave the
+bridge off. It now binds `sindricad-agent-<pid>.sock` in the per-user runtime
+folder instead (`$XDG_RUNTIME_DIR` on Linux, the per-user `$TMPDIR` on macOS),
+only if that folder is closed to other users; the handshake names the path, so
+the shim needs nothing. With no such folder it stays off and says why on stderr.
+
+## Letting agents edit (not yet)
+
+Settings has "Let AI agents edit documents", off by default. Nothing reads it
+yet beyond carrying it: the Rust side owns it (`<app data>/agent/settings.json`,
+`writesEnabled`), stamps it on every request it hands the webview, and the
+webview's `writeRefusal` is the check every write tool will make first, together
+with "the user is mid-tool" (`userBusy`). There are no write tools, so the
+toggle changes nothing an agent can do today.
