@@ -7,7 +7,7 @@
 // that reports conflicts keeps the OLD coordinates and hands the caller the
 // solver's blamed constraint indices (via `onConflict`), decoded the same way
 // the open-sketch trial does (sketchMode.ts's parseConflictIdx) — the caller
-// (DocumentStore.commitWithCascade) uses that to refuse the whole parameter
+// (DocumentStore.commitDraft) uses that to refuse the whole parameter
 // edit rather than silently leaving one sketch behind. A solve that merely
 // crashed has nothing to blame and still resolves to a bare null.
 //

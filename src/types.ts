@@ -1160,6 +1160,19 @@ export interface CadDocument {
   palette?: { name: string; color: string; material?: string }[];
   /** per-body palette-slot assignment (body id → slot index into `palette`). */
   bodyColors?: Record<string, number>;
+  /** Which features an AI agent made (feature id → who and when), for the
+   *  "made by" badge. Display only: the build never reads it. Kept IN the
+   *  document like viewOverrides rather than in a store overlay, so undo takes
+   *  it back with its feature: feature ids are reused (DocumentStore.nextId),
+   *  and an overlay would badge the human's next feature as the agent's. */
+  agentProvenance?: Record<string, AgentProvenance>;
+}
+
+/** Who made a feature, when an agent did: the MCP client's self-reported name
+ *  (display only, never a security boundary) and an ISO time. */
+export interface AgentProvenance {
+  client: string;
+  at: string;
 }
 
 // A machine-readable classification on an error or a diagnostic. Prose is for
