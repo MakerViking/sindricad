@@ -908,14 +908,14 @@ def resolve_edges(part, sel, diag=None, feature_id=None):
         _push_diag(diag, feature_id, "edge", 1 if best else 0, conf, lossy, reason)
         return [best] if best is not None else []
     if by == "ofFace":
-        faces = _faces_matching(part, sel["face"], diag, feature_id)
+        faces = _faces_matching(part, ref_fp(sel["face"]), diag, feature_id)
         out = {}
         for f in faces:
             for e in f.edges():
                 out.setdefault(_edge_dedup_key(e), e)
         return list(out.values())
     if by == "tangentChain":
-        fp = sel["seed"]
+        fp = ref_fp(sel["seed"])
         edges = list(part.edges())
         tol_pos = POS_DRIFT + REL_DRIFT * _bbox_diag(part)
         rank_of = _circle_center_groups(edges, tol_pos)
@@ -957,8 +957,21 @@ def resolve_faces(part, sel, diag=None, feature_id=None):
         # OCCT "offset Error". build123d's own filter_by(Axis) gates on planarity
         # for exactly this reason; this branch never did.
         d = _unit(_v(sel["dir"]))
+        # `deg`/`tol` are ADVERTISED on this selector but used to be silently
+        # dropped: the branch read only `dir`, so deg:0 and deg:80 were the same
+        # query. Two ways that hurt, and the empty one is the worse: a direction
+        # 11.55deg off +Z returned count 0 with ok:true — an authoritative "this
+        # part has no faces pointing that way" for a part that had 13.
+        #
+        # The DEFAULT deliberately stays this branch's own 0.01 (8.11deg) rather
+        # than _cos_slack's ANG_TOL (0.02, 11.5deg). Every by:"normal" selector
+        # stored in every saved document resolves through here, so widening the
+        # default would silently re-target live Shell/Draft/Offset/Texture
+        # features. Only an EXPLICIT deg/tol moves the threshold.
+        slack = (_cos_slack(sel, "normal")
+                 if ("deg" in sel or "tol" in sel) else _NORMAL_SEL_SLACK)
         return list(part.faces().filter_by(
-            lambda f: _is_planar(f) and _face_normal(f).dot(d) > 0.99))
+            lambda f: _is_planar(f) and 1.0 - _face_normal(f).dot(d) <= slack))
     if by == "nearest":
         p = _v(sel["point"])
         faces = list(part.faces())
@@ -981,6 +994,16 @@ def resolve_faces(part, sel, diag=None, feature_id=None):
     if by == "match":
         return _faces_matching(part, sel["fp"], diag, feature_id, nth=sel.get("nth"))
     raise errors.GeomError(f"unknown face selector: {by}", errors.BAD_REQUEST)
+
+
+def ref_fp(ref):
+    """The fingerprint inside an inner reference (ofFace's `face`, tangentChain's
+    `seed`). Stored documents hold the bare fp; the query op hands back the whole
+    {kind, by:"match", fp} reference, and an agent passes on what it was given.
+    Taking only the bare one failed as a KeyError naming no parameter."""
+    if isinstance(ref, dict) and ref.get("by") == "match" and isinstance(ref.get("fp"), dict):
+        return ref["fp"]
+    return ref
 
 
 def _faces_matching(part, fp, diag, feature_id, nth=None):
@@ -1316,6 +1339,12 @@ def _within(pt, spec):
 
 _FACE_SURFACES = {"plane", "cylinder", "cone", "sphere", "torus", "bspline", "other"}
 _EDGE_CURVES = {"line", "circle", "ellipse", "bspline", "other"}
+
+# by:"normal"'s default `1 - dot` slack, held at the value that branch hardcoded
+# (dot > 0.99, i.e. 8.11deg) so stored selectors resolve exactly as before. It is
+# NOT a _TUNING entry: ANG_TOL is tuned against selector survival, and coupling
+# the two would let a tuning run silently re-target saved features.
+_NORMAL_SEL_SLACK = 0.01
 
 
 def _cos_slack(spec, what):

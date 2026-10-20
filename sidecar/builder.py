@@ -20935,6 +20935,42 @@ _QUERY_MAX_TOTAL = 5000
 # actually stops it.
 _QUERY_BUDGET_S = 20.0
 
+# Keys that belong INSIDE an item's `sel`, never on the item itself. The item
+# envelope is {kind, sel, where, limit, body, id}; a selector written flat —
+# {"kind":"face","by":"normal","dir":[0,0,1]} — used to leave `sel` None, which
+# means "no selector", which the filter step reads as "match everything". That
+# failed OPEN: a query for 13 up-facing planes returned all 158 faces of the body
+# with ok:true and an empty `diagnostics`, and nothing in the reply said the
+# selector had been discarded. The agent schema lists the selector vocabulary but
+# has no room to show the envelope, so writing it flat is the natural mistake —
+# it is the one a cold model makes on its first call. Refuse it by name instead.
+_QUERY_SEL_KEYS = frozenset({"by", "dir", "point", "fp", "axis", "seed", "face", "nth"})
+
+# What each selector form READS, beyond kind/by/body. A key outside its form's
+# set was swallowed: {"by":"normal","dir":…,"degrees":30} ran at the default
+# band with ok:true, while an unknown `where` key refused by name. Checked on the
+# query op only, not in the resolvers: a saved document's selectors are not
+# re-validated on every rebuild.
+_QUERY_SEL_FORM_KEYS = {
+    "normal": {"dir", "deg", "tol"},
+    "nearest": {"point", "nth"},
+    "match": {"fp", "nth"},
+    "axis": {"axis"},
+    "all": set(),
+    "ofFace": {"face"},
+    "tangentChain": {"seed"},
+}
+
+
+def _query_stray_sel_keys(sel):
+    """Keys in a query item's `sel` (or each selector of a list) its form does
+    not read. An unknown `by` is left to the resolver, which names it."""
+    out = set()
+    for one in (sel if isinstance(sel, list) else [sel]):
+        if isinstance(one, dict) and one.get("by") in _QUERY_SEL_FORM_KEYS:
+            out |= set(one) - {"kind", "by", "body"} - _QUERY_SEL_FORM_KEYS[one["by"]]
+    return sorted(out)
+
 
 # The strict gate for by:"match". Three SCALE-RELATIVE invariants, ORed — not a
 # threshold on the resolver's cost, which was measured useless for this: over the
@@ -21076,7 +21112,7 @@ def query_geometry(document, items, prefix=False, strict=True):
     import errors as ERR
     from errors import GeomError
     from geom_select import (edge_fingerprint, face_fingerprint, query_entities,
-                             resolve_edges, resolve_faces)
+                             ref_fp, resolve_edges, resolve_faces)
 
     if not isinstance(items, list):
         raise GeomError("query: items must be a list", ERR.BAD_REQUEST)
@@ -21109,7 +21145,24 @@ def query_geometry(document, items, prefix=False, strict=True):
             kind = item.get("kind")
             if kind not in ("face", "edge"):
                 raise GeomError('query: kind must be "face" or "edge"', ERR.BAD_REQUEST)
-            limit = int(item.get("limit") or 200)
+            # BEFORE `limit`, and before anything resolves: a flat selector is a
+            # request that cannot be honoured, not one that matches everything.
+            flat = sorted(_QUERY_SEL_KEYS & set(item))
+            if flat:
+                raise GeomError(
+                    "query: the selector goes inside `sel` — found "
+                    + ", ".join("`%s`" % k for k in flat)
+                    + ' on the item itself. Use {"kind":"%s","sel":{...}}' % kind,
+                    ERR.BAD_REQUEST)
+            stray = _query_stray_sel_keys(item.get("sel"))
+            if stray:
+                raise GeomError(
+                    "query: `sel` has " + ", ".join("`%s`" % k for k in stray)
+                    + ", which its selector form does not read (call sindri.schema"
+                    " for each form's keys)", ERR.BAD_REQUEST)
+            # 0 is a value, not "unset": `or 200` read it as the default.
+            limit = item.get("limit")
+            limit = 200 if limit is None else int(limit)
             if limit < 1 or limit > _QUERY_MAX_LIMIT:
                 raise GeomError(f"query: limit must be 1..{_QUERY_MAX_LIMIT}", ERR.BAD_REQUEST)
 
@@ -21161,6 +21214,7 @@ def query_geometry(document, items, prefix=False, strict=True):
                 iresolve = resolve_faces if ikind == "face" else resolve_edges
                 ifp_of = face_fingerprint if ikind == "face" else edge_fingerprint
                 idiag = []
+                ifp = ref_fp(ifp)
                 ihit = iresolve(shape, {"kind": ikind, "by": "match", "fp": ifp},
                                 diag=idiag, feature_id=item.get("id"))
                 if ihit:

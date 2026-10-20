@@ -3,7 +3,7 @@
 // coordinates and back, uniformly for any plane (base planes now, faces later).
 
 import * as THREE from "three";
-import type { Plane3, PlaneSpec } from "../types";
+import type { Plane3, PlaneDef, PlaneSpec, Vec3 } from "../types";
 
 export class SketchPlane {
   origin = new THREE.Vector3();
@@ -86,4 +86,28 @@ export class SketchPlane {
     m.setPosition(this.origin);
     return m;
   }
+}
+
+/**
+ * The sketch frame of a planar face with unit-ish `normal` through `pointOnFace`:
+ * the one a click on that face gives (Viewport.pickFacePlane, and the selected
+ * face, selectedFaceSketchPlane), so a sketch placed on a face without a click
+ * lands on the same grid with the same U and V.
+ *
+ * The origin is the WORLD origin projected onto the face's plane, not the face's
+ * own centroid: grid snapping rounds in plane-local coordinates, so a face-local
+ * origin gave every sketch-on-face its own lattice (pickFacePlane says why).
+ * U is world Z made perpendicular to the normal (Gram-Schmidt), or world X on a
+ * face that already faces up or down; V follows as normal x U (SketchPlane).
+ */
+export function planeFromFace(normal: Readonly<Vec3>, pointOnFace: Readonly<Vec3>): PlaneDef {
+  const n = new THREE.Vector3(...normal).normalize();
+  const origin = n.clone().multiplyScalar(n.dot(new THREE.Vector3(...pointOnFace)));
+  const ref = Math.abs(n.z) < 0.9 ? new THREE.Vector3(0, 0, 1) : new THREE.Vector3(1, 0, 0);
+  const xdir = ref.sub(n.clone().multiplyScalar(ref.dot(n))).normalize();
+  return {
+    origin: [origin.x, origin.y, origin.z],
+    normal: [n.x, n.y, n.z],
+    xdir: [xdir.x, xdir.y, xdir.z],
+  };
 }

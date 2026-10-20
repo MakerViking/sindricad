@@ -18,6 +18,17 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ## Unreleased
 
+### AI
+
+- **An AI agent can read the document you have open.** SindriCAD now installs `sindri-mcp`,
+  a read-only MCP server: point Claude Code or any MCP client at it
+  (`claude mcp add sindricad -- sindri-mcp`, with the full path on macOS and Windows) and it
+  can list the features and bodies, measure exact volume and area, and find faces and edges,
+  but it cannot change anything. Names that came from a file arrive marked as untrusted. On
+  Windows only your own user account can open the connection.
+
+## 0.1.265 (2026-10-19)
+
 ### Display
 
 - **NVIDIA Linux machines get GPU-accelerated drawing again.** The workaround for the NVIDIA

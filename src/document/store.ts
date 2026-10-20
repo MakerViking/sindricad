@@ -4,7 +4,7 @@
 // listeners (viewport, timeline, tree).
 
 import { isDriven, TRIMMED_AWAY } from "../types";
-import type { CadDocument, DimField, Feature, ParamDef, ParamTarget, PlaneDef, PlaneSpec, ProjectionUpdate, RebuildReply, RebuildResult, Selector, SketchConstraint, SketchEntity, ViewCubeSide, ViewOverride } from "../types";
+import type { AgentProvenance, CadDocument, DimField, Feature, ParamDef, ParamTarget, PlaneDef, PlaneSpec, ProjectionUpdate, RebuildReply, RebuildResult, Selector, SketchConstraint, SketchEntity, ViewCubeSide, ViewOverride } from "../types";
 import type { GeometryBackend, ProjectionRequest, ProjectionResult, QueryResult } from "../geometry/client";
 import { featureErrorText } from "../geometry/featureErrorText";
 import { migrateDocument, savedVersion } from "./migrate";
@@ -173,7 +173,39 @@ export interface RebuildState {
    *  those of the last build that finished, so a stop the user asked for is not
    *  painted as a fault. */
   cancelled: boolean;
+  /** The document generation (DocumentStore.generation) the last round-trip
+   *  was SENT, so a caller can tell the build that includes its edit from one
+   *  that was already under way when it made it (awaitSettled). */
+  generation: number;
 }
+
+/** Who made an undo step: the user, or an agent by its MCP client name. */
+export type Actor = "user" | `agent:${string}`;
+/** What an undo step says about itself. `label` is null for the user's own
+ *  edits, which have never been named. */
+export interface UndoMeta {
+  label: string | null;
+  actor: Actor;
+}
+const USER_STEP: UndoMeta = { label: null, actor: "user" };
+
+/** One undo (or redo) entry: the document as it was before the step, and the
+ *  step's own description. An entry's identity is how a caller names the step
+ *  it made (transact's `step`, undoAndForget). */
+export interface UndoStep {
+  readonly doc: CadDocument;
+  readonly meta: UndoMeta;
+}
+
+/** How a transaction ended. Nothing is written unless `committed`:
+ *  - `blocked`: a sketch the edit drives could not satisfy it (the parameter
+ *    cascade's refusal, already said to the user as a warning);
+ *  - `staleGeneration`: the document is not the generation the caller read;
+ *  - `documentMoved`: an agent's draft was being worked out while the document
+ *    changed under it, and landing it would undo that change. */
+export type TransactResult =
+  | { committed: true; generation: number; step: UndoStep }
+  | { committed: false; reason: "blocked" | "staleGeneration" | "documentMoved"; generation: number };
 
 /** One installment of a chunked reply on its way to the VIEWPORT.
  *
@@ -282,6 +314,16 @@ function stampCapturedVisibility(features: Feature[]) {
   }
 }
 
+/** Drop the agent provenance of every feature no longer in the document: ids
+ *  are reused (DocumentStore.nextId), and a stale entry would credit the
+ *  agent with the next feature the human makes under that id. */
+function pruneProvenance(d: CadDocument) {
+  if (!d.agentProvenance) return;
+  const live = new Set(d.features.map((f) => f.id));
+  for (const id of Object.keys(d.agentProvenance)) if (!live.has(id)) delete d.agentProvenance[id];
+  if (!Object.keys(d.agentProvenance).length) delete d.agentProvenance;
+}
+
 /** A SAVED document exactly as the app builds it once it is opened: migrated,
  *  stamped as load() stamps it, cut at its rollback marker, its suppressed
  *  features dropped, carrying its parameters and its body visibility. That is
@@ -373,8 +415,16 @@ class Overlay<T> {
 
 export class DocumentStore {
   private doc: CadDocument;
-  private undoStack: CadDocument[] = [];
-  private redoStack: CadDocument[] = [];
+  private undoStack: UndoStep[] = [];
+  private redoStack: UndoStep[] = [];
+  /** Bumped on every document change (emitDoc). Optimistic concurrency for an
+   *  agent ("is this still the document I read?") and the key awaitSettled
+   *  waits on. Not a content hash: an undo back to an earlier document is a
+   *  new generation, because the document moved under whoever read it. */
+  private gen = 0;
+  get generation(): number {
+    return this.gen;
+  }
   private docListeners = new Set<DocListener>();
   private buildListeners = new Set<BuildListener>();
   private busyListeners = new Set<BusyListener>();
@@ -425,6 +475,7 @@ export class DocumentStore {
     meshed: null,
     meshTotal: null,
     cancelled: false,
+    generation: 0,
   };
   /** The busy label for the rebuild that will build a feature just added by
    *  addFeatureAndBuild, in place of "Rebuilding". */
@@ -567,7 +618,7 @@ export class DocumentStore {
     // first with the older document and is skipped. Armed BEFORE the add,
     // because the add starts its rebuild synchronously.
     const from = this.buildEpoch;
-    let addedAt: CadDocument | undefined;
+    let addedAt: UndoStep | undefined;
     const settled = new Promise<RebuildState>((resolve) => {
       // onBuild replays the current state at once; buildEpoch still equals
       // `from` then, so `off` is never reached before it is assigned
@@ -600,7 +651,7 @@ export class DocumentStore {
    *  stack and the feature is still in the document. Otherwise the user has
    *  moved on (undid it, replaced the document, or made fifty edits since) and
    *  it is not this method's to touch. */
-  private withdrawFeature(id: string, addedAt: CadDocument): boolean {
+  private withdrawFeature(id: string, addedAt: UndoStep): boolean {
     const at = this.undoStack.indexOf(addedAt);
     const idx = this.doc.features.findIndex((f) => f.id === id);
     if (at < 0 || idx < 0) return false;
@@ -610,8 +661,8 @@ export class DocumentStore {
       d.features = d.features.filter((f) => f.id !== id);
     };
     this.undoStack.splice(at, 1);
-    for (const d of this.undoStack.slice(at)) strip(d);
-    for (const d of this.redoStack) strip(d);
+    for (const e of this.undoStack.slice(at)) strip(e.doc);
+    for (const e of this.redoStack) strip(e.doc);
     // Debounced, not immediate: this runs inside the cancelled rebuild's
     // settle, with its rebuild loop and runBusy still to unwind.
     this.applyDerived(strip, false);
@@ -733,6 +784,7 @@ export class DocumentStore {
   }
 
   private emitDoc() {
+    this.gen++;
     // No repaint of its own: every document change that moves a carried colour
     // schedules a rebuild, and that build's emit repaints.
     if (this.placeCarriedColors()) this.markDirty();
@@ -758,13 +810,13 @@ export class DocumentStore {
   // uncapped stack grows without bound over a long session — cap it.
   private static readonly UNDO_CAP = 50;
 
-  private pushUndo() {
-    this.undoStack.push(clone(this.doc));
+  private pushUndo(meta: UndoMeta = USER_STEP) {
+    this.undoStack.push({ doc: clone(this.doc), meta });
     if (this.undoStack.length > DocumentStore.UNDO_CAP) this.undoStack.shift();
   }
 
-  mutate(fn: (doc: CadDocument) => void, immediate = false) {
-    this.pushUndo();
+  mutate(fn: (doc: CadDocument) => void, immediate = false, meta: UndoMeta = USER_STEP) {
+    this.pushUndo(meta);
     this.redoStack = [];
     // a user edit is the "edit the model to retry" the valve toast promises
     this.rearmProjectionValve();
@@ -812,20 +864,62 @@ export class DocumentStore {
    *  one undo step = one rebuild. */
   private paramChain: Promise<void> = Promise.resolve();
   private queueParamCommit(fn: (d: CadDocument) => void) {
-    this.paramChain = this.paramChain
-      .then(() => this.commitWithCascade(fn))
-      .catch((e) => {
-        console.error("param commit failed:", e);
-        this.onWarning?.(t("params.applyFailed"));
-      });
+    this.enqueueTransaction(USER_STEP, fn).catch((e) => {
+      console.error("param commit failed:", e);
+      this.onWarning?.(t("params.applyFailed"));
+    });
   }
-  private async commitWithCascade(fn: (d: CadDocument) => void): Promise<void> {
+
+  /** Apply `fn` to a draft of the document and land it as ONE undo step with
+   *  ONE rebuild, however many edits `fn` makes: the parameter commit's path
+   *  (recompute, then re-solve every closed sketch a parameter drives), open to
+   *  a caller that has to batch, an agent above all. Serialized with parameter
+   *  commits and projection refreshes on the same chain.
+   *
+   *  The step is labelled `label` and credited to `actor`; a feature an agent
+   *  adds is recorded in the document's agentProvenance in the same step.
+   *  `ifGeneration` refuses unless the document is still the one the caller
+   *  read when the draft is taken (the chain can hold it behind other work).
+   *  Rejects, writing nothing, when `fn` throws. */
+  transact(
+    label: string,
+    actor: Actor,
+    fn: (draft: CadDocument) => void | Promise<void>,
+    opts: { ifGeneration?: number } = {},
+  ): Promise<TransactResult> {
+    return this.enqueueTransaction({ label, actor }, fn, opts.ifGeneration);
+  }
+
+  private enqueueTransaction(
+    meta: UndoMeta,
+    fn: (draft: CadDocument) => void | Promise<void>,
+    ifGeneration?: number,
+  ): Promise<TransactResult> {
+    const run = this.paramChain.then(() => this.commitDraft(meta, fn, ifGeneration));
+    // the chain itself never rejects: one failed commit must not stop the next
+    this.paramChain = run.then(() => {}, () => {});
+    return run;
+  }
+
+  private async commitDraft(
+    meta: UndoMeta,
+    fn: (draft: CadDocument) => void | Promise<void>,
+    ifGeneration?: number,
+  ): Promise<TransactResult> {
+    if (ifGeneration !== undefined && ifGeneration !== this.gen) {
+      return { committed: false, reason: "staleGeneration", generation: this.gen };
+    }
     const isSketch = (x: Feature): x is Extract<Feature, { type: "sketch" }> => x.type === "sketch";
     // every sketch as it was before the edit, taken before the first await
     const preOf = new Map(this.doc.features.filter(isSketch).map((x) => [x.id, x]));
     const preParams = this.doc.parameters;
+    const preIds = new Set(this.doc.features.map((f) => f.id));
+    const startGen = this.gen;
     const draft = clone(this.doc);
-    fn(draft);
+    // awaited only when it IS async: a parameter commit lands in the same tick
+    // it always did, and callers (and tests) time their reads by that
+    const pending = fn(draft);
+    if (pending) await pending;
     const r = params.recompute(draft);
     const open = this.openSketchId?.() ?? null;
     // Trial every affected sketch BEFORE committing anything (report
@@ -858,15 +952,68 @@ export class DocumentStore {
         blocked = true;
       }
     }
-    if (blocked) return;
+    if (blocked) return { committed: false, reason: "blocked", generation: this.gen };
+    // The draft is a copy of the document as it was when this started, and the
+    // solves above awaited. A plain mutate is not serialized on this chain, so
+    // the human may have edited since; landing the draft would quietly take
+    // that edit back. An agent never does that to the human. (The user's own
+    // parameter commit keeps landing, as it always has.)
+    if (meta.actor !== "user" && this.gen !== startGen) {
+      return { committed: false, reason: "documentMoved", generation: this.gen };
+    }
+    const agent = meta.actor.startsWith("agent:") ? meta.actor.slice("agent:".length) : null;
     this.mutate((d) => {
       d.parameters = draft.parameters;
       if (draft.paramDefs) d.paramDefs = draft.paramDefs;
       else delete d.paramDefs;
       d.features = draft.features;
-    });
+      if (agent !== null) {
+        const at = new Date().toISOString();
+        for (const f of draft.features) {
+          if (!preIds.has(f.id)) (d.agentProvenance ??= {})[f.id] = { client: agent, at };
+        }
+      }
+    }, false, meta);
+    const step = this.undoStack[this.undoStack.length - 1]!;
     for (const sid of issues) this.onParamSolveIssue?.(sid);
     this.onParamsApplied?.();
+    return { committed: true, generation: this.gen, step };
+  }
+
+  /** Who made feature `id`, when an agent did (the "made by" badge). */
+  featureProvenance(id: string): AgentProvenance | undefined {
+    return this.doc.agentProvenance?.[id];
+  }
+
+  /** Resolves with the first settled build that INCLUDES document generation
+   *  `minGeneration`: never one that was already under way when that edit was
+   *  made, which settles first and builds the older document. Resolves at once
+   *  when nothing is building and no rebuild is due, since then no later build
+   *  is coming and the one on record is the model for this document (an edit
+   *  that schedules no rebuild, like a ViewCube override, changes no geometry).
+   *  "timeout" after `timeoutMs`, so a caller can answer "still building"
+   *  instead of hanging. A cancelled or failed build still answers, with
+   *  `cancelled` / the error fields saying so. */
+  awaitSettled(minGeneration: number, timeoutMs: number): Promise<RebuildState | "timeout"> {
+    return new Promise((resolve) => {
+      let done = false;
+      let off: (() => void) | null = null;
+      const finish = (v: RebuildState | "timeout") => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        off?.();
+        resolve(v);
+      };
+      const timer = setTimeout(() => finish("timeout"), timeoutMs);
+      // onBuild replays the current state at once, before `off` is assigned
+      off = this.onBuild((s) => {
+        if (s.building) return;
+        const idle = !this.rebuilding && this.rebuildTimer === null;
+        if (s.generation >= minGeneration || idle) finish(s);
+      });
+      if (done) off();
+    });
   }
 
   /** The dimConflictMsg wording for a sketch whose re-solve a parameter edit
@@ -1566,6 +1713,7 @@ export class DocumentStore {
    *  rebuild is what closes the refresh loop (steady state: a quiet rebuild). */
   private applyDerived(fn: (doc: CadDocument) => void, immediate = true) {
     fn(this.doc);
+    pruneProvenance(this.doc);
     if (this.doc.paramDefs) this.applyRecompute(params.recompute(this.doc));
     restOnGrid(this.doc);
     this.markDirty();
@@ -1977,8 +2125,8 @@ export class DocumentStore {
   undo() {
     const prev = this.undoStack.pop();
     if (!prev) return;
-    this.redoStack.push(clone(this.doc));
-    this.doc = prev;
+    this.redoStack.push({ doc: clone(this.doc), meta: prev.meta });
+    this.doc = prev.doc;
     this.rearmProjectionValve();
     this.markDirty();
     this.emitDoc();
@@ -1987,8 +2135,8 @@ export class DocumentStore {
   redo() {
     const next = this.redoStack.pop();
     if (!next) return;
-    this.pushUndo();
-    this.doc = next;
+    this.pushUndo(next.meta);
+    this.doc = next.doc;
     this.rearmProjectionValve();
     this.markDirty();
     this.emitDoc();
@@ -1999,6 +2147,26 @@ export class DocumentStore {
   }
   get canRedo() {
     return this.redoStack.length > 0;
+  }
+  /** What the next undo would take back, or null when there is nothing. */
+  peekUndo(): UndoMeta | null {
+    return this.undoStack[this.undoStack.length - 1]?.meta ?? null;
+  }
+  /** What the next redo would put back, or null when there is nothing. */
+  peekRedo(): UndoMeta | null {
+    return this.redoStack[this.redoStack.length - 1]?.meta ?? null;
+  }
+
+  /** Take back `step`, a transaction's own commit, as if it had never been
+   *  offered: undone, and NOT left on the redo stack (an agent batch reverted
+   *  because it broke a feature is not something to redo). Only while `step`
+   *  is still the latest undo step; once anything has been done on top of it,
+   *  undoing would take that back instead, so this refuses and returns false. */
+  undoAndForget(step: UndoStep): boolean {
+    if (this.undoStack[this.undoStack.length - 1] !== step) return false;
+    this.undo();
+    this.redoStack.pop();
+    return true;
   }
 
   // --- ViewCube side redefinitions (don't affect geometry, so no rebuild) ---
@@ -2359,7 +2527,9 @@ export class DocumentStore {
       ...(parsed.paramDefs ? { paramDefs: parsed.paramDefs } : {}),
       features: parsed.features ?? [],
       ...(parsed.viewOverrides ? { viewOverrides: parsed.viewOverrides } : {}),
+      ...(parsed.agentProvenance ? { agentProvenance: parsed.agentProvenance } : {}),
     };
+    pruneProvenance(this.doc);
     stampCapturedVisibility(this.doc.features);
     this.markDirty(); // openDocument clears this via markSaved() once the path is known
     this.discardModelForReplacement();
@@ -2465,10 +2635,10 @@ export class DocumentStore {
     for (const fn of this.abortListeners) fn(this.buildEpoch);
   }
 
-  private settledBuild(reply: RebuildReply): RebuildState {
+  private settledBuild(reply: RebuildReply, generation: number): RebuildState {
     const done = {
       building: false, progress: null, meshed: null, meshTotal: null,
-      streamed: null, streamTotal: null, cancelled: false,
+      streamed: null, streamTotal: null, cancelled: false, generation,
     };
     if (!reply.ok && reply.error.code === "cancelled") {
       // The user stopped it. Settled as a failure, this replaced what was said
@@ -2523,12 +2693,13 @@ export class DocumentStore {
             this.rebuildQueued = false;
             this.emitBuildStarted();
             this.relabelBusy(this.buildLabel ?? t("status.rebuilding"));
+            const sent = this.gen;
             const reply = await this.geometry.rebuild(this.effectiveDoc());
             // A stream that was in flight but never completed has left a PARTIAL
             // model on screen. Tell the viewport to drop it before this result —
             // which on a failure is the PREVIOUS document — renders over the top.
             if (this.build.streamed !== null && !reply.ok) this.emitBuildAbort();
-            this.build = this.settledBuild(reply);
+            this.build = this.settledBuild(reply, sent);
             if (this.placeCarriedColors()) this.markDirty();
             this.emitBuild();
             // associative projection refresh: decide AFTER the result is published
@@ -2566,9 +2737,10 @@ export class DocumentStore {
     this.rebuilding = true;
     try {
       this.emitBuildStarted();
+      const sent = this.gen;
       const reply = await ca(this.effectiveDoc());
       if (this.build.streamed !== null && !reply.ok) this.emitBuildAbort();
-      this.build = this.settledBuild(reply);
+      this.build = this.settledBuild(reply, sent);
       if (this.placeCarriedColors()) this.markDirty();
       this.emitBuild();
       // Compute All is the explicit retry gesture the valve toast promises:
