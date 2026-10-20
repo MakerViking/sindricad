@@ -17,6 +17,10 @@ const isTauri = () => "__TAURI_INTERNALS__" in window;
 export interface LanguageSettingsDeps {
   /** Unsaved changes in the open document: a restart would lose them. */
   isDirty: () => boolean;
+  /** Offer "Let AI agents edit documents": only once this build HAS agent
+   *  writes (bridge.AGENT_WRITES_AVAILABLE). A switch that changes nothing is
+   *  not shown, and Rust is not asked about it. */
+  agentWrites: boolean;
 }
 
 export function openLanguageSettings(deps: LanguageSettingsDeps): void {
@@ -44,7 +48,7 @@ export function openLanguageSettings(deps: LanguageSettingsDeps): void {
     `<input type="checkbox" class="settings-keep-sketch-visible"${getKeepSketchVisibleAfterExtrude() ? " checked" : ""}></label>` +
     // Only the desktop app has an agent bridge. Disabled until Rust, which
     // owns the setting (agent_ipc.rs), has said what it is.
-    (isTauri()
+    (deps.agentWrites && isTauri()
       ? `<label class="settings-row settings-agent-row"><span data-i18n="settings.agent.allowEdits">${esc(t("settings.agent.allowEdits"))}</span>` +
         `<input type="checkbox" class="settings-agent-writes" disabled></label>` +
         `<div class="settings-note settings-agent-note"></div>`

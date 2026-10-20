@@ -5,7 +5,7 @@ import { Viewport } from "./viewport/viewport";
 import type { StandardView } from "./viewport/cameras";
 import { Geometry } from "./geometry/client";
 import { ENGINE_DOWN, sidecarDeathMessage, type SidecarDeathPayload } from "./geometry/sidecarDeath";
-import { installAgentBridge } from "./agent/bridge";
+import { AGENT_WRITES_AVAILABLE, installAgentBridge } from "./agent/bridge";
 import { featureErrorText } from "./geometry/featureErrorText";
 import { TauriGeometry } from "./geometry/tauriClient";
 import { listen } from "@tauri-apps/api/event";
@@ -635,7 +635,7 @@ const menubar = new Menubar(document.getElementById("menubar")!, [
         onClick: () => selectedFeature && store.toggleSuppress(selectedFeature),
       },
       { separator: true, label: "" },
-      { label: t("settings.menuItem"), onClick: () => openLanguageSettings({ isDirty: () => store.dirty }) },
+      { label: t("settings.menuItem"), onClick: () => openLanguageSettings({ isDirty: () => store.dirty, agentWrites: AGENT_WRITES_AVAILABLE }) },
     ],
   },
   {

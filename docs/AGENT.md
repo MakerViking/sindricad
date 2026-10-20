@@ -192,8 +192,10 @@ the shim needs nothing. With no such folder it stays off and says why on stderr.
 
 ## Letting agents edit (not yet)
 
-Settings has "Let AI agents edit documents", off by default. Nothing reads it
-yet beyond carrying it: the Rust side owns it (`<app data>/agent/settings.json`,
+Settings will have "Let AI agents edit documents", off by default. The row is
+hidden until the build has agent writes (`AGENT_WRITES_AVAILABLE` in
+`src/agent/bridge.ts`, false until `doc_apply` lands), so no beta shows a switch
+that does nothing. Nothing reads the setting yet beyond carrying it: the Rust side owns it (`<app data>/agent/settings.json`,
 `writesEnabled`), stamps it on every request it hands the webview, and the
 webview's `writeRefusal` is the check every write tool will make first, together
 with "the user is mid-tool" (`userBusy`). There are no write tools, so the

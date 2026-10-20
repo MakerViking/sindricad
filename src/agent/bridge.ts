@@ -279,6 +279,14 @@ async function geomQuery(deps: BridgeDeps, params: Record<string, unknown>): Pro
 }
 
 /**
+ * Whether this build has agent writes at all. False until W1 of the AI-control
+ * plan lands `doc_apply`: until then the Settings switch "Let AI agents edit
+ * documents" would change nothing, so it is not shown and Rust is not asked
+ * about it. Writes are impossible either way, because no write tool exists.
+ */
+export const AGENT_WRITES_AVAILABLE = false;
+
+/**
  * Why a write must not run, or null when it may: writes are off until the user
  * turns on "Let AI agents edit documents" (`writes`, from the request), and
  * refused while the user is mid-tool (decisions 1 and 5 of the AI-control
