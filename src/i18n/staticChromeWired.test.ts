@@ -14,7 +14,9 @@ import mainSrc from "../main.ts?raw";
 describe("main.ts translates the static chrome at boot", () => {
   const call = mainSrc.indexOf("localizeStaticChrome();");
   const statusEl = mainSrc.indexOf("const statusEl");
-  const connect = mainSrc.indexOf("void geometry.init()");
+  // `geometry.init()` is kept as a promise (geometryReady), not voided: the
+  // DEV-only VITE_OPEN_DOC hook waits on it.
+  const connect = mainSrc.indexOf("geometry.init()");
 
   it("anchors exist, so a rename fails here instead of passing with a hole", () => {
     expect(statusEl).toBeGreaterThan(-1);

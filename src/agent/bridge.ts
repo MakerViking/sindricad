@@ -1,3 +1,4 @@
+// i18n-ignore-file every string here is read by an agent over MCP, never shown in the UI
 /**
  * Answers an external agent's read-only questions about the LIVE document.
  *
