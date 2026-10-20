@@ -336,7 +336,9 @@ if ("__TAURI_INTERNALS__" in window) {
   // block below: plain `vite` has no broker to emit its event, and `listen()`
   // would just reject. Failure here must not take the app down — an app whose
   // agent bridge is missing is still the app.
-  void installAgentBridge({ store, geometry }).catch((e) => {
+  // toolBusy by reference only: it reads tool state declared further down, so
+  // calling it here, during boot, would hit that state's temporal dead zone
+  void installAgentBridge({ store, geometry, toolBusy }).catch((e) => {
     console.warn("agent bridge unavailable:", e);
   });
 

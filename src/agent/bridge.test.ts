@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { DocumentStore } from "../document/store";
 import type { GeometryBackend } from "../geometry/client";
 import type { CadDocument, Feature } from "../types";
-import { handleTool } from "./bridge";
+import { handleTool, writeRefusal } from "./bridge";
 
 /**
  * The dispatcher only. The `listen`/`invoke` wiring around it is NOT covered —
@@ -14,6 +14,9 @@ import { handleTool } from "./bridge";
 
 const RAW = { version: 1, parameters: {}, features: [{ id: "raw", type: "box" }] };
 const BUILT = { version: 1, parameters: { t: 5 }, features: [{ id: "built", type: "box" }] };
+
+/** The user is not in any tool. */
+const idle = () => false;
 
 function fakeStore(over: Partial<Record<string, unknown>> = {}) {
   return {
@@ -40,7 +43,7 @@ describe("handleTool", () => {
     // the document that actually crossed the wire.
     const massProperties = vi.fn().mockResolvedValue({ ok: true, result: { bodies: [] } });
     const query = vi.fn().mockResolvedValue({ ok: true, result: {} });
-    const deps = { store: fakeStore(), geometry: { massProperties, queryForAgent: query } as unknown as GeometryBackend };
+    const deps = { store: fakeStore(), toolBusy: idle, geometry: { massProperties, queryForAgent: query } as unknown as GeometryBackend };
 
     return Promise.all([
       handleTool("geom.measure", {}, deps),
@@ -55,7 +58,7 @@ describe("handleTool", () => {
   it("refuses an unknown tool by saying the surface is read-only", async () => {
     // A model that guessed `doc.patch` should learn the shape of this bridge,
     // not that it mistyped.
-    const r = await handleTool("doc.patch", {}, { store: fakeStore(), geometry: {} as GeometryBackend });
+    const r = await handleTool("doc.patch", {}, { store: fakeStore(), toolBusy: idle, geometry: {} as GeometryBackend });
     expect(r.ok).toBe(false);
     if (r.ok) return;
     expect(r.error.code).toBe("unknownTool");
@@ -65,7 +68,7 @@ describe("handleTool", () => {
   it("names the missing capability instead of throwing a TypeError at the agent", async () => {
     // massProperties/queryForAgent are OPTIONAL on the backend interface; the in-process
     // Rust spike implements neither.
-    const deps = { store: fakeStore(), geometry: {} as GeometryBackend };
+    const deps = { store: fakeStore(), toolBusy: idle, geometry: {} as GeometryBackend };
     for (const tool of ["geom.measure", "geom.query"]) {
       const r = await handleTool(tool, { items: [] }, deps);
       expect(r.ok).toBe(false);
@@ -76,6 +79,7 @@ describe("handleTool", () => {
   it("refuses geom.query without items", async () => {
     const deps = {
       store: fakeStore(),
+      toolBusy: idle,
       geometry: { queryForAgent: vi.fn() } as unknown as GeometryBackend,
     };
     const r = await handleTool("geom.query", {}, deps);
@@ -87,7 +91,7 @@ describe("handleTool", () => {
     // matchImplausible is the difference between "your fingerprint is wrong" and
     // "nothing matched", and an agent has to branch on it.
     const query = vi.fn().mockResolvedValue({ ok: false, code: "matchImplausible", message: "no" });
-    const deps = { store: fakeStore(), geometry: { queryForAgent: query } as unknown as GeometryBackend };
+    const deps = { store: fakeStore(), toolBusy: idle, geometry: { queryForAgent: query } as unknown as GeometryBackend };
     const r = await handleTool("geom.query", { items: [{}] }, deps);
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error.code).toBe("matchImplausible");
@@ -106,7 +110,7 @@ describe("handleTool", () => {
         result: { bodies: [{ id: "body1", name: "Bracket‮evil", faceCount: 6 }], featureErrors: [] },
       },
     });
-    const r = await handleTool("doc.read", {}, { store, geometry: {} as GeometryBackend });
+    const r = await handleTool("doc.read", {}, { store, toolBusy: idle, geometry: {} as GeometryBackend });
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     const out = r.result as { features: { name?: string }[]; bodies: { name: string }[] };
@@ -132,7 +136,7 @@ describe("handleTool", () => {
         },
       },
     });
-    const r = await handleTool("build.status", {}, { store, geometry: {} as GeometryBackend });
+    const r = await handleTool("build.status", {}, { store, toolBusy: idle, geometry: {} as GeometryBackend });
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     const out = r.result as { building: boolean; error: string; featureErrors: { subject?: string }[] };
@@ -156,7 +160,7 @@ describe("handleTool", () => {
         warnings: [{ feature_id: "sh", message: "no face found to shell on {body}", subject: "Bracket" }],
       },
     });
-    const deps = { store: fakeStore(), geometry: { massProperties } as unknown as GeometryBackend };
+    const deps = { store: fakeStore(), toolBusy: idle, geometry: { massProperties } as unknown as GeometryBackend };
 
     const r = await handleTool("geom.measure", {}, deps);
     expect(r.ok).toBe(true);
@@ -190,7 +194,7 @@ describe("handleTool", () => {
   });
 
   it("tells the agent about the traps, not just the wire shape", async () => {
-    const r = await handleTool("sindri.schema", {}, { store: fakeStore(), geometry: {} as GeometryBackend });
+    const r = await handleTool("sindri.schema", {}, { store: fakeStore(), toolBusy: idle, geometry: {} as GeometryBackend });
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     const s = r.result as { readOnly: boolean; traps: string[]; tools: Record<string, unknown> };
@@ -217,7 +221,7 @@ describe("what an agent can tell about the model it is reading", () => {
     let built: CadDocument = BUILT as CadDocument;
     const store = fakeStore({ buildDocument: () => built });
     const rev = async () => {
-      const r = await handleTool("build.status", {}, { store, geometry: {} as GeometryBackend });
+      const r = await handleTool("build.status", {}, { store, toolBusy: idle, geometry: {} as GeometryBackend });
       expect(r.ok).toBe(true);
       return (r as { result: { revision: string } }).result.revision;
     };
@@ -248,7 +252,7 @@ describe("what an agent can tell about the model it is reading", () => {
         },
       },
     });
-    const r = await handleTool("doc.read", {}, { store, geometry: {} as GeometryBackend });
+    const r = await handleTool("doc.read", {}, { store, toolBusy: idle, geometry: {} as GeometryBackend });
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     const bodies = (r.result as { bodies: { id: string; hidden?: boolean }[] }).bodies;
@@ -276,7 +280,7 @@ describe("body names", () => {
         result: { bodies: [{ id: "body1", name: "Body1", faceCount: 6 }], featureErrors: [] },
       },
     });
-    const deps = { store, geometry: { massProperties } as unknown as GeometryBackend };
+    const deps = { store, toolBusy: idle, geometry: { massProperties } as unknown as GeometryBackend };
     const d = await handleTool("doc.read", {}, deps);
     const m = await handleTool("geom.measure", {}, deps);
     expect(d.ok && m.ok).toBe(true);
@@ -323,12 +327,44 @@ describe("an agent request against a real store", () => {
       const docAt = JSON.stringify(store.document);
       const undoAt = store.canUndo;
       for (const tool of ["sindri.schema", "build.status", "doc.read", "geom.measure", "geom.query"]) {
-        const r = await handleTool(tool, { items: [] }, { store, geometry });
+        const r = await handleTool(tool, { items: [] }, { store, geometry, toolBusy: idle });
         expect(r.ok, tool).toBe(true);
       }
       expect(store.dirty).toBe(dirtyBefore);
       expect(JSON.stringify(store.document)).toBe(docAt);
       expect(store.canUndo).toBe(undoAt);
+    }
+  });
+});
+
+describe("the write gate (no write tool uses it yet; W1's first check)", () => {
+  // Decisions 1 and 5 of the AI-control plan: writes are off until the user
+  // turns them on in Settings, and refused, never queued, while the user is in
+  // a tool or a sketch (an edit to an open sketch is overwritten at Finish).
+  const deps = (busy: boolean) => ({ store: fakeStore(), geometry: {} as GeometryBackend, toolBusy: () => busy });
+
+  it("refuses every write while the Settings toggle is off, busy or not", () => {
+    for (const busy of [false, true]) {
+      const r = writeRefusal(deps(busy), false);
+      expect(r?.ok).toBe(false);
+      if (r && !r.ok) expect(r.error.code).toBe("writesDisabled");
+    }
+  });
+
+  it("refuses with userBusy while the user is mid-tool, and lets a write through otherwise", () => {
+    const r = writeRefusal(deps(true), true);
+    expect(r?.ok).toBe(false);
+    if (r && !r.ok) expect(r.error.code).toBe("userBusy");
+    expect(writeRefusal(deps(false), true)).toBeNull();
+  });
+
+  it("never stops a read: every read tool answers while the user is mid-tool", async () => {
+    const massProperties = vi.fn().mockResolvedValue({ ok: true, result: { bodies: [] } });
+    const queryForAgent = vi.fn().mockResolvedValue({ ok: true, result: {} });
+    const busy = { store: fakeStore(), geometry: { massProperties, queryForAgent } as unknown as GeometryBackend, toolBusy: () => true };
+    for (const tool of ["sindri.schema", "build.status", "doc.read", "geom.measure", "geom.query"]) {
+      const r = await handleTool(tool, { items: [] }, busy);
+      expect(r.ok, tool).toBe(true);
     }
   });
 });

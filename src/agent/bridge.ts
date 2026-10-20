@@ -32,6 +32,11 @@ interface AgentRequest {
   seq: number;
   tool: string;
   params: Record<string, unknown>;
+  /** The Settings toggle "Let AI agents edit documents" as RUST read it for
+   *  this request (agent_ipc owns the setting, so the webview cannot disagree
+   *  with the broker about it). Nothing reads it until there is a write tool;
+   *  then it goes to writeRefusal. */
+  writes?: boolean;
 }
 
 type ToolResult = { ok: true; result: unknown } | { ok: false; error: { code: string; message: string } };
@@ -41,6 +46,11 @@ const fail = (code: string, message: string): ToolResult => ({ ok: false, error:
 export interface BridgeDeps {
   store: DocumentStore;
   geometry: GeometryBackend;
+  /** The user is in a tool, a sketch or a choice dialog (main.ts toolBusy). A
+   *  write then is refused, never queued: an edit to an open sketch is
+   *  overwritten when it finishes, and a queued one would land on a document
+   *  the agent no longer understands. Reads always run. */
+  toolBusy: () => boolean;
 }
 
 /**
@@ -266,6 +276,26 @@ async function geomQuery(deps: BridgeDeps, params: Record<string, unknown>): Pro
   }
   const r = await deps.geometry.queryForAgent(liveDoc(deps.store), params.items as object[]);
   return r.ok ? { ok: true, result: r.result } : fail(r.code ?? "queryFailed", r.message ?? "query failed");
+}
+
+/**
+ * Why a write must not run, or null when it may: writes are off until the user
+ * turns on "Let AI agents edit documents" (`writes`, from the request), and
+ * refused while the user is mid-tool (decisions 1 and 5 of the AI-control
+ * plan). The first thing every write tool will call; nothing calls it yet,
+ * because nothing here writes.
+ */
+export function writeRefusal(deps: BridgeDeps, writes: boolean): ToolResult | null {
+  if (!writes) {
+    return fail(
+      "writesDisabled",
+      "agents may not edit documents on this machine: the user can turn on \"Let AI agents edit documents\" in Settings",
+    );
+  }
+  if (deps.toolBusy()) {
+    return fail("userBusy", "the user is in the middle of a tool or a sketch; try again once they have finished");
+  }
+  return null;
 }
 
 // --- dispatch -----------------------------------------------------------------
