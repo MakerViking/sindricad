@@ -50,6 +50,7 @@ import {
 import { setPrompt } from "../ui/prompt";
 import { t } from "../i18n";
 import { setSketchLineResolution } from "../sketch/overlay";
+import { planeFromFace } from "../sketch/plane";
 import type { DocumentStore } from "../document/store";
 import type { ViewCubeSide } from "../types";
 
@@ -1959,15 +1960,7 @@ export class Viewport {
     const normal = b.sub(a).cross(c.sub(a)).normalize().transformDirection(mesh.matrixWorld).normalize();
     // `hit.point` is world-space and lies on the picked surface, so it fixes the
     // plane without walking every triangle of the face the way a centroid does.
-    const origin = normal.clone().multiplyScalar(normal.dot(hit.point));
-    const ref =
-      Math.abs(normal.z) < 0.9 ? new THREE.Vector3(0, 0, 1) : new THREE.Vector3(1, 0, 0);
-    const xdir = ref.sub(normal.clone().multiplyScalar(ref.dot(normal))).normalize();
-    return {
-      origin: [origin.x, origin.y, origin.z],
-      normal: [normal.x, normal.y, normal.z],
-      xdir: [xdir.x, xdir.y, xdir.z],
-    };
+    return planeFromFace([normal.x, normal.y, normal.z], [hit.point.x, hit.point.y, hit.point.z]);
   }
 
   /** The face REFERENCE to store beside a plane that pickFacePlane just returned,
@@ -2029,16 +2022,8 @@ export class Viewport {
     const normal = sel.normal.clone().normalize();
     const d = normal.dot(sel.anchor);
     if (!faceLiesOnPlane(this.faceTriangles(faceId), normal, d, planarityTol(this.model))) return null;
-    const origin = normal.clone().multiplyScalar(d);
-    const ref =
-      Math.abs(normal.z) < 0.9 ? new THREE.Vector3(0, 0, 1) : new THREE.Vector3(1, 0, 0);
-    const xdir = ref.sub(normal.clone().multiplyScalar(ref.dot(normal))).normalize();
     return {
-      plane: {
-        origin: [origin.x, origin.y, origin.z],
-        normal: [normal.x, normal.y, normal.z],
-        xdir: [xdir.x, xdir.y, xdir.z],
-      },
+      plane: planeFromFace([normal.x, normal.y, normal.z], [sel.anchor.x, sel.anchor.y, sel.anchor.z]),
       face: { ...selector, body: sel.bodyId },
     };
   }
