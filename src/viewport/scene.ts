@@ -9,8 +9,8 @@ import { t } from "../i18n";
 import { niceStep } from "../ui/units";
 import { isSaneCoord } from "./modelBox";
 import { installLogDepthOffset } from "./depthOffset";
-import { measureDepthBits } from "./depthProbe";
-import { msaaBroken, rememberedRenderer } from "./gpuQuirks";
+import { compatSwitches, msaaBroken, rememberedRenderer, setAutoShaderOffset } from "./gpuQuirks";
+import { describe, offsetIsWrong, runSelfTest, runSelfTestOffscreen } from "./gpuSelfTest";
 
 export interface SceneBundle {
   renderer: THREE.WebGLRenderer;
@@ -126,14 +126,29 @@ function recordGpu(renderer: THREE.WebGLRenderer) {
   try {
     const gl = renderer.getContext();
     const a = gl.getContextAttributes();
-    // measured, next to what the context reports (depthProbe.ts: a stack can
-    // say 24 and resolve less, which is the open question in Doug's squiggles)
+    // What this GL really does, next to what it reports (gpuSelfTest.ts: Doug's
+    // Ivy Bridge said 24 bits and drew squiggles through three fixes). Run on
+    // the canvas AND on a buffer of our own, to tell the canvas from the driver.
+    if (gl instanceof WebGL2RenderingContext) {
+      const onCanvas = runSelfTest(gl);
+      const offscreen = runSelfTestOffscreen(gl);
+      renderer.resetState(); // the battery drew with raw GL behind three's back
+      // i18n-ignore GPU diagnostics, English so a report stays searchable
+      stickyFact(`[gpu] self-test, canvas at startup: ${describe(onCanvas)}`);
+      // i18n-ignore GPU diagnostics, English so a report stays searchable
+      stickyFact(`[gpu] self-test, own buffer: ${describe(offscreen)}`);
+      if (offsetIsWrong(onCanvas)) {
+        // before any material exists, so every face material is built this way
+        setAutoShaderOffset(true);
+        // i18n-ignore GPU diagnostic, English on purpose
+        stickyFact("[gpu] polygon offset measured far off: faces take their offset from the shader instead");
+      }
+    }
+    const on = [...compatSwitches()];
+    // i18n-ignore GPU diagnostic, English on purpose
+    if (on.length) stickyFact(`[gpu] compatibility switches on: ${on.join(", ")}`);
     // i18n-ignore GPU diagnostics, English so a report stays searchable
-    const m = gl instanceof WebGL2RenderingContext ? measureDepthBits(gl) : { bits: null, why: "not WebGL2" };
-    renderer.resetState(); // the probe drew with raw GL behind three's back
-    const resolved = `${m.bits ?? "?"}${m.why ? `: ${m.why}` : ""}`;
-    // i18n-ignore GPU diagnostics, English so a report stays searchable
-    depth = `depth bits: ${gl.getParameter(gl.DEPTH_BITS)} (resolves ${resolved}), samples: ${gl.getParameter(gl.SAMPLES)}`
+    depth = `depth bits: ${gl.getParameter(gl.DEPTH_BITS)}, samples: ${gl.getParameter(gl.SAMPLES)}`
       + `, attributes: depth=${a?.depth} stencil=${a?.stencil} antialias=${a?.antialias}`;
     const ext = gl.getExtension("WEBGL_debug_renderer_info");
     const r = ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER);
@@ -247,11 +262,15 @@ function createRenderer(canvas: HTMLCanvasElement): THREE.WebGLRenderer {
     // plane (depthOffset.ts says why, and what it costs the polygon offset).
     installLogDepthOffset();
     // antialias: MSAA, except on a GPU known to draw it wrong (gpuQuirks.ts),
-    // which createScene supersamples instead
-    return new THREE.WebGLRenderer({ canvas, antialias: !msaaBroken(rememberedRenderer()), stencil: true, logarithmicDepthBuffer: true });
+    // which createScene supersamples instead. stencil and log depth follow the
+    // View menu's graphics switches (gpuQuirks.ts).
+    const sw = compatSwitches();
+    return new THREE.WebGLRenderer({
+      canvas, antialias: !msaaBroken(rememberedRenderer()), stencil: !sw.has("noStencil"), logarithmicDepthBuffer: !sw.has("plainDepth"),
+    });
   } catch {
     try {
-      const plain = new THREE.WebGLRenderer({ canvas, antialias: false, logarithmicDepthBuffer: true });
+      const plain = new THREE.WebGLRenderer({ canvas, antialias: false, logarithmicDepthBuffer: !compatSwitches().has("plainDepth") });
       stickyFact("[gpu] the driver refused our context attributes, running on its defaults");
       return plain;
     } catch (e) {
@@ -370,4 +389,24 @@ function makePlane(color: number, kind: "XY" | "XZ" | "YZ"): THREE.Mesh {
   mesh.renderOrder = -1;
   mesh.userData.plane = kind;
   return mesh;
+}
+
+/** The canvas battery again, a few seconds in. On Doug's Ivy Bridge the startup
+ *  run drew nothing at all, so a second reading once the page has settled says
+ *  whether that was startup or the canvas itself. It clears the canvas, so the
+ *  caller redraws right after. */
+export function scheduleLateSelfTest(renderer: THREE.WebGLRenderer, redraw: () => void, delayMs = 5000): void {
+  window.setTimeout(() => {
+    try {
+      const gl = renderer.getContext();
+      if (!(gl instanceof WebGL2RenderingContext) || gl.isContextLost()) return;
+      const t = runSelfTest(gl);
+      renderer.resetState();
+      // i18n-ignore GPU diagnostics, English so a report stays searchable
+      stickyFact(`[gpu] self-test, canvas after ${Math.round(delayMs / 1000)} s: ${describe(t)}`);
+    } catch {
+      /* a diagnostic must never break the app */
+    }
+    redraw();
+  }, delayMs);
 }

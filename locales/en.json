@@ -1236,6 +1236,13 @@
       "cycleProjection": "Cycle Projection (Persp / Ortho / Auto)",
       "fit": "Fit View",
       "front": "Front View",
+      "gfx": {
+        "frontFaces": "Graphics fix: draw only the outside of faces",
+        "noStencil": "Graphics fix: no stencil buffer (section caps off)",
+        "plainDepth": "Graphics fix: plain depth buffer",
+        "restart": "Restart SindriCAD to apply this graphics setting.",
+        "shaderOffset": "Graphics fix: edge offset done by SindriCAD"
+      },
       "iso": "Isometric View",
       "projection": {
         "auto": "Auto",

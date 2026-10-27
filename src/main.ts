@@ -10,6 +10,7 @@ import { TauriGeometry } from "./geometry/tauriClient";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { watchGlRenderer } from "./diagnostics/glRenderer";
+import { COMPAT_SWITCHES, compatSwitches, setCompatSwitch } from "./viewport/gpuQuirks";
 import { DocumentStore, EMPTY_DOCUMENT } from "./document/store";
 import { soleFeatureForBody } from "./document/bodyMaker";
 import { Timeline } from "./ui/timeline";
@@ -590,6 +591,17 @@ const menubar = new Menubar(document.getElementById("menubar")!, [
       { label: t("menu.view.spaceMouseCamera"), checked: () => getSpaceMouseMode() === "camera", onClick: () => setSpaceMouseMode("camera") },
       { separator: true, label: "" },
       { label: t("menu.view.spaceMouseSettings"), onClick: () => spaceMouseSettings.open() },
+      // Graphics troubleshooting (viewport/gpuQuirks.ts): each avoids one part of
+      // GL a driver may get wrong. They apply from the next start.
+      { separator: true, label: "" },
+      ...COMPAT_SWITCHES.map((sw) => ({
+        label: t(`menu.view.gfx.${sw}`),
+        checked: () => compatSwitches().has(sw),
+        onClick: () => {
+          setCompatSwitch(sw, !compatSwitches().has(sw));
+          toast(t("menu.view.gfx.restart"), { kind: "info" });
+        },
+      })),
     ],
   },
   {

@@ -3,7 +3,7 @@
 // of the app uses: setModel(), fit(), pick callbacks, projection/view toggles.
 
 import * as THREE from "three";
-import { createScene, groundGridZ, type SceneBundle } from "./scene";
+import { createScene, scheduleLateSelfTest, groundGridZ, type SceneBundle } from "./scene";
 import {
   createCameraRig,
   VIEW_STEP,
@@ -317,6 +317,7 @@ export class Viewport {
 
   constructor(private canvas: HTMLCanvasElement) {
     this.scene = createScene(canvas, () => this.onContextRestored());
+    scheduleLateSelfTest(this.scene.renderer, () => this.requestRender());
     this.progressive = new ProgressiveModel(this.scene.modelGroup, disposeBody);
     this.scene.scene.add(this.datumGroup);
     this.scene.scene.add(this.caps.root);

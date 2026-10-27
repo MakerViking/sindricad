@@ -20,6 +20,17 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ### Display
 
+- **A graphics self-test, and fixes you can try from the View menu.** Some graphics drivers
+  draw edges and faces wrong in ways that cannot be reproduced on other machines. SindriCAD
+  now tests at startup how the graphics on this computer handle depth, and bug reports say
+  exactly what it found. If the way faces are kept behind their edges measures wrong, the
+  app works around it by itself. The View menu also has four graphics fixes to try, one at
+  a time; each applies after a restart.
+
+## 0.1.271 (2026-10-24)
+
+### Display
+
 - **Clean edges on Intel HD Graphics 4000 and 2500 (Ivy Bridge).** These older Intel chips
   draw antialiased edges wrong, which showed up as stair-steps and stray lines along a
   model's edges whatever the depth settings. Chrome has worked around this for years; now

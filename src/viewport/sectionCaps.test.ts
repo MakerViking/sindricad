@@ -356,7 +356,8 @@ describe("the wiring that puts caps on screen", () => {
   });
 
   it("the renderer asks for a stencil buffer and reports whether it got one", () => {
-    expect(sceneSrc).toMatch(/new THREE\.WebGLRenderer\(\{ canvas, antialias: [^,]+, stencil: true[,}]/);
+    // asked for unless the View menu's "no stencil buffer" switch is on (gpuQuirks.ts)
+    expect(sceneSrc).toMatch(/new THREE\.WebGLRenderer\(\{\s*canvas, antialias: [^,]+, stencil: !sw\.has\("noStencil"\)/);
     expect(sceneSrc).toMatch(/getContextAttributes\(\)\?\.stencil === true/);
   });
 });
