@@ -2,6 +2,7 @@
 // dims, grid appears), draw Line/Rectangle/Circle interactively with snapping
 // and on-canvas dimension input, then Finish to commit the sketch feature.
 
+import { droppableZeroSize, isZeroSize } from "./zeroSize";
 import * as THREE from "three";
 import type { Viewport } from "../viewport/viewport";
 import type { DocumentStore } from "../document/store";
@@ -915,6 +916,20 @@ export class SketchMode {
     if (!this.active) return;
     const store = this.store!;
     this.patternFlow.flushOnFinish(); // may add patterns — must precede the snapshot
+    // Shapes with no size that nothing refers to go now (zeroSize.ts): a document
+    // that already holds one, like field 7ff177f8's, is fixed by opening the
+    // sketch and closing it, which is what the engine's message tells the user
+    // to do. Named in a toast, never silent: they cannot be seen to go.
+    if (commit) {
+      const drop = droppableZeroSize(this.entities.filter((e) => !isOriginGeometry(e.id)), this.constraints);
+      if (drop.length) {
+        const gone = new Set(drop.map((e) => e.id));
+        this.entities = this.entities.filter((e) => !gone.has(e.id));
+        this.pruneConstraints();
+        this.prunePatterns();
+        toast(t("sketch.zeroSize.removed", { count: drop.length }));
+      }
+    }
     // Don't commit a sketch nobody drew in. Creating an Offset Plane opens a
     // sketch on it automatically, so a user who only wanted the plane pressed
     // Finish and got an empty sketch row to hunt down and delete (d911463c,
@@ -5131,6 +5146,8 @@ export class SketchMode {
     // bank a dragged size under a typed one. Refuse here, not in the preview.
     if (this.badTypedField(...this.drawDimDefs())) return;
     const { entity } = this.computeGeometry(this.base, cursor);
+    // a second click on the first one's spot: no size, so keep waiting (zeroSize.ts)
+    if (isZeroSize(entity)) return;
     if (this.constructionMode) entity.construction = true;
     entity.id = newEntityId(); // stamp a stable id (computeGeometry left it "")
     this.entities.push(entity);

@@ -2060,6 +2060,12 @@
       "selectFirstMove": "Nothing is selected yet. Click what to move (Shift or Ctrl-click adds more), then press Enter.",
       "selectFirstRotate": "Nothing is selected yet. Click what to rotate (Shift or Ctrl-click adds more), then press Enter.",
       "selectFirstScale": "Nothing is selected yet. Click what to scale (Shift or Ctrl-click adds more), then press Enter."
+    },
+    "zeroSize": {
+      "removed": {
+        "one": "Removed {count} shape with no size from this sketch. It drew nothing, and it stopped the sketch from building.",
+        "other": "Removed {count} shapes with no size from this sketch. They drew nothing, and they stopped the sketch from building."
+      }
     }
   },
   "status": {

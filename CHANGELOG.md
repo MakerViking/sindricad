@@ -20,6 +20,17 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ### Sketch
 
+- **A second click on the same spot no longer makes an invisible shape that stops the
+  sketch building.** With the rectangle, circle or line tool, clicking twice on one spot
+  made a shape with no size. It drew nothing and could not be clicked, but the sketch then
+  refused to build, and every extrude from it failed. The second click is now ignored, so
+  you just click again. A sketch that already holds such a shape is fixed by opening it and
+  closing it again: shapes with no size are removed, and a notice says how many.
+
+## 0.1.273 (2026-10-28)
+
+### Sketch
+
 - **Every closed area in a sketch can be extruded, including ones bounded by circles that
   only touch.** Where a circle rested on a line or on another circle, the sketch could lose
   track of the areas around that touch point. They showed unshaded and could not be picked,

@@ -19205,14 +19205,15 @@ def _build_sketch(f, val, datums=None):
             cx, cy = val(e.get("x", 0)), val(e.get("y", 0))
             raise ValueError(
                 f"a circle in this sketch has a radius of {val(e['radius']):g} "
-                f"(centred at {cx:g}, {cy:g}) — give it a radius greater than 0, "
-                "or delete it"
+                f"(centred at {cx:g}, {cy:g}) — it draws nothing: open the sketch and "
+                "close it again to delete it, or give it a radius greater than 0"
             )
         if et == "rectangle" and not (val(e["width"]) > 0 and val(e["height"]) > 0):
             rx, ry = val(e.get("x", 0)), val(e.get("y", 0))
             raise ValueError(
                 f"a rectangle in this sketch has a zero width or height "
-                f"(centred at {rx:g}, {ry:g}) — give it a size, or delete it"
+                f"(centred at {rx:g}, {ry:g}) — it draws nothing: open the sketch and "
+                "close it again to delete it, or give it a size"
             )
         # Lines and splines had no guard here, so a degenerate one fell through
         # to _entity_edges and OCCT answered with a bare StdFail_NotDone
@@ -19225,7 +19226,10 @@ def _build_sketch(f, val, datums=None):
         # nothing. They read the cascade as a revolve bug ("I cannot rotate it
         # about the X"); every revolve was only saying its sketch was missing.
         #
-        # These REFUSE rather than skip, like the two guards above. Skipping is
+        # These REFUSE rather than skip, like the two guards above. Closing the
+        # sketch removes a shape with no size that nothing refers to
+        # (src/sketch/zeroSize.ts, field 7ff177f8), which is what these
+        # messages now tell the user to do. Skipping is
         # defensible — a zero-extent entity adds no area, and the frontend
         # already leaves them out of a region (that document's own
         # regionEntities excludes the bad line) — but the entity is invisible,
@@ -19244,7 +19248,8 @@ def _build_sketch(f, val, datums=None):
             if math.hypot(val(e["x2"]) - x1, val(e["y2"]) - y1) <= _COINCIDENT:
                 raise ValueError(
                     f"a line in this sketch has zero length (both ends at {x1:g}, "
-                    f"{y1:g}) — move one end away from the other, or delete the line"
+                    f"{y1:g}) — it draws nothing: open the sketch and close it again to "
+                    "delete it, or move one end away from the other"
                 )
         if et == "spline":
             pts = [(val(p["x"]), val(p["y"])) for p in e.get("points", [])]
