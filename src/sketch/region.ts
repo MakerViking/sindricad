@@ -694,15 +694,31 @@ function inSweep(rnd: RoundGeom, p: THREE.Vector2): boolean {
  *  entirely. Mirrors modify.ts's entityCurves/curveCrossings pattern for trim. */
 function roundSegIntersect(rnd: RoundGeom, s: Seg): THREE.Vector2[] {
   const a = v(s.x1, s.y1), b = v(s.x2, s.y2);
-  return circleLineIntersect(a, b, rnd.c, rnd.r).filter((p) => {
+  return mergeNearTouch(circleLineIntersect(a, b, rnd.c, rnd.r).filter((p) => {
     const t = paramOnSeg(a, b, p);
     return t >= -1e-6 && t <= 1 + 1e-6 && inSweep(rnd, p);
-  });
+  }));
 }
 
 /** Where two round curves touch or cross, filtered to each one's own sweep. */
 function roundRoundIntersect(a: RoundGeom, b: RoundGeom): THREE.Vector2[] {
-  return circleCircleIntersect(a.c, a.r, b.c, b.r).filter((p) => inSweep(a, p) && inSweep(b, p));
+  return mergeNearTouch(circleCircleIntersect(a.c, a.r, b.c, b.r).filter((p) => inSweep(a, p) && inSweep(b, p)));
+}
+
+/** Two crossings closer than EPS are one touch, at their midpoint.
+ *
+ *  A solver-placed tangency lands a hair off either way: a line 1.2e-10 mm
+ *  INTO a circle of radius 5 cuts it twice, 7e-5 mm apart, well past
+ *  touchTol's 5e-6. traceLoops keys nodes to EPS (1e-4) and planarize drops
+ *  pieces shorter than EPS, so the two cuts and the sliver between them did
+ *  not survive consistently, and the faces through the touch were lost (field
+ *  652c7ea5's family). geom2d's touchTol stays tight because TRIM must not
+ *  merge crossings a user can see; region tracing works at EPS anyway, so
+ *  merging at EPS here changes nothing a user can see. */
+function mergeNearTouch(pts: THREE.Vector2[]): THREE.Vector2[] {
+  if (pts.length !== 2) return pts;
+  const [p, q] = pts as [THREE.Vector2, THREE.Vector2];
+  return p.distanceTo(q) < EPS ? [p.clone().add(q).multiplyScalar(0.5)] : pts;
 }
 
 /** Analytic touch/crossing points between two entities where at least one is a
@@ -864,12 +880,31 @@ const ANGLE_TIE_EPS = 1e-7;
  * side (e.g. the smaller of two internally-tangent circles) genuinely sits
  * further around the CCW order — matching how the regions actually nest.
  */
+/** An angle in the one range every half-edge is sorted in, [-PI, PI), with
+ *  anything within ANGLE_TIE_EPS of +PI moved to -PI.
+ *
+ *  The sort in traceLoops compares plain numbers, so two edges leaving a node in
+ *  the same direction must get the same NUMBER. They did not: a chord's angle is
+ *  atan2's (-PI, PI], where a leftward edge is +PI or -PI by the sign of a
+ *  1e-10 y-difference, and a circle's tangent (outward +/- PI/2) was never
+ *  normalised at all, anywhere in (-3PI/2, 3PI/2]. A line tangent to a circle,
+ *  both leaving to the left, then read +PI and -PI: no tie, opposite ends of the
+ *  sort, a wrong order around the node, and the faces through it were never
+ *  traced. Hank's sketch (field 652c7ea5: three tangent circles on a trapezoid,
+ *  the solver leaving one edge end 3e-10 below zero) lost four of its seven
+ *  profiles that way. */
+function canonAngle(a: number): number {
+  let x = ((a + Math.PI) % TAU + TAU) % TAU - Math.PI;
+  if (x >= Math.PI - ANGLE_TIE_EPS) x -= TAU;
+  return x;
+}
+
 function roundHalfEdgeAngle(
   from: THREE.Vector2,
   to: THREE.Vector2,
   round: { cx: number; cy: number; r: number } | undefined,
 ): { angle: number; curv: number } {
-  const chordAngle = Math.atan2(to.y - from.y, to.x - from.x);
+  const chordAngle = canonAngle(Math.atan2(to.y - from.y, to.x - from.x));
   if (!round || round.r <= 0) return { angle: chordAngle, curv: 0 };
   const outward = Math.atan2(from.y - round.cy, from.x - round.cx);
   const ccw = outward + Math.PI / 2;
@@ -881,8 +916,8 @@ function roundHalfEdgeAngle(
     return Math.abs(d);
   };
   return diff(ccw) <= diff(cw)
-    ? { angle: ccw, curv: 1 / round.r }
-    : { angle: cw, curv: -1 / round.r };
+    ? { angle: canonAngle(ccw), curv: 1 / round.r }
+    : { angle: canonAngle(cw), curv: -1 / round.r };
 }
 
 /** One minimal face of the planar arrangement, plus the entities that bound it. */

@@ -18,6 +18,16 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ## Unreleased
 
+### Sketch
+
+- **Every closed area in a sketch can be extruded, including ones bounded by circles that
+  only touch.** Where a circle rested on a line or on another circle, the sketch could lose
+  track of the areas around that touch point. They showed unshaded and could not be picked,
+  even though they were plainly closed. In one reported sketch, four of its seven areas were
+  missing; another known sketch was missing two. Both now show every area.
+
+## 0.1.272 (2026-10-28)
+
 ### Display
 
 - **A graphics self-test, and fixes you can try from the View menu.** Some graphics drivers

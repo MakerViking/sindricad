@@ -70,8 +70,16 @@ const reporterRegions = (id: keyof typeof fixtures) =>
 describe("detectRegions — the reporters' sketches triangulate exactly", () => {
   const cases: [keyof typeof fixtures, number[]][] = [
     ["f40b90ca", [1.514, 1.514, 24.953, 24.953, 26.466, 26.466, 78.414, 156.003, 231.086, 233.593, 252.719, 457.737, 542.217, 554.945, 579.402, 776.588, 795.023, 800, 1176.251, 1384.78, 3468.099, 6334.142, 1712755.871]],
-    ["4d0a741e", [2.942, 3.008, 5.597, 7.913, 18.555, 23.459, 26.466, 41.171, 78.414, 156.003, 180.287, 227.997, 231.086, 252.719, 457.737, 579.402, 629.204, 748.254, 776.588, 800, 1176.251, 1384.78, 3468.099, 6334.142, 1712755.871]],
+    // 23.526 and 528.716 were MISSING until the half-edge angles were made
+    // canonical (region.ts canonAngle, field 652c7ea5): 23.526 is the larger
+    // part of circle e253 that line e247 cuts (2.98 + 23.53 = the whole 26.51
+    // disc; only the small part was found), 528.716 the cell beside it.
+    ["4d0a741e", [2.942, 3.008, 5.597, 7.913, 18.555, 23.459, 23.526, 26.466, 41.171, 78.414, 156.003, 180.287, 227.997, 231.086, 252.719, 457.737, 528.716, 579.402, 629.204, 748.254, 776.588, 800, 1176.251, 1384.78, 3468.099, 6334.142, 1712755.871]],
     ["50429b0d", [28.229, 28.229, 115.085, 115.085, 1246.009, 4978.373]],
+    // three circles tangent to a trapezoid's top and to a fourth circle, the
+    // solver leaving one edge end 3e-10 below zero: 3 of 7 profiles until the
+    // half-edge angles were made canonical (region.ts canonAngle)
+    ["652c7ea5", [15.974, 15.974, 78.414, 78.414, 78.414, 98.02, 2000]],
     ["9dec2462", [1.514, 1.514, 24.953, 24.953, 26.466, 26.466, 78.414, 156.003, 231.086, 233.593, 252.719, 457.737, 542.217, 554.945, 579.402, 776.588, 795.023, 800, 1176.251, 1384.78, 3468.099, 6334.142, 1712755.871]],
   ];
 
@@ -187,4 +195,24 @@ describe("detectRegions — a touch point is cut only into the chord it lies on"
       expect(regions.reduce((s, r) => s + regionArea(r), 0)).toBeCloseTo(1600, 6);
     }
   });
+});
+
+describe("detectRegions — a tangent touch across the +/-PI seam (field 652c7ea5)", () => {
+  // A circle resting on a line, the line's left half sloping down by 3e-10 so
+  // its leftward chord reads atan2 = -PI while the circle's tangent there reads
+  // +PI: before canonAngle the two never tied, the order around the touch node
+  // was wrong, and the circle's own disc was not traced at all.
+  const sketch = (dy: number): ResolvedEntity[] => [
+    line("l0", -30, dy, 0, 0), line("l1", 0, 0, 30, 0),
+    line("l2", 30, 0, 30, -10), line("l3", 30, -10, -30, -10), line("l4", -30, -10, -30, dy),
+    circle("c", -12, 5, 5),
+  ];
+  for (const dy of [0, -3e-10, 3e-10]) {
+    it(`the disc and the box are both profiles, left end ${dy}`, () => {
+      const areas = detectRegions("s", sketch(dy)).map((r) => regionArea(r)).sort((a, b) => a - b);
+      expect(areas).toHaveLength(2);
+      expect(areas[0]).toBeCloseTo(Math.PI * 25, 0);
+      expect(areas[1]).toBeCloseTo(600, 2);
+    });
+  }
 });
