@@ -67,6 +67,12 @@ const OVER_OWN_LINE = {
   });
   const page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
   page.on("pageerror", (e) => console.log("PAGEERROR:", e.message));
+  // SC_THROTTLE=<n> slows the page's CPU n times (a slow user machine or a
+  // loaded CI runner) so the timing-sensitive presses below can be tried under load.
+  if (Number(process.env.SC_THROTTLE) > 1) {
+    const cdp = await page.context().newCDPSession(page);
+    await cdp.send("Emulation.setCPUThrottlingRate", { rate: Number(process.env.SC_THROTTLE) });
+  }
 
   const token = process.env.SC_TOKEN ? `?token=${process.env.SC_TOKEN}` : "";
   await page.goto(`${origin}/${token}`, { waitUntil: "domcontentloaded" });
@@ -160,6 +166,16 @@ const OVER_OWN_LINE = {
     // double-press window measured from this first press.
     await page.evaluate(() => {
       for (const el of document.querySelectorAll(".sketch-dim")) if (el.textContent.includes("50")) el.dataset.e2eFirst = "1";
+    });
+    // The 400 ms double-press window is measured with performance.now(), and the
+    // gap between these two presses is made of this spec's own round trips and
+    // waits: on a loaded runner (or under SC_THROTTLE) they alone can pass 400 ms,
+    // which says nothing about the app (event timestamps and handler times agree
+    // to a few ms, so it is not rebuild lag). Run the page clock at 1/10 speed
+    // from here so the window still has to be met, but in the page's own time.
+    await page.evaluate(() => {
+      const real = performance.now.bind(performance), t0 = real();
+      performance.now = () => t0 + (real() - t0) / 10;
     });
     await pressAt(hp);
     // ...and wait until that replacement has been LAID OUT where the old badge
