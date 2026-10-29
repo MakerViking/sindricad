@@ -168,6 +168,136 @@ def test_a_path_in_real_pieces_says_so():
     print(f"{PASS} a path in real pieces is reported: {reason!r}")
 
 
+def _bbox(shape):
+    bb = shape.bounding_box()
+    return (bb.min.X, bb.min.Y, bb.min.Z), (bb.max.X, bb.max.Y, bb.max.Z)
+
+
+def _quarter_arc_path(backwards=False):
+    """A quarter arc on XY from (20, 0) round to (0, 20), or drawn from (0, 20)."""
+    r = 20 * math.sqrt(0.5)
+    ends = ((0, 20), (20, 0)) if backwards else ((20, 0), (0, 20))
+    return {"id": "path", "type": "sketch", "plane": "XY", "entities": [
+        {"id": "a", "type": "arc", "x1": ends[0][0], "y1": ends[0][1],
+         "mx": r, "my": r, "x2": ends[1][0], "y2": ends[1][1]}]}
+
+
+def test_a_profile_off_the_path_at_its_far_end_sweeps_along_the_arc():
+    """Field report af8fb5bb, small: the quarter arc above, and the profile
+    drawn 300 mm above the path's plane, over the arc's END (0, 20), on a plane
+    tipped 5 degrees. Down at the path that plane is 26 mm past the arc's START
+    and never crosses it. The body has to follow the arc back towards (20, 0),
+    up there at z 300.
+
+    RED before the fix: with nowhere to cross the path, OCCT anchored the
+    profile at the arc's START, (20, 0), and carried its offset from there, so
+    the body was swung on round the circle by the arc's own quarter turn and
+    landed in the -X quadrant, nowhere near anything drawn, with no error.
+    Drawing the arc the other way round gave the same wrong body."""
+    t = math.radians(5)
+    prof = {"id": "prof", "type": "sketch",
+            "plane": {"origin": [0, 20, 300], "normal": [math.cos(t), 0, math.sin(t)],
+                      "xdir": [0, 1, 0]},
+            "entities": [{"type": "circle", "radius": 2, "x": 0, "y": 0}]}
+    for backwards in (False, True):
+        part, err, bodies = rebuild(_sweep_doc(prof, _quarter_arc_path(backwards)))
+        assert not err, err
+        solid = bodies[0]["shape"]
+        lo, hi = _bbox(solid)
+        assert solid.is_valid and solid.volume > 0
+        assert lo[0] > -3 and hi[0] > 18 and lo[1] > -3 and hi[1] > 18, (
+            f"the sweep left the arc drawn {'backwards' if backwards else 'forwards'}"
+            f": it spans x {lo[0]:.2f}..{hi[0]:.2f}, y {lo[1]:.2f}..{hi[1]:.2f}; "
+            "the arc runs x 0..20, y 0..20")
+    print(f"{PASS} a profile off the path at its far end sweeps along the arc, "
+          f"drawn either way: x {lo[0]:.2f}..{hi[0]:.2f}, y {lo[1]:.2f}..{hi[1]:.2f}")
+
+
+def test_a_profile_on_the_far_end_of_an_arc_is_unchanged():
+    """The guard for the fix above: a profile sitting ON the arc's far end was
+    already placed right (its plane crosses the path there), and starting the
+    path from that end must give the same body, to the micron."""
+    prof = _circle_profile(at=(20, 0))  # YZ plane at x=0: world (0, 20, 0)
+    part, err, bodies = rebuild(_sweep_doc(prof, _quarter_arc_path()))
+    assert not err, err
+    solid = bodies[0]["shape"]
+    lo, hi = _bbox(solid)
+    assert solid.is_valid
+    assert abs(solid.volume - PROFILE_AREA * 10 * math.pi) < 1.0, solid.volume
+    for got, want in zip(lo + hi, (0, 0, -2, 22, 22, 2)):
+        assert abs(got - want) < 1e-3, (
+            f"the sweep moved: it spans {lo} .. {hi}, expected the arc's quarter")
+    print(f"{PASS} a profile on the far end of an arc sweeps the same body")
+
+
+def test_a_profile_at_the_far_end_of_a_line_chain_sweeps_back_along_it():
+    """The same guard on an L of two lines drawn AWAY from the profile: the
+    profile sits ON the L's far end, (60, 60), facing along Y, and the body has
+    to stay the L itself."""
+    prof = {"id": "prof", "type": "sketch",
+            "plane": {"origin": [60, 60, 0], "normal": [0, 1, 0], "xdir": [1, 0, 0]},
+            "entities": [{"type": "rectangle", "width": 20, "height": 20}]}
+    path = {"id": "path", "type": "sketch", "plane": "XY", "entities": [
+        _line("e1", (0, 0), (60, 0)),
+        _line("e2", (60, 0), (60, 60))]}
+    part, err, bodies = rebuild(_sweep_doc(prof, path))
+    assert not err, err
+    solid = bodies[0]["shape"]
+    lo, hi = _bbox(solid)
+    assert solid.is_valid and abs(solid.volume - 48000) < 10, solid.volume
+    assert lo[0] > -10.5 and hi[0] < 70.5 and lo[1] > -10.5 and hi[1] < 60.5, (
+        f"the sweep left the drawn L: it spans x {lo[0]:.2f}..{hi[0]:.2f}, "
+        f"y {lo[1]:.2f}..{hi[1]:.2f}; the L runs x 0..60, y 0..60")
+    print(f"{PASS} a profile at the far end of a line chain sweeps back along it")
+
+
+# Field report af8fb5bb's own path and profile (sketches 13 and 12), as stored:
+# a quarter arc of radius 1/4" on a datum plane at x = -157.3, drawn from the
+# top (y 126.29) down to the side (y 119.94) where the profile sits. The profile
+# was three curves projected off a face of the part at x = +157.7; here they are
+# the same three curves drawn as two lines and an arc through the same points.
+_AF8_PATH = {"id": "f69", "type": "sketch",
+             "plane": {"xdir": [0, 1, 0], "normal": [1, 0, 0],
+                       "origin": [-157.30219999999997, 0, 0]},
+             "entities": [{"id": "e2468", "type": "arc",
+                           "x1": 11.123179978905933, "y1": 126.2872139924421,
+                           "mx": 6.633051918371378, "my": 124.42734205297678,
+                           "x2": 4.773179978905933, "y2": 119.93721399244212}]}
+_AF8_PROFILE = {"id": "f66", "type": "sketch",
+                "plane": {"xdir": [0.9986554062375368, 0.0012341609418234205,
+                                   -0.05182524905208233],
+                          "normal": [0.05183994205765167, -0.023775132606214965,
+                                     0.9983723571278484],
+                          "origin": [6.624269479439107, -3.038060596553485,
+                                     127.57513361189268]},
+                "entities": [
+                    _line("e1", (151.809915, 8.854169), (150.648672, 10.357584)),
+                    _line("e2", (150.648672, 10.357584), (150.405573, 8.474327)),
+                    {"id": "e3", "type": "arc", "x1": 150.405573, "y1": 8.474327,
+                     "mx": 151.392138, "my": 7.614473,
+                     "x2": 151.809915, "y2": 8.854169}]}
+
+
+def test_field_report_af8fb5bb_sweeps_up_the_drawn_arc():
+    """The reporter expected the profile to run UP and over the arc he drew
+    (world Z 119.94 to 126.29 at Y 4.77 to 11.12); it turned DOWN instead, into
+    the quarter below the arc's centre, and drawing the arc the other way round
+    gave the same body.
+
+    RED before the fix: the body spanned Z 113.55..120.01, entirely below the
+    arc's centre at Z 119.94."""
+    part, err, bodies = rebuild(_sweep_doc(_AF8_PROFILE, _AF8_PATH))
+    assert not err, err
+    solid = bodies[0]["shape"]
+    lo, hi = _bbox(solid)
+    assert solid.is_valid and solid.volume > 0
+    assert lo[2] > 119.0 and hi[2] > 125.5 and hi[1] > 10.5, (
+        f"the sweep did not follow the drawn arc up to Z 126.29: it spans "
+        f"Y {lo[1]:.2f}..{hi[1]:.2f}, Z {lo[2]:.2f}..{hi[2]:.2f}")
+    print(f"{PASS} field report af8fb5bb sweeps up the drawn arc: "
+          f"Y {lo[1]:.2f}..{hi[1]:.2f}, Z {lo[2]:.2f}..{hi[2]:.2f}")
+
+
 def test_a_sweep_that_builds_nothing_refuses_loudly():
     """A hairpin: two legs doubling back on each other at 1 degree, with a
     profile fat enough that the section has nowhere to go round the turn. OCCT
@@ -539,6 +669,10 @@ if __name__ == "__main__":
     test_a_closed_path_sweeps_to_a_real_solid()
     test_a_corner_in_an_open_path_keeps_its_volume()
     test_a_path_in_real_pieces_says_so()
+    test_a_profile_off_the_path_at_its_far_end_sweeps_along_the_arc()
+    test_a_profile_on_the_far_end_of_an_arc_is_unchanged()
+    test_a_profile_at_the_far_end_of_a_line_chain_sweeps_back_along_it()
+    test_field_report_af8fb5bb_sweeps_up_the_drawn_arc()
     test_a_sweep_that_builds_nothing_refuses_loudly()
     test_a_helix_cuts_an_m6_thread_to_its_analytic_volume()
     test_a_twenty_turn_thread_cuts_within_the_heartbeat()

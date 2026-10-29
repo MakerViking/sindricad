@@ -7564,9 +7564,71 @@ def _clean_section(shape):
     return kept[0] if len(kept) == 1 else Compound(kept)
 
 
-def _sweep_solid(prof, path):
+def _sweep_anchor(prof, path):
+    """The end of an open `path` the profile has to start from when the
+    profile's plane never crosses the path, as one of the path's own vertices,
+    or None to leave the profile where OCCT puts it.
+
+    MakePipeShell anchors the profile where its plane crosses the path, which
+    for a profile drawn on the path is where it was drawn, and carries the
+    profile's offset from that point. A plane that misses the path is anchored
+    by a rule of the kernel's own that ignores where the profile sits. Field
+    report af8fb5bb, MEASURED: a profile 315 mm off the path on a face tipped 3
+    degrees, so its plane passed 16 mm clear of a 1/4" quarter arc, swept into
+    the quarter BELOW the arc, and the quarter arc drawn either way round and the
+    quarter below it drawn either way round all gave that same body. In the
+    same document a welt profile whose plane missed the end of its path by 0.03
+    mm was anchored at the path's FAR end and swept 108 mm out past the part.
+    Such a profile is taken to start at the path end nearest it."""
+    if path.is_closed:
+        return None
+    faces = prof.faces()
+    try:
+        pln = Plane(faces[0])
+    except Exception:
+        return None
+    # A sheet on the profile's plane, square round the foot of the path's centre
+    # and wider than anything the path can reach, stands in for the whole plane.
+    bb = path.bounding_box()
+    foot = pln.to_local_coords(bb.center())
+    foot = pln.from_local_coords(Vector(foot.X, foot.Y, 0))
+    reach = 4 * (bb.diagonal + (bb.center() - foot).length) + 1.0
+    sheet = Face.make_rect(reach, reach, Plane(foot, pln.x_dir, pln.z_dir))
+    if path.distance_to(sheet) <= 1e-6:
+        return None
+    c = prof.bounding_box().center()
+    end = min((path.start_point(), path.end_point()), key=lambda p: (p - c).length)
+    return min(path.vertices(), key=lambda v: (Vector(v) - end).length)
+
+
+def _sweep_anchored(prof, path, transition, anchor):
+    """`sweep()` for one face list, with the profile anchored at `anchor` (a
+    vertex of `path`) rather than wherever its plane meets the path. build123d's
+    `Solid.sweep` has no way to say where, so this is its loop with the vertex
+    added: every wire of every face swept on its own, holes cut from the outer."""
+    from build123d import Part
+    from OCP.BRepOffsetAPI import BRepOffsetAPI_MakePipeShell
+
+    solids = []
+    for fc in prof.faces():
+        shells = []
+        for wire in [fc.outer_wire()] + fc.inner_wires():
+            mk = BRepOffsetAPI_MakePipeShell(path.wrapped)
+            mk.SetMode(False)
+            mk.SetTransitionMode(Shape._transModeDict[transition])
+            mk.Add(wire.wrapped, anchor.wrapped, False, False)
+            mk.Build()
+            mk.MakeSolid()
+            shells.append(Solid(mk.Shape()))
+        solid = shells[0].cut(*shells[1:]) if len(shells) > 1 else shells[0]
+        solids.append(solid.clean())
+    return Part(Compound(solids).wrapped)
+
+
+def _sweep_solid(prof, path, anchor=None):
     """Sweep `prof` along `path`, preferring `Transition.RIGHT` (see
-    `_SWEEP_TRANSITIONS`) and falling back when the kernel refuses it.
+    `_SWEEP_TRANSITIONS`) and falling back when the kernel refuses it. `anchor`
+    is a vertex of `path` to start the profile from (`_sweep_anchor`).
 
     Returns the first solid with positive volume that OCCT calls valid. Raises
     ValueError naming what came back if none of the modes produce one: a sweep
@@ -7576,7 +7638,10 @@ def _sweep_solid(prof, path):
     outcomes = []
     for transition in _SWEEP_TRANSITIONS:
         try:
-            solid = sweep(sections=prof, path=path, transition=transition)
+            if anchor is not None:
+                solid = _sweep_anchored(prof, path, transition, anchor)
+            else:
+                solid = sweep(sections=prof, path=path, transition=transition)
         except Exception as ex:
             outcomes.append(f"{transition} was refused ({type(ex).__name__})")
             continue
@@ -7890,7 +7955,8 @@ def _handle_sweep(f, ctx):
         cut_noop_msg = _HELIX_CUT_MISSED
     else:
         path = _sweep_path(f, ctx)
-        solid = _sweep_solid(_clean_section(prof), path)
+        section = _clean_section(prof)
+        solid = _sweep_solid(section, path, _sweep_anchor(section, path))
     # Same New/Join/Cut boolean path as extrude/revolve/loft: booleans against
     # every visible overlapping body, with the loud no-op guards. (Sweep used to
     # inline `act["shape"] + solid` / `- solid` against only the active body —
