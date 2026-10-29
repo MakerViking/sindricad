@@ -952,6 +952,16 @@ jobs:
           SC_TOKEN: citoken
           SC_CHROME: /usr/bin/google-chrome
         run: node e2e/datum_hover_highlight_e2e.cjs
+      # Field reports 82e8d565 / bcbee3fe: Sketch, then a click on a
+      # construction plane, opened the sketch on the base plane behind it. Run
+      # on the reporter's own document (a plane on a tilted cut face, the body
+      # removed), reading back the stored sketch's planeId and normal. Carries
+      # its controls: bare canvas enters nothing, a face in front still wins.
+      - name: Sketch on a construction plane end-to-end
+        env:
+          SC_TOKEN: citoken
+          SC_CHROME: /usr/bin/google-chrome
+        run: node e2e/sketch_on_datum_e2e.cjs
       # Getting OUT of a sketch: Finish on one nobody drew in must add nothing,
       # and Cancel Sketch must leave without committing. The store side is unit
       # tested, but the row in the Browser — the thing the two reporters had to

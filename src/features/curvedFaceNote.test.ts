@@ -55,6 +55,10 @@ function harness() {
       hoverPlane: () => {},
       clearHover: () => {},
       pickPlane: () => null,
+      // Sketch's pick also offers construction planes; there are none here
+      datumHitAt: () => null,
+      basePlaneHitAt: () => null,
+      hoverDatum: () => {},
       selectedFacesForPressPull: () => null,
       // nothing pre-selected, so Sketch reaches the interactive picker this
       // file drives (the face-first path is sketchOnPreselectedFace.test.ts)

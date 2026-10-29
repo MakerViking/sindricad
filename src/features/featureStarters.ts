@@ -243,10 +243,10 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
    *  planes (nothing to follow) and for curved faces (nothing to follow it
    *  BY — see viewport.faceAnchor), and the curved case says so out loud.
    *
-   *  `datums` also offers the construction planes, for the one flow that wants
-   *  them (Copy sketch to plane); `onPick` then gets the datum's id as the
-   *  link to keep. The other pickers stay as they were: offering a datum to
-   *  Sketch or Datum Plane would change what those buttons make. A body face
+   *  `datums` also offers the construction planes, for the flows that want
+   *  them (Sketch, Copy sketch to plane); `onPick` then gets the datum's id as
+   *  the link to keep. Datum Plane and Offset Plane stay as they were: a datum
+   *  picked there would be copied as a frozen plane, not followed. A body face
    *  still wins over a datum quad in front of it, the rule every pick that
    *  reads construction planes follows (viewport.pickDatumAt). Between a datum
    *  and a base plane the NEARER one wins: a datum's quad is sized to the
@@ -343,10 +343,14 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
       if (tool) sketch.setTool(tool);
       return;
     }
-    pickPlaneInteractive(t("feature.starters.pickSketchPlane"), (spec, face) => {
-      sketch.enter(spec, store, undefined, undefined, face);
+    // A construction plane is offered too, and entered BY ID like the plane's
+    // own right-click "Sketch on plane", so the sketch follows its Offset.
+    // Without it the click went through the quad to the base plane behind it
+    // and opened a sketch on XY with no word said (Doug, 82e8d565).
+    pickPlaneInteractive(t("feature.starters.pickSketchPlane"), (spec, face, planeId) => {
+      sketch.enter(spec, store, undefined, planeId, face);
       if (tool) sketch.setTool(tool);
-    });
+    }, CURVED_FACE_NOTE, { datums: true });
   }
 
   // Offset Plane: pick a plane/face, then drag an arrow (or type) to set the

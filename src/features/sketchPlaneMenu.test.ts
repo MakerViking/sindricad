@@ -60,6 +60,7 @@ function world(doc: CadDocument) {
   let planePick = false;
   const canvasDown: ((e: unknown) => void)[] = [];
   const boxAt: number[][] = []; // every world point the arrow tool asked to put on screen
+  const entered: { plane: unknown; planeId: string | undefined; face: unknown }[] = []; // every sketch.enter
   const viewport = {
     suspendPicking: false,
     showAllPlanes() {},
@@ -79,6 +80,7 @@ function world(doc: CadDocument) {
     removeFromScene() {},
     pixelWorldSize: () => 0.1,
     rayFrom: () => ({ intersectObjects: () => [] }),
+    selectedFaceSketchPlane: () => null, // nothing preselected: Sketch asks for a plane
   };
   const planeOffset = new PlaneOffsetTool(viewport as never, store);
   const toolBusy = () => planePick || planeOffset.active;
@@ -87,7 +89,10 @@ function world(doc: CadDocument) {
     store,
     viewport,
     overlay: {},
-    sketch: {},
+    sketch: {
+      enter: (plane: unknown, _s: unknown, _edit?: string, planeId?: string, face?: unknown) => { entered.push({ plane, planeId, face }); },
+      setTool() {},
+    },
     planeOffset,
     canvas: {
       addEventListener: (type: string, fn: (e: unknown) => void) => { if (type === "pointerdown") canvasDown.push(fn); },
@@ -133,7 +138,7 @@ function world(doc: CadDocument) {
     (planeOffset as unknown as { commit: () => void }).commit();
   };
   const feature = <T extends Feature>(id: string) => store.document.features.find((f) => f.id === id) as T;
-  return { store, status, selected, choose, clickPlane, typeAndEnter, feature, planeOffset, boxAt };
+  return { store, status, selected, choose, clickPlane, typeAndEnter, feature, planeOffset, boxAt, entered, starters };
 }
 
 const COPY = t("context.copySketchToPlane");
@@ -191,6 +196,38 @@ function operandIds(c: SketchConstraint): string[] {
   if (c.type === "offset") for (const p of c.pairs) vals.push(p.src, p.cpy);
   return vals.map((v) => v.split("~")[0]!);
 }
+
+// --- Sketch, then click a construction plane ----------------------------------
+//
+// Doug (82e8d565): "I cannot select the plane for the sketch." The Sketch
+// command's pick never looked at construction planes, so a click on one went
+// through to the base plane behind it. The real-browser version of this, on
+// his own document, is e2e/sketch_on_datum_e2e.cjs.
+
+describe("Sketch on a construction plane", () => {
+  const dDoc = (): CadDocument => ({ parameters: {}, features: [{ id: "d0", type: "datumPlane", plane: "XY", offset: 25 }] });
+
+  it("opens the sketch on the clicked plane, linked to it by id", () => {
+    const w = world(dDoc());
+    w.starters.startSketch();
+    w.clickPlane({ datum: "d0", base: "XY" }); // the quad is in front of the base plane
+    expect(w.entered, "no sketch was opened").toHaveLength(1);
+    expect(w.entered[0]!.planeId, "the sketch went to a plane other than the one clicked").toBe("d0");
+    expect(w.entered[0]!.plane).toEqual({ origin: [0, 0, 25], normal: [0, 0, 1], xdir: [1, 0, 0] });
+  });
+
+  it("still takes a base plane in front of the quad, and a face over both", () => {
+    const w = world(dDoc());
+    w.starters.startSketch();
+    w.clickPlane({ datum: "d0", base: "XZ", datumBehind: true });
+    expect(w.entered.at(-1)).toMatchObject({ plane: "XZ", planeId: undefined });
+    const plane = { origin: [0, 0, 10], normal: [0, 0, 1], xdir: [1, 0, 0] };
+    const anchor = { kind: "face", by: "nearest", point: [5, 5, 10], body: "body1" };
+    w.starters.startSketch();
+    w.clickPlane({ face: { plane, anchor }, datum: "d0" });
+    expect(w.entered.at(-1)).toEqual({ plane, planeId: undefined, face: anchor });
+  });
+});
 
 describe("Copy sketch to plane", () => {
   it("lands a copy with new ids on the picked base plane, constraints and dimensions carried", () => {
