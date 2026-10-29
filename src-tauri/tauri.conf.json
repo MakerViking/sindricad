@@ -15,6 +15,7 @@
         "title": "SindriCAD",
         "width": 1280,
         "height": 800,
+        "center": true,
         "minWidth": 800,
         "minHeight": 600,
         "decorations": false,

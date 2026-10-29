@@ -444,3 +444,19 @@ pub fn run() {
         }
     });
 }
+
+#[cfg(test)]
+mod window_config_tests {
+    /// The main window is undecorated and has no remembered position, so the OS
+    /// picks where it opens: on Windows that was the top right corner. The config
+    /// is what the app builds the window from, so it must ask to be centred on
+    /// the monitor it opens on (tauri-runtime-wry does that at creation).
+    #[test]
+    fn main_window_opens_centred_on_its_monitor() {
+        let conf: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).expect("tauri.conf.json parses");
+        let wins = conf["app"]["windows"].as_array().expect("app.windows is a list");
+        let main = wins.first().expect("a main window is configured");
+        assert_eq!(main["center"], serde_json::Value::Bool(true), "main window must be centred at startup");
+    }
+}
