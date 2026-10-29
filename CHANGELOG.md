@@ -20,6 +20,30 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ### Sketch
 
+- **Sketch on a construction plane straight from the Sketch button.** Press Sketch and click
+  the plane: the sketch opens on it and follows the plane's Offset. Before, the click went
+  through the plane and opened the sketch on the base plane behind it.
+- **A double-click on a dimension badge no longer gets lost on a slow or busy machine.** I
+  lay the rebuilt badges out at once instead of on the next frame, and time the two clicks by
+  when you made them, not when the app got to them.
+
+### Modelling
+
+- **A sweep starts from the end of the path nearest its profile.** A profile drawn away from
+  its path, for example on a slightly tilted face on the other side of the part, could swing
+  round the wrong way or run off past the end of the path, however the path was drawn. It
+  now follows the path from the end closest to the profile. A sweep like that in an existing
+  file changes shape to follow its path.
+
+### App
+
+- **The window opens centred.** On Windows it used to appear in the upper right corner. It now
+  opens centred on the monitor it starts on.
+
+## 0.1.274 (2026-10-29)
+
+### Sketch
+
 - **A second click on the same spot no longer makes an invisible shape that stops the
   sketch building.** With the rectangle, circle or line tool, clicking twice on one spot
   made a shape with no size. It drew nothing and could not be clicked, but the sketch then
