@@ -97,7 +97,26 @@ const OVER_OWN_LINE = {
     // at the viewport's corner, "on screen" by coordinates and unclickable in
     // fact. fitView() frames the model; then wait until every badge is drawn
     // inside the view (rig.fit() transitions, so poll rather than sleep).
-    await page.evaluate(() => window.__sindri.viewport.fitView());
+    // fitView() animates the camera, and the badges follow it frame by frame: wait
+    // until the camera has held still for 5 consecutive frames (counted in frames,
+    // not milliseconds, so a slow runner cannot cut it short) and then 2 more for
+    // the badges to be laid out, or the presses below can land on a moving badge.
+    await page.evaluate(() => {
+      const vp = window.__sindri.viewport;
+      vp.fitView();
+      const key = () => vp.camera.matrixWorld.elements.concat(vp.camera.projectionMatrix.elements).join();
+      return new Promise((done) => {
+        let last = "", still = 0;
+        const tick = () => {
+          const k = key();
+          still = k === last ? still + 1 : 0;
+          last = k;
+          if (still >= 5) requestAnimationFrame(() => requestAnimationFrame(done));
+          else requestAnimationFrame(tick);
+        };
+        requestAnimationFrame(tick);
+      });
+    });
     await page.waitForFunction(() => {
       const vp = document.getElementById("viewport").getBoundingClientRect();
       const dims = [...document.querySelectorAll(".sketch-dim")];
@@ -158,53 +177,46 @@ const OVER_OWN_LINE = {
   const hp = await badgeAt("50");
   check(!!hp, "the height badge is on screen", JSON.stringify(hp));
   if (hp) {
-    // Tag the badge before pressing it: the press selects the line underneath
-    // and REBUILDS every badge, so the second press below must land on the new
-    // element, not on the old one mid-removal. Waiting for the untagged
-    // replacement is the exact settle the old fixed 250 ms sleep stood in for,
-    // and it stays short enough to keep the second press inside the
-    // double-press window measured from this first press.
+    // A person double-clicks in well under 400 ms, with nothing in between. Send
+    // both presses the way the browser would get them (one CDP stream, a fixed
+    // 200 ms apart by the clock) and record what the page saw AT the second
+    // press, so the checks below do not depend on this script's own round trips
+    // staying fast on a loaded runner. The first press selects the line under
+    // the badge and rebuilds every badge; the second lands on the rebuilt one.
     await page.evaluate(() => {
-      for (const el of document.querySelectorAll(".sketch-dim")) if (el.textContent.includes("50")) el.dataset.e2eFirst = "1";
+      window.__downs = [];
+      window.addEventListener("pointerdown", (e) => {
+        window.__downs.push({
+          inputs: document.querySelectorAll(".sketch-dim input").length,
+          selected: [...window.__sindri.sketch.selected],
+          on: (document.elementFromPoint(e.clientX, e.clientY) || {}).className || "",
+        });
+      }, true);
     });
-    // The 400 ms double-press window is measured with performance.now(), and the
-    // gap between these two presses is made of this spec's own round trips and
-    // waits: on a loaded runner (or under SC_THROTTLE) they alone can pass 400 ms,
-    // which says nothing about the app (event timestamps and handler times agree
-    // to a few ms, so it is not rebuild lag). Run the page clock at 1/10 speed
-    // from here so the window still has to be met, but in the page's own time.
-    await page.evaluate(() => {
-      const real = performance.now.bind(performance), t0 = real();
-      performance.now = () => t0 + (real() - t0) / 10;
-    });
-    await pressAt(hp);
-    // ...and wait until that replacement has been LAID OUT where the old badge
-    // was: the double-press rule is 4 px, and a badge pressed before its
-    // transform settles sits a few pixels off and reads as a fresh single press.
-    await page.waitForFunction(
-      (p) => [...document.querySelectorAll(".sketch-dim")].some((el) => {
-        if (!el.textContent.includes("50") || el.dataset.e2eFirst) return false;
-        const b = el.getBoundingClientRect();
-        return Math.abs(b.x + b.width / 2 - p.x) <= 1.5 && Math.abs(b.y + b.height / 2 - p.y) <= 1.5;
-      }),
-      hp, { timeout: 300 }).catch(() => {});
-    let s = await state();
-    check(s.selected.includes("e1"), "the line underneath took the single click",
-      `selected=${JSON.stringify(s.selected)}`);
-    check(s.editing === 0, "no editor opened on that click", `inputs=${s.editing}`);
-
-    // The second press, within the double-press window, at the same point. The
-    // badge was rebuilt by the first press, so this is a NEW element and no
-    // `dblclick` will ever arrive — the editor has to open from the press.
-    console.log("\n=== ... and a double-press still edits it ===");
-    const again = await badgeAt("50");
-    check(!!again, "the badge came back after the rebuild", JSON.stringify(again));
-    if (again) {
-      await pressAt(again);
-      await page.waitForFunction(() => document.querySelectorAll(".sketch-dim input").length === 1, null, { timeout: 2000 }).catch(() => {});
-      s = await state();
-      check(s.editing === 1, "the second press opened the value editor", `inputs=${s.editing}`);
+    const cdp = await page.context().newCDPSession(page);
+    const ev = (type, clickCount) => cdp.send("Input.dispatchMouseEvent",
+      { type, x: hp.x, y: hp.y, button: "left", buttons: type === "mousePressed" ? 1 : 0, clickCount });
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: hp.x, y: hp.y });
+    const sent = [ev("mousePressed", 1)];
+    await sleep(70); sent.push(ev("mouseReleased", 1));
+    await sleep(130); sent.push(ev("mousePressed", 2));
+    await sleep(70); sent.push(ev("mouseReleased", 2));
+    await Promise.all(sent);
+    await page.waitForFunction(() => document.querySelectorAll(".sketch-dim input").length === 1, null, { timeout: 2000 }).catch(() => {});
+    const downs = await page.evaluate(() => window.__downs);
+    const s = await state();
+    check(downs.length === 2, "both presses reached the page", JSON.stringify(downs));
+    if (downs.length === 2) {
+      check(downs[1].selected.includes("e1"), "the line underneath took the single click",
+        `selected=${JSON.stringify(downs[1].selected)}`);
+      check(downs[1].inputs === 0, "no editor opened on that click", `inputs=${downs[1].inputs}`);
+      // The badge was rebuilt by the first press, so this is a NEW element and no
+      // `dblclick` will ever arrive: the editor has to open from the press, and
+      // the rebuilt badge has to be where the user's finger is already.
+      check(/sketch-dim/.test(downs[1].on), "the second press landed on the rebuilt badge", downs[1].on);
     }
+    check(s.editing === 1, "the second press opened the value editor", `inputs=${s.editing}`);
   }
 
   await browser.close();

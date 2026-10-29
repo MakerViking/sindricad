@@ -30,9 +30,12 @@ export type PressRecord = { t: number; x: number; y: number } | null;
  *  record in an ordinary field. */
 export function stepDoublePress(
   prev: PressRecord | undefined,
-  e: { clientX: number; clientY: number },
+  e: { clientX: number; clientY: number; timeStamp?: number },
 ): { next: PressRecord; double: boolean } {
-  const now = { t: performance.now(), x: e.clientX, y: e.clientY };
+  // The event's own time, not the time the handler got to run: a main thread
+  // busy for half a second (a rebuild, a slow machine) delivers two presses
+  // 200 ms apart as if they were 500 ms apart, and the double-press is lost.
+  const now = { t: e.timeStamp && e.timeStamp > 0 ? e.timeStamp : performance.now(), x: e.clientX, y: e.clientY };
   if (!prev) return { next: now, double: false };
   const dx = now.x - prev.x, dy = now.y - prev.y;
   const near = dx * dx + dy * dy <= DOUBLE_PRESS_PX ** 2;

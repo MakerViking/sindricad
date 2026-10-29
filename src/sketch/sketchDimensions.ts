@@ -283,7 +283,14 @@ export class SketchDimensions {
     }
     for (const x of extras) this.addLabel(x);
     this.highlight(this.highlightKey); // a rebuild keeps what the panel points at lit
-    this.lastCamHash = ""; // force a reposition on the next frame
+    // Lay the new badges out NOW as well as on the next frame. Until a frame
+    // runs they have no transform, so a press landing in that gap (the second
+    // press of a double-click, on a slow or busy machine) hits the canvas
+    // instead of the badge it was aimed at. The next frame still repositions
+    // once, in case the camera settles in between.
+    this.lastCamHash = "";
+    this.layout();
+    this.lastCamHash = "";
     if (!this.raf) this.loop();
   }
 
@@ -678,6 +685,10 @@ export class SketchDimensions {
 
   private loop = () => {
     this.raf = requestAnimationFrame(this.loop);
+    this.layout();
+  };
+
+  private layout() {
     if (!this.plane) return;
     // skip the per-label projection + DOM writes when the camera hasn't moved
     const cam = this.viewport.camera;
@@ -708,5 +719,5 @@ export class SketchDimensions {
         : p;
       placeBadge(l, `translate(${at.x}px, ${at.y}px) translate(-50%, -50%)`);
     }
-  };
+  }
 }
