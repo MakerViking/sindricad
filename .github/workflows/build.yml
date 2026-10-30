@@ -454,6 +454,15 @@ jobs:
           echo ".DirIcon -> $(readlink "$root/.DirIcon" || echo '(not a symlink)')"
           test -e "$root/.DirIcon"
 
+          # Readable and runnable by every user, writable only by the owner.
+          # --appimage-extract unpacks into mktemp's 0700 directory, so every
+          # folder came out 0700 and AppRun.wrapped 0770, and the repacked image
+          # STORED those modes (0.1.274: drwx------ usr, -rwxrwx--- AppRun.wrapped):
+          # anyone but the unpacking user got "Permission denied". appimagetool's
+          # continuous build of 2026-10-29 refuses such a tree outright (run 275
+          # failed here with 3,283 of these errors).
+          chmod -R u+rwX,go+rX,go-w "$root"
+
           wget -qO "$work/appimagetool" \
             https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
           chmod +x "$work/appimagetool"
