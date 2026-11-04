@@ -264,7 +264,8 @@ export type PlaceOffset = { ox: number; oy: number };
 
 /** the dimension a badge labels on its entity — the single definition;
  *  sketch/entityDims re-exports it as the name the sketcher uses. */
-export type DimField = "width" | "height" | "diameter" | "length" | "radius" | "angle";
+// x/y: a text's anchor, listed in the parameters panel only (entityDims.textDims)
+export type DimField = "width" | "height" | "diameter" | "length" | "radius" | "angle" | "x" | "y";
 /** per-entity badge label placements, keyed by which dimension they place */
 export type DimPlace = Partial<Record<DimField, PlaceOffset>>;
 

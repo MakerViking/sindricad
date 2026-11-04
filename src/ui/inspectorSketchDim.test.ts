@@ -38,7 +38,7 @@ import { DocumentStore } from "../document/store";
 import { solveSketchFeature } from "../sketch/headlessSolve";
 import { SolverUnavailable, initSolver } from "../sketch/solver";
 import { arcCenterRadius } from "../sketch/arc";
-import { constraintDims } from "../sketch/entityDims";
+import { constraintDims, entityDims } from "../sketch/entityDims";
 import { liveSketch } from "../sketch/liveSketch.testkit";
 import type { SketchMode } from "../sketch/sketchMode";
 import type { ResolvedEntity } from "../sketch/snap";
@@ -899,10 +899,129 @@ describe("inspector: the open sketch's dimensions, live", () => {
     expect((o.s.constraints[0] as { value: number }).value).toBe(80);
   });
 
+  // A field request (MadSciSlack, 2026-11): text in a part generator has to
+  // follow the rest of the design, and nothing about a text could be given a
+  // parameter. Its X, Y, size and angle are listed now, and edit like any row.
+  const txt = (): ResolvedEntity => ({ id: "t1", type: "text", text: "M3", x: 10, y: 5, height: 4, angle: 0 }) as ResolvedEntity;
+  const textDoc = (): CadDocument => ({
+    parameters: { w: 80 },
+    features: [{ id: "f1", type: "sketch", plane: "XY", name: "Sketch1", entities: [txt()], constraints: [] }] as unknown as Feature[],
+  });
+
+  it("text: types a negative X and a 45 degree angle into the open sketch, inches or not", async () => {
+    setUnit("in");
+    try {
+      const o = openSession([txt()]);
+      expect(labels(o.root)).toEqual([
+        "Text 1 · X position in", "Text 1 · Y position in", "Text 1 · Size in", "Text 1 · Angle°",
+      ]);
+      const x = input(o.root, "Text 1 · X position in");
+      x.value = "-1";
+      x.dispatch("change");
+      const a = input(o.root, "Text 1 · Angle°");
+      a.value = "45";
+      a.dispatch("change");
+      await o.settle();
+      const t = o.ent("t1") as unknown as { x: number; angle: number };
+      expect(t.x).toBeCloseTo(-25.4, 9);
+      expect(t.angle).toBe(45); // degrees, never read as a length in inches
+    } finally {
+      setUnit("mm");
+    }
+  });
+
+  it("text: a formula on its X binds it in the session and places the text", async () => {
+    const o = openSession([txt()], [], textDoc());
+    const x = input(o.root, "Text 1 · X position mm");
+    x.value = "w/2";
+    x.dispatch("change");
+    await o.settle();
+    // below the origin, from a formula: a position, not a size that must be positive
+    const y = input(o.root, "Text 1 · Y position mm");
+    y.value = "-w/8";
+    y.dispatch("change");
+    await o.settle();
+    expect(o.ent("t1")).toMatchObject({ x: 40, y: -10 });
+    const pending = (o.s as unknown as { pendingBindings: Map<string, unknown> }).pendingBindings;
+    expect([...pending]).toEqual([["e:t1:x", { expr: "w/2", kind: "length" }], ["e:t1:y", { expr: "-w/8", kind: "length" }]]);
+  });
+
   it("main.ts wires the panel and the sketcher both ways", () => {
     expect(mainSrc).toContain("inspector.liveSketch = () =>");
     expect(mainSrc).toContain("inspector.onDimHover = (sketchId, row) =>");
     expect(mainSrc).toContain("sketch.onDimsChanged = () => inspector.sketchChanged();");
     expect(mainSrc).toContain("sketch.onSelectionChange = () => inspector.sketchSelectionChanged(sketch.selectedIds);");
+  });
+});
+
+describe("inspector: a text's position, size and angle are parameters", () => {
+  // A field request (MadSciSlack, 2026-11): "is there a way to parametrize the
+  // placement of text?" There was no anchor to dimension and no row to bind.
+  function mountText() {
+    const store = new DocumentStore(backend(), {
+      parameters: { w: 80 },
+      features: [{
+        id: "f1", type: "sketch", plane: "XY", name: "Sketch1",
+        entities: [
+          { id: "r1", type: "rectangle", x: 40, y: 40, width: 20, height: 8 },
+          { id: "t1", type: "text", text: "M3", x: 10, y: 5, height: 4, angle: 0 },
+        ],
+        constraints: [],
+      }] as unknown as Feature[],
+    });
+    store.headlessSolve = solveSketchFeature;
+    const root = new FakeEl("div");
+    new Inspector(root as unknown as HTMLElement, store).select("f1");
+    return { store, root };
+  }
+  const textOf = (store: DocumentStore) =>
+    sketchOf(store).entities.find((e) => e.id === "t1") as unknown as { x: number; y: number; height: number; angle: number };
+  const type = async (root: FakeEl, label: string, raw: string) => {
+    const box = input(root, label);
+    box.value = raw;
+    box.dispatch("change");
+    await settle();
+    return box;
+  };
+
+  it("lists them after the rectangle's, and puts no badge on the canvas", () => {
+    const { root } = mountText();
+    expect(labels(root)).toEqual([
+      "w", "Rectangle 1 · Width mm", "Rectangle 1 · Height mm",
+      "Text 1 · X position mm", "Text 1 · Y position mm", "Text 1 · Size mm", "Text 1 · Angle°",
+    ]);
+    expect(entityDims({ id: "t1", type: "text", text: "M3", x: 10, y: 5, height: 4, angle: 0 } as ResolvedEntity)).toEqual([]);
+  });
+
+  it("takes 0 and below for the anchor, and refuses a size of 0", async () => {
+    const { store, root } = mountText();
+    await type(root, "Text 1 · X position mm", "0");
+    await type(root, "Text 1 · Y position mm", "-12.5");
+    await type(root, "Text 1 · Angle°", "-30");
+    expect(textOf(store)).toMatchObject({ x: 0, y: -12.5, angle: -30 });
+    const size = await type(root, "Text 1 · Size mm", "0");
+    expect(textOf(store).height).toBe(4);
+    expect(size.title || size.getAttribute("title") || "").not.toBe("");
+  });
+
+  it("follows the parameter it is given: the text moves when w changes", async () => {
+    const { store, root } = mountText();
+    await type(root, "Text 1 · X position mm", "w/2");
+    await type(root, "Text 1 · Size mm", "w/20");
+    expect(textOf(store)).toMatchObject({ x: 40, height: 4 });
+    expect(store.setParamExpr("w", "120")).toBeNull();
+    await settle();
+    expect(textOf(store).x).toBeCloseTo(60, 9);
+    expect(textOf(store).height).toBeCloseTo(6, 9);
+  });
+
+  it("names its X from the label, and the name drives it", async () => {
+    const { store, root } = mountText();
+    nameRow(root, "Text 1 · X position mm", "label_x");
+    await settle();
+    expect(store.document.paramDefs?.label_x).toMatchObject({ expr: "10", value: 10, target: { kind: "entity", sketch: "f1", entity: "t1", field: "x" } });
+    expect(store.setParamExpr("label_x", "-4")).toBeNull();
+    await settle();
+    expect(textOf(store).x).toBeCloseTo(-4, 9);
   });
 });
