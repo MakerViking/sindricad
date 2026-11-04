@@ -400,6 +400,40 @@ export function entityDims(e: ResolvedEntity, defaults?: DimPlace): EntityDim[] 
   ];
 }
 
+/** A number of a text the parameters panel lists: its anchor's X and Y, its
+ *  size and its angle. Not a canvas badge, so not in entityDims (whose callers
+ *  draw, lock and measure what it returns): a text is placed by its anchor
+ *  and nothing on the canvas dimensions it. Each is a parameter target as it
+ *  stands (numFields.RIGID_ENTITY_NUM_FIELDS), which is what lets a text
+ *  follow the rest of a design (a field request: "make the text adjust
+ *  parametrically"). */
+export interface ListedDim {
+  field: DimField;
+  label: string;
+  valueMm: number;
+  kind: "length" | "angle";
+  /** what the value may be (units.DimSign): a position may be 0 or below */
+  sign: "any" | false;
+  write: (mm: number) => void; // mutate the entity in place
+}
+
+export function textDims(e: ResolvedEntity): ListedDim[] {
+  if (e.type !== "text") return [];
+  return [
+    { field: "x", label: t("inspector.sketchDim.kind.positionX"), valueMm: e.x, kind: "length", sign: "any", write: (mm) => { e.x = mm; } },
+    { field: "y", label: t("inspector.sketchDim.kind.positionY"), valueMm: e.y, kind: "length", sign: "any", write: (mm) => { e.y = mm; } },
+    { field: "height", label: t("common.size"), valueMm: e.height, kind: "length", sign: false, write: (mm) => { e.height = mm; } },
+    { field: "angle", label: t("common.angle"), valueMm: e.angle, kind: "angle", sign: "any", write: (mm) => { e.angle = mm; } },
+  ];
+}
+
+/** Every number of `e` the parameters panel lists and an edit of a listed
+ *  row writes: its badges (entityDims), and a text's numbers (textDims). */
+export function listedDims(e: ResolvedEntity): ListedDim[] {
+  if (e.type === "text") return textDims(e);
+  return entityDims(e).map((d) => ({ field: d.field, label: d.label, valueMm: d.valueMm, kind: "length", sign: false, write: d.write }));
+}
+
 /** every dimension's annotation segments for a set of entities.
  *
  *  Construction geometry keeps its lines. It used to skip it, while the badge

@@ -20,7 +20,7 @@ import { isEditableTarget } from "../ui/focus";
 import { SketchDimensions, dimBadgeFields, type ExtraDim } from "./sketchDimensions";
 import { SketchGlyphs } from "./sketchGlyphs";
 import { constraintGlyphs, diagnosisOf, type ConstraintGlyph } from "./glyphs";
-import { alignmentAsDistance, entityDims, constraintDims, constraintEntityIds, dimRefPoints, curveKind, hoverOperandCurve, lineOperand, lineOperandAt, linearDim, operandPoint, pointAlignment, rebindPolygonSides, refPoint, refPointNear, setDimPixelScale, RECT_CENTRE, shapeSideAt, slotAxisAt, staggeredDefaults, angleDimMeasure, type DimField, type ConstraintDim } from "./entityDims";
+import { alignmentAsDistance, entityDims, listedDims, constraintDims, constraintEntityIds, dimRefPoints, curveKind, hoverOperandCurve, lineOperand, lineOperandAt, linearDim, operandPoint, pointAlignment, rebindPolygonSides, refPoint, refPointNear, setDimPixelScale, RECT_CENTRE, shapeSideAt, slotAxisAt, staggeredDefaults, angleDimMeasure, type DimField, type ConstraintDim } from "./entityDims";
 import {
   clampPlace, isDimError, isRoundTarget, pickDimTarget, rebindTarget, resolveDim, targetIdentity,
   targetKey, unsupportedMessage,
@@ -31,7 +31,7 @@ import { newEntityId, newConstraintId, isDimConstraint, notePatternId, copiedCon
 import { cornerRenumber, mirroredConstraints, reflection, SLOT_RENUMBER, type Reflection, type Renumber } from "./mirror";
 import { angleQuadrant, reflectAcrossLine } from "./geom2d";
 import { SketchHistory, cloneSnapshot, type PendingBinding, type SketchSnapshot } from "./history";
-import { isPlainNumber, parseField, dimValueOk, fmtLength, fieldText, canonicalDecimal, storedDimExpr } from "../ui/units";
+import { isPlainNumber, parseField, dimValueOk, fmtLength, fieldText, canonicalDecimal, storedDimExpr, type DimSign } from "../ui/units";
 import { isAutoName, splitNameValue, validateName } from "../params/engine";
 import { parseExpr, refsOfNode } from "../params/parse";
 import { RIGID_ENTITY_NUM_FIELDS, coerceForField, dimValueFromParam, paramValueOfDim, type FieldKind } from "../document/numFields";
@@ -44,7 +44,7 @@ import { bodyDragCluster, dragCluster } from "./dragCluster";
 import { p2lSideFlipped, refreshStep, refreshSteps } from "../document/projectionWalk";
 import { resolveRealEntities, toSketchEntity } from "./resolve";
 import { applyDrivingDimsDirect, dimBindingFor, governingDimAt, lockDimFor, measuredLocks, planDimEdit } from "./directDims";
-import { constraintDimKey, rowConstraintAt, sketchDimRows, type SketchDimRow } from "./dimRows";
+import { constraintDimKey, rowConstraintAt, rowSign, sketchDimRows, type SketchDimRow } from "./dimRows";
 import { dimConflictMsg, withdrawTrial, type SketchTrial } from "./dimConflict";
 import { expandPattern, translated, rotated, scaled } from "./pattern";
 import { candidatesFromEntities, curveRefOf, snap, snapCoincidences, snapPointOns, JOIN_TOL, SNAP_PX, type SnapKind, type SnapCandidate, type PointRef, type CurveRef } from "./snap";
@@ -1441,7 +1441,7 @@ export class SketchMode {
     const e = this.entities[index];
     if (!e) return this.entities;
     const edited = { ...e };
-    entityDims(edited).find((d) => d.field === field)?.write(mm);
+    listedDims(edited).find((d) => d.field === field)?.write(mm);
     const follow = followOffsets(this.entities.map((x, i) => (i === index ? edited : x)), this.constraints, e.id, e);
     return "refused" in follow ? followRefusal(follow.refused) : follow.entities;
   }
@@ -2053,7 +2053,7 @@ export class SketchMode {
    *  (sketchDimensions.beginEdit) so a formula and a typed literal can't
    *  disagree about whether "-30" is a legal DX. `expr` is null for plain
    *  numbers; `name` is set only when the input renames the binding. */
-  private evalDimInput(raw: string, kind: FieldKind, key: string | null, signed = false): { value: number; expr: string | null; name?: string } | { error: string } {
+  private evalDimInput(raw: string, kind: FieldKind, key: string | null, signed: DimSign = false): { value: number; expr: string | null; name?: string } | { error: string } {
     if (isPlainNumber(raw)) {
       const value = parseField(raw, kind);
       if (!dimValueOk(value, kind, signed)) return { error: t("sketch.dimension.error.invalidValue") };
@@ -2189,7 +2189,7 @@ export class SketchMode {
    *  evalDimInput — see units.dimValueOk. `refuse` says why a value cannot be
    *  taken, before anything (its binding included) is written. */
   private commitExprInput(
-    key: string, kind: FieldKind, raw: string, apply: (value: number) => void, signed = false,
+    key: string, kind: FieldKind, raw: string, apply: (value: number) => void, signed: DimSign = false,
     refuse?: (value: number) => string | null,
   ): string | null {
     const r = this.evalDimInput(raw, kind, key, signed);
@@ -2214,7 +2214,8 @@ export class SketchMode {
     if (e.type === "line" && field === "length") return this.commitConvertedDim({ type: "distance", line: e.id, value: 0 }, raw);
     if (e.type === "circle" && field === "diameter") return this.commitConvertedDim({ type: "diameter", circle: e.id, value: 0 }, raw);
     const write = (v: number) => this.shapeFieldWrite(index, field, coerceForField(field, v));
-    const b = dimBindingFor(this.constraints, e, field, entityDims(e).find((d) => d.field === field)?.valueMm ?? 0);
+    const listed = listedDims(e).find((d) => d.field === field);
+    const b = dimBindingFor(this.constraints, e, field, listed?.valueMm ?? 0);
     if (!b) return t("sketch.dimension.error.noExpression");
     if (b.kind === "lock") return this.commitConvertedDim({ ...b.c, value: 0 } as Extract<SketchConstraint, { type: "distance" }>, raw);
     if (b.kind === "constraint") {
@@ -2223,12 +2224,13 @@ export class SketchMode {
       if (!c.id) c.id = newConstraintId();
       return this.commitExprInput(`c:${c.id}`, "length", raw, (v) => this.writeDimValue(c, v));
     }
-    return this.commitExprInput(`e:${e.id}:${field}`, "length", raw, (v) => {
+    // a text's angle is degrees, and its anchor may sit at 0 or below (textDims)
+    return this.commitExprInput(`e:${e.id}:${field}`, listed?.kind ?? "length", raw, (v) => {
       const written = write(v);
       if (typeof written !== "string") this.entities = written;
       this.refreshActive();
       this.onState?.();
-    }, false, (v) => {
+    }, listed?.sign ?? false, (v) => {
       const written = write(v);
       return typeof written === "string" ? written : null;
     });
@@ -2343,8 +2345,8 @@ export class SketchMode {
       if (!isPlainNumber(raw) || this.entityDimExpr(i, ref.field) !== undefined) {
         return this.commitEntityDimExpr(i, ref.field, canonicalDecimal(raw));
       }
-      const mm = parseField(raw, "length");
-      if (!dimValueOk(mm, "length")) return t("sketch.dimension.error.invalidValue");
+      const mm = parseField(raw, row.kind);
+      if (!dimValueOk(mm, row.kind, rowSign(row))) return t("sketch.dimension.error.invalidValue");
       this.editDimension(i, ref.field, mm);
       this.onState?.();
       return null;

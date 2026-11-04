@@ -464,6 +464,11 @@ function hasUnitTag(n: ExprNode): boolean {
   }
 }
 
+/** What a dimension's value may be: positive (false), any but zero (true: an
+ *  X/Y distance, whose sign is a side), or anything at all ("any": a
+ *  position, such as a text's anchor, where 0 and below are places too). */
+export type DimSign = boolean | "any";
+
 /** Is a typed dimension value one this dim can hold? A length is a magnitude
  *  and must be positive; an angle may be any finite value.
  *
@@ -479,9 +484,9 @@ function hasUnitTag(n: ExprNode): boolean {
  *  Both edit paths ask this — the plain-number one in the label editor and the
  *  expression one in SketchMode — because a dim that accepts "-30" typed and
  *  rejects the parameter that evaluates to it is worse than either rule alone. */
-export function dimValueOk(v: number | null | undefined, kind: FieldKind, signed = false): v is number {
+export function dimValueOk(v: number | null | undefined, kind: FieldKind, signed: DimSign = false): v is number {
   if (v == null || !Number.isFinite(v)) return false;
-  if (kind === "angle") return true;
+  if (kind === "angle" || signed === "any") return true;
   return signed ? v !== 0 : v > 0;
 }
 

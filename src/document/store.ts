@@ -10,7 +10,7 @@ import { featureErrorText } from "../geometry/featureErrorText";
 import { migrateDocument, savedVersion } from "./migrate";
 import { applyDrivingDimsDirect, dimBindingFor, planDimEdit, upsertDrivingDim, type DimBinding } from "../sketch/directDims";
 import { rowConstraintAt, type SketchDimRow } from "../sketch/dimRows";
-import { alignmentAsDistance, entityDims, rebindPolygonSides } from "../sketch/entityDims";
+import { alignmentAsDistance, entityDims, listedDims, rebindPolygonSides } from "../sketch/entityDims";
 import { followOffsets, followRefusal, type FollowRefusal } from "../sketch/modify";
 import { dimConflictMsg } from "../sketch/dimConflict";
 import { isDimConstraint, newConstraintId } from "../sketch/id";
@@ -1302,7 +1302,7 @@ export class DocumentStore {
       direct = constraints[plan.at] ?? null;
       next = { ...cur, constraints };
     } else {
-      const d = entityDims(e).find((x) => x.field === field);
+      const d = listedDims(e).find((x) => x.field === field);
       if (!d) return;
       const was = { ...e };
       d.write(mm); // mutates the resolved copy
@@ -1482,7 +1482,7 @@ export class DocumentStore {
     const e = byId.get(ref.id);
     // a lock holds what the entity measures NOW, which a queued commit may
     // find different from the number the row was drawn with
-    const mm = e && entityDims(e).find((d) => d.field === ref.field)?.valueMm;
+    const mm = e && listedDims(e).find((d) => d.field === ref.field)?.valueMm;
     return e && mm !== undefined ? dimBindingFor(cons, e, ref.field, mm) : null;
   }
 
