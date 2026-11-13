@@ -172,6 +172,7 @@
     "showHide": "Show/hide",
     "size": "Size",
     "somethingWentWrong": "Something went wrong — check the console for details",
+    "stop": "Stop",
     "thisBody": "this body",
     "tryAgain": "Try again",
     "undo": "Undo",
@@ -335,7 +336,7 @@
       "splitOnFace": "Split changed nothing: the plane lies on a face of {body} and does not pass through it. Give the cut an offset to move it into the body.",
       "splitSeparated": "Nothing solid was cut through on {body}: the plane only separated the parts on each side of it.",
       "splitSeparatedKept": "Nothing solid was cut through on {body}: I kept the parts on the side you chose and removed the ones on the other side.",
-      "stalled": "the geometry engine stopped responding",
+      "stalled": "it ran too long without finishing, so the geometry engine was restarted",
       "stoppedByOther": "stopped because another operation was cancelled, try again",
       "timedOut": "operation timed out — geometry too complex or degenerate",
       "tooLarge": "This model is too large for the geometry engine: {size} MiB, and the limit is {limit} MiB. Remove or simplify the imported body, then try again.",
@@ -343,6 +344,14 @@
       "unknownOp": "the geometry engine does not know this operation (update SindriCAD)"
     },
     "featureAt": "the {name} at step {index} in the timeline",
+    "stalledAsk": {
+      "one": "Still working on {feature}, for over a minute now. A big model can take this long, but it may also be stuck. Wait for it, or press Stop.",
+      "other": "Still working on {feature}, for over {count} minutes now. A big model can take this long, but it may also be stuck. Wait for it, or press Stop."
+    },
+    "stalledAskUnnamed": {
+      "one": "Still working on one step, for over a minute now. A big model can take this long, but it may also be stuck. Wait for it, or press Stop.",
+      "other": "Still working on one step, for over {count} minutes now. A big model can take this long, but it may also be stuck. Wait for it, or press Stop."
+    },
     "reportHere": "click the bug button in the bottom-right corner so I get the log",
     "warning": {
       "splitMissed": "The plane does not pass through {body}, so I left it as it was."
@@ -2073,7 +2082,8 @@
       "one": "{count} body selected — Move (M) to drag · Esc to clear",
       "other": "{count} bodies selected — Move (M) to drag · Esc to clear"
     },
-    "buildError": "⚠ {id}: {message}",
+    "buildError": "⚠ {name} (step {index}): {message}",
+    "buildErrorNoStep": "⚠ {message}",
     "chainNothingToGrow": "Select part of a chain first — then G takes the whole contour (or double-click it)",
     "componentColorsOff": "Component colors off",
     "componentColorsOn": "Component colors on",

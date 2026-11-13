@@ -211,7 +211,15 @@ def _stopped_by_other_result():
 # only when no progress is made for STALL_TIMEOUT — a legitimately long resumed
 # build is never executed for merely being long, while one wedged OCCT call still
 # gets reaped. Disk checkpoints make the kill a ratchet, not a restart.
-STALL_TIMEOUT = 60.0
+#
+# 180 s, not the 60 s it was: one boolean cannot tick from inside, and a Mirror
+# that fuses a body carrying 14 Text features with its mirror image is a single
+# 36 s call on a Ryzen 7900X and well over 60 s on a 2012 Ivy Bridge (field
+# report 6ddd01dc, "the geometry engine stopped responding" on every retry, the
+# model never building again). And past this limit a rebuild with the app still
+# connected is NOT reaped: the app asks the user to wait or Cancel
+# (see _run_stall's `on_progress`).
+STALL_TIMEOUT = 180.0
 
 # the worker-process pool; set in main(). Heavy ops are dispatched here.
 _pool: ProcessPoolExecutor | None = None
@@ -2665,7 +2673,7 @@ def _export_stall_budget(document):
     return max(STALL_TIMEOUT, _EXPORT_SEC_PER_BODY * n)
 
 
-def _building_frame(ws, rid):
+def _building_frame(ws, rid, document=None):
     """An `on_progress` callback that emits one interim "building" frame.
 
     The client routes status frames to its progress listeners and never resolves
@@ -2673,11 +2681,19 @@ def _building_frame(ws, rid):
     real denominator so the timeline can say "meshing 812/3071" instead of
     sitting at 0%. Shared by `rebuild` and `computeAll`, which want the identical
     frame."""
-    async def _send(idx, meshed=-1, mesh_total=-1):
-        await ws.send(json.dumps(
-            {"id": rid, "status": "building", "feature": idx,
-             "meshed": meshed, "meshTotal": mesh_total}
-        ))
+    async def _send(idx, meshed=-1, mesh_total=-1, stalled=0):
+        frame = {"id": rid, "status": "building", "feature": idx,
+                 "meshed": meshed, "meshTotal": mesh_total}
+        if stalled > 0:
+            # Past the stall limit: seconds without progress, and the step it
+            # is on BY ID (the index counts the document SENT, which leaves out
+            # suppressed and rolled-back features, so only the id names the
+            # timeline step). The app asks the user to wait or Cancel.
+            frame["stalled"] = stalled
+            feats = (document or {}).get("features") or []
+            if 0 <= idx < len(feats) and isinstance(feats[idx], dict) and feats[idx].get("id"):
+                frame["featureId"] = feats[idx]["id"]
+        await ws.send(json.dumps(frame))
 
     return _send
 
@@ -2736,7 +2752,16 @@ async def _run_stall(loop, fn, *args, stall=STALL_TIMEOUT, on_progress=None):
     resumes from the last checkpoint, so it converges to a reported error on
     the one bad feature instead of a death spiral). `on_progress` (async, takes
     the current feature index) is fired roughly once a second while the job
-    runs — the rebuild path streams it to the frontend as building frames."""
+    runs — the rebuild path streams it to the frontend as building frames.
+
+    With an `on_progress` listener, going silent past `stall` does NOT reap.
+    The listener is the app, and the app has a Cancel button: a long step and a
+    wedged one look the same from here (OCP holds the GIL either way), so the
+    person who can see the model decides. Each frame past the limit carries
+    `stalled` (seconds without progress) and the app asks "wait, or stop?".
+    The reap comes back the moment that frame cannot be delivered (the app is
+    gone, so nobody can press Cancel), and stays the rule for every op that has
+    no listener (export, queries, an agent's calls)."""
     global _pool
     err = _pool_available()
     if err is not None:
@@ -2765,6 +2790,8 @@ async def _run_stall(loop, fn, *args, stall=STALL_TIMEOUT, on_progress=None):
     # start, and time it spends WAITING must not be charged to its stall budget —
     # see _job_entry for the field report this comes from.
     warm = _warm[1] if _warm is not None and _warm[0] == gen else None
+    listening = False   # did the last progress frame reach the app?
+    told = False        # the "waiting on the user" log line, once per job
     while True:
         try:
             res = await asyncio.wait_for(asyncio.shield(fut), timeout=1.0)
@@ -2776,14 +2803,19 @@ async def _run_stall(loop, fn, *args, stall=STALL_TIMEOUT, on_progress=None):
                 fut.cancel()
                 return _cancelled_result()
             if on_progress is not None:
+                silent = loop.time() - last_t
                 try:
                     await on_progress(
                         int(_HB_IDX.value) if _HB_IDX is not None else -1,
                         int(_HB_MESH.value) if _HB_MESH is not None else -1,
                         int(_HB_MESH_TOTAL.value) if _HB_MESH_TOTAL is not None else -1,
+                        stalled=int(silent) if silent > stall else 0,
                     )
+                    listening = True
                 except Exception:
-                    pass  # a dropped progress frame must never kill the build
+                    # a dropped progress frame must never kill the build, but it
+                    # does mean nobody is there to press Cancel
+                    listening = False
             if _HB is not None:
                 cur = _HB.value
                 if cur != last:
@@ -2795,6 +2827,20 @@ async def _run_stall(loop, fn, *args, stall=STALL_TIMEOUT, on_progress=None):
             # with BrokenProcessPool, which the handler below already owns.
             if warm is not None and not warm.done():
                 last_t = loop.time()
+                continue
+            if loop.time() - last_t > stall and listening:
+                # The app saw the `stalled` frame and offers Cancel: leave the
+                # decision to the user. Say so in the log once, so a field
+                # report shows the wait rather than a silent gap.
+                if not told:
+                    told = True
+                    idx = int(_HB_IDX.value) if _HB_IDX is not None else -1
+                    try:
+                        print(f"STALL: no worker heartbeat for {int(stall)}s while running "
+                              f"{getattr(fn, '__name__', fn)!r} (feature index {idx}); the app "
+                              "is connected, waiting for the user to wait or Cancel", flush=True)
+                    except Exception:
+                        pass  # a diagnostic must never be able to fail the wait
                 continue
             if loop.time() - last_t > stall:
                 # Read the heartbeat and BUILD THE LINE before recycling. The
@@ -2836,10 +2882,13 @@ async def _run_stall(loop, fn, *args, stall=STALL_TIMEOUT, on_progress=None):
                         print(stall_line, flush=True)
                     except Exception:
                         pass  # a diagnostic must never be able to fail recovery
+                # feature_index, like a crash: _crash_feature turns it into the
+                # step's id, so the app can name the step instead of a bare
+                # "⚠ : the geometry engine stopped responding" (6ddd01dc)
                 return {"error": {"message": (
                     "one operation stalled for over %d s — the geometry kernel was "
                     "restarted; progress up to the last checkpoint is kept"
-                ) % int(stall), "code": errors_mod.STALLED}}
+                ) % int(stall), "code": errors_mod.STALLED, "feature_index": idx}}
         except BrokenProcessPool:
             if cancelled():
                 return _cancelled_result()  # the pool was killed BY the cancel
@@ -2885,6 +2934,9 @@ def _crash_feature(res, document):
     fid, ftype = f.get("id"), (f.get("name") or f.get("type") or "feature")
     if fid:
         err["feature_id"] = fid
+    if err.get("code") == errors_mod.STALLED:
+        # a stall is not a crash: name the step, keep the stall's own words
+        return res
     if f.get("type") == "split":
         # The fillet advice below sent a split's crash report after the wrong
         # cause (field report, body201 of the Ender 3 assembly: split whole, it
@@ -3461,7 +3513,7 @@ async def _dispatch(ws, loop, req, req_id, op):
 
         res = await _run_stall(
             loop, _rebuild_delta_job, payload, tol, req.get("known"),
-            on_progress=_building_frame(ws, req_id),
+            on_progress=_building_frame(ws, req_id, req.get("document")),
         )
         res = _crash_feature(res, req.get("document"))
         await _send_reply(ws, req_id, res, bool(req.get("binary")), bool(req.get("chunked")))
@@ -3470,7 +3522,7 @@ async def _dispatch(ws, loop, req, req_id, op):
         tol = req.get("tolerance", 0.1)
         payload = {"document": req["document"], "revision": req.get("revision")}
         res = await _run_stall(loop, _compute_all_job, payload, tol,
-                               on_progress=_building_frame(ws, req_id))
+                               on_progress=_building_frame(ws, req_id, req["document"]))
         res = _crash_feature(res, req.get("document"))
         await _send_reply(ws, req_id, res, bool(req.get("binary")), bool(req.get("chunked")))
 

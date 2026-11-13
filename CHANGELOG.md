@@ -34,6 +34,12 @@ This file starts on 2026-08-03. For anything before that, see the
   round the wrong way or run off past the end of the path, however the path was drawn. It
   now follows the path from the end closest to the profile. A sweep like that in an existing
   file changes shape to follow its path.
+- **A slow step gets to finish.** One step that took over a minute, like a Mirror of a big
+  body on an older PC, used to stop with "the geometry engine stopped responding", and the
+  model never built again. A step now gets three minutes. After that, SindriCAD asks whether
+  to keep waiting or stop, and names the step it is on.
+- **A failed build names its step in the status bar.** It showed an internal id, or nothing
+  at all, in front of the message.
 
 ### App
 

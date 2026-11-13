@@ -96,6 +96,14 @@ export interface ClashPair {
 // The surface the rest of the app depends on. Both the websocket `Geometry`
 // and the in-process `TauriGeometry` implement this, so callers stay agnostic
 // to which backend is wired up (see VITE_GEOM in main.ts).
+/** One step of a rebuild that has gone past the stall limit without progress:
+ *  how long it has been quiet, and which step it is (the feature id, or null
+ *  when the sidecar could not tell). */
+export interface BuildStall {
+  seconds: number;
+  featureId: string | null;
+}
+
 export interface GeometryBackend {
   rebuild(doc: CadDocument, tolerance?: number): Promise<RebuildReply>;
   /** Per-glyph 2D outlines for a sketch text entity (the sidecar owns fonts, so
@@ -219,8 +227,15 @@ export interface GeometryBackend {
    *  `meshed`/`meshTotal` are -1 except during the payload (meshing) phase,
    *  where they carry its real per-body denominator. Without them the phase
    *  reported only feature=-1, which the timeline rendered as a bar pinned at
-   *  0% for its whole duration — 136 s of it on the reference assembly. */
-  onProgress?(fn: (feature: number, meshed: number, meshTotal: number) => void): () => void;
+   *  0% for its whole duration — 136 s of it on the reference assembly.
+   *
+   *  `stalled` is null until one step has gone longer than the sidecar's stall
+   *  limit without progress (180 s). Past it the sidecar no longer restarts the
+   *  engine while the app is connected: it reports how long the step has been
+   *  quiet, and which step (by id), and the app asks the user to wait or stop.
+   *  Field report 6ddd01dc: a 90 s Mirror on a 2012 CPU was killed on every
+   *  retry, so the model never built again. */
+  onProgress?(fn: (feature: number, meshed: number, meshTotal: number, stalled: BuildStall | null) => void): () => void;
   /** Installments of a chunked rebuild reply, for progressive display. Optional:
    *  the in-process backend answers in one piece and never streams. */
   onRebuildChunk?(fn: (c: RebuildChunk) => void): () => void;
@@ -425,7 +440,7 @@ export class Geometry implements GeometryBackend {
   private outbox: string[] = [];
   private statusListeners = new Set<StatusListener>();
   private opProgressListeners = new Set<(pct: number, label: string) => void>();
-  private progressListeners = new Set<(feature: number, meshed: number, meshTotal: number) => void>();
+  private progressListeners = new Set<(feature: number, meshed: number, meshTotal: number, stalled: BuildStall | null) => void>();
   private reconnectTimer: number | null = null;
   private reconnectDelay = 500; // ms; doubles on each failed attempt, capped, reset on open
   /** Non-null once the shell has told us the engine is GONE (`sidecar:died`).
@@ -522,7 +537,7 @@ export class Geometry implements GeometryBackend {
     return () => this.chunkListeners.delete(fn);
   }
 
-  onProgress(fn: (feature: number, meshed: number, meshTotal: number) => void): () => void {
+  onProgress(fn: (feature: number, meshed: number, meshTotal: number, stalled: BuildStall | null) => void): () => void {
     this.progressListeners.add(fn);
     return () => this.progressListeners.delete(fn);
   }
@@ -570,7 +585,10 @@ export class Geometry implements GeometryBackend {
           const f = typeof msg.feature === "number" ? msg.feature : -1;
           const m = typeof msg.meshed === "number" ? msg.meshed : -1;
           const mt = typeof msg.meshTotal === "number" ? msg.meshTotal : -1;
-          for (const fn of this.progressListeners) fn(f, m, mt);
+          const st: BuildStall | null = typeof msg.stalled === "number" && msg.stalled > 0
+            ? { seconds: msg.stalled, featureId: typeof msg.featureId === "string" ? msg.featureId : null }
+            : null;
+          for (const fn of this.progressListeners) fn(f, m, mt, st);
         } else if (msg.status === "importing") {
           const pct = typeof msg.pct === "number" ? msg.pct : 0;
           const label = typeof msg.label === "string" ? msg.label : "";

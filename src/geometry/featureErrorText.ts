@@ -92,13 +92,36 @@ function sketchNameOf(features: readonly SketchedFeature[] | undefined, featureI
 
 /** Feature `featureId` as the timeline shows it: its tool's name and its step,
  *  or undefined when it is not in `features`. */
-function featureNameOf(features: readonly SketchedFeature[] | undefined, featureId: string | undefined): string | undefined {
+export function featureNameOf(features: readonly SketchedFeature[] | undefined, featureId: string | undefined): string | undefined {
+  const step = featureStep(features, featureId);
+  return step && t("engine.featureAt", step);
+}
+
+/** Feature `featureId`'s tool name and its 1-based step in `features` (the
+ *  WHOLE document's, so the step is the one the timeline shows), or undefined
+ *  when it is not there. */
+export function featureStep(
+  features: readonly SketchedFeature[] | undefined,
+  featureId: string | null | undefined,
+): { name: string; index: number } | undefined {
   if (!features || !featureId) return undefined;
   const i = features.findIndex((f) => f.id === featureId);
   const type = features[i]?.type;
   if (type === undefined) return undefined;
-  const name = hasKey(`tool.${type}`) ? t(`tool.${type}`) : type;
-  return t("engine.featureAt", { name, index: i + 1 });
+  return { name: hasKey(`tool.${type}`) ? t(`tool.${type}`) : type, index: i + 1 };
+}
+
+/** The status-bar line for a failed build. It printed the raw feature id
+ *  ("⚠ f119: ...") and, for a stall that carried no id, "⚠ : the geometry
+ *  engine stopped responding" (field report 6ddd01dc): name the step the way
+ *  the timeline does, and drop the prefix when there is no step to name. */
+export function buildErrorStatus(
+  featureId: string | null | undefined,
+  message: string,
+  features: readonly SketchedFeature[] | undefined,
+): string {
+  const step = featureStep(features, featureId);
+  return step ? t("status.buildError", { ...step, message }) : t("status.buildErrorNoStep", { message });
 }
 
 /**
