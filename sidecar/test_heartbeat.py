@@ -258,7 +258,7 @@ _RECYCLES = []
 
 
 def _drive_run_stall(job, stall, warm=None, stdout=None, new_pool=None,
-                     plain=False, cancel=False, pool=None):
+                     plain=False, cancel=False, pool=None, on_progress=None):
     """Run server._run_stall(job) against a thread pool and a stub heartbeat.
     Returns (result, elapsed_seconds), and records every pool recycle the
     supervisor performed in the module-level `_RECYCLES`.
@@ -312,7 +312,8 @@ def _drive_run_stall(job, stall, warm=None, stdout=None, new_pool=None,
             if plain:
                 res = await server._run(loop, job, hb, timeout=stall)
             else:
-                res = await server._run_stall(loop, job, hb, stall=stall)
+                res = await server._run_stall(loop, job, hb, stall=stall,
+                                              on_progress=on_progress)
             return res, _time.monotonic() - t0
 
         if stdout is not None:
@@ -1731,6 +1732,93 @@ def test_the_debris_sweep_ticks_before_every_distance():
           f"{len(at_distance)} distance calls")
 
 
+def _quiet_job(hb):
+    """Ticks, then goes quiet for 3 s and FINISHES: a slow step, not a wedged one."""
+    import time as _time
+    for _ in range(3):
+        _time.sleep(0.1)
+        hb.value += 1
+    _time.sleep(3.0)
+    return {"ok": True, "did": "slow step"}
+
+
+def test_a_quiet_step_with_the_app_watching_is_left_to_the_user():
+    """Field report 6ddd01dc: a Mirror that is one 36 s boolean (90+ s on the
+    reporter's 2012 CPU) was reaped at the limit on every retry, so the model
+    never built again. With the app listening, past the limit is the user's call
+    (Cancel), not the reaper's: the step finishes, the frames past the limit say
+    how long it has been quiet, and the pool is never recycled."""
+    frames = []
+
+    async def listener(idx, meshed=-1, mesh_total=-1, stalled=0):
+        frames.append(stalled)
+
+    res, elapsed = _drive_run_stall(_quiet_job, stall=1.0, on_progress=listener)
+    assert res.get("did") == "slow step", f"a step the app was watching was reaped: {res}"
+    assert elapsed >= 3.0, f"returned at {elapsed:.2f}s, before the step could finish"
+    assert _RECYCLES == [], f"the pool was recycled under a watching app: {_RECYCLES}"
+    past = [s for s in frames if s > 0]
+    assert past, f"no frame told the app it was past the limit: {frames}"
+    assert all(s >= 1 for s in past), frames
+    print(f"{PASS} a quiet step under a watching app ran {elapsed:.1f}s and finished; "
+          f"{len(past)} frame(s) said stalled, last {past[-1]}s")
+
+
+def test_a_quiet_step_is_reaped_when_the_app_is_gone():
+    """The wait is only safe while somebody can press Cancel. A progress frame
+    that cannot be delivered (the app closed, the socket dropped) brings the
+    reaper back, or a wedged call would hold the only worker forever."""
+    async def gone(idx, meshed=-1, mesh_total=-1, stalled=0):
+        raise ConnectionError("the app closed its socket")
+
+    res, elapsed = _drive_run_stall(_stalling_job, stall=1.0, on_progress=gone)
+    assert (res.get("error") or {}).get("code") == "stalled", res
+    assert elapsed < 4.0, f"reaped at {elapsed:.2f}s, should be ~1s"
+    assert _RECYCLES[:2] == ["kill", "new"], _RECYCLES
+    print(f"{PASS} with no app to ask, a quiet step is reaped at {elapsed:.1f}s")
+
+
+def test_a_reaped_stall_names_its_step():
+    """The status bar read "⚠ : the geometry engine stopped responding", naming
+    nothing (6ddd01dc): a stall carried no feature. It carries the heartbeat's
+    index now, and _crash_feature turns that into the step's id, keeping the
+    stall's own code and words (it is not a crash)."""
+    import server
+    res, _ = _drive_run_stall(_stalling_job, stall=1.0)
+    err = res["error"]
+    assert "feature_index" in err, f"a stall must say which step it was on: {err}"
+    doc = {"features": [{"id": "f1", "type": "sketch"}, {"id": "f119", "type": "mirror"}]}
+    named = server._crash_feature({"error": {**err, "feature_index": 1}}, doc)["error"]
+    assert named.get("feature_id") == "f119", named
+    assert named.get("code") == "stalled", named
+    assert "crashed" not in named["message"], f"a stall was reworded as a crash: {named}"
+    print(f"{PASS} a reaped stall names step {named['feature_id']} and stays a stall")
+
+
+def test_the_building_frame_names_the_step_past_the_limit():
+    """The index counts the document SENT (no suppressed, no rolled-back
+    features), so it is not the timeline step; the frame carries the id."""
+    import asyncio
+    import json as _json
+    import server
+
+    sent = []
+
+    class _WS:
+        async def send(self, raw):
+            sent.append(_json.loads(raw))
+
+    doc = {"features": [{"id": "f1", "type": "sketch"}, {"id": "f119", "type": "mirror"}]}
+    send = server._building_frame(_WS(), "r1", doc)
+    asyncio.run(send(1, -1, -1))
+    asyncio.run(send(1, -1, -1, stalled=181))
+    asyncio.run(send(7, -1, -1, stalled=200))  # out of range: no id, still a frame
+    assert "stalled" not in sent[0] and "featureId" not in sent[0], sent[0]
+    assert sent[1]["stalled"] == 181 and sent[1]["featureId"] == "f119", sent[1]
+    assert sent[2]["stalled"] == 200 and "featureId" not in sent[2], sent[2]
+    print(f"{PASS} the frame past the limit carries stalled={sent[1]['stalled']} and featureId={sent[1]['featureId']}")
+
+
 if __name__ == "__main__":
     print("heartbeat ticks (stall watchdog)")
     test_export_mesh_ticks_on_every_tier()
@@ -1741,6 +1829,10 @@ if __name__ == "__main__":
     test_progress_tick_survives_a_broken_hook()
     test_long_but_ticking_work_is_never_reaped()
     test_silent_work_is_reaped_with_a_stalled_message()
+    test_a_quiet_step_with_the_app_watching_is_left_to_the_user()
+    test_a_quiet_step_is_reaped_when_the_app_is_gone()
+    test_a_reaped_stall_names_its_step()
+    test_the_building_frame_names_the_step_past_the_limit()
     test_a_job_queued_behind_the_warmup_is_not_reaped()
     test_a_wedged_job_is_still_reaped_once_the_worker_is_up()
     test_a_diagnostic_that_raises_cannot_skip_the_pool_recycle()

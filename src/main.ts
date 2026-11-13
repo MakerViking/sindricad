@@ -5,7 +5,7 @@ import { Viewport } from "./viewport/viewport";
 import type { StandardView } from "./viewport/cameras";
 import { Geometry } from "./geometry/client";
 import { ENGINE_DOWN, sidecarDeathMessage, type SidecarDeathPayload } from "./geometry/sidecarDeath";
-import { featureErrorText } from "./geometry/featureErrorText";
+import { buildErrorStatus, featureErrorText } from "./geometry/featureErrorText";
 import { TauriGeometry } from "./geometry/tauriClient";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
@@ -46,6 +46,7 @@ import { currentAccount } from "./tinkeratlas/client";
 import { Menubar, dismissContextMenu } from "./ui/menu";
 import { choose, isChoiceOpen, type ChoiceOption } from "./ui/choice";
 import { toast } from "./ui/toast";
+import { StallNotice } from "./ui/stallNotice";
 import { hiddenBodiesCue } from "./ui/hiddenBodiesCue";
 import { LoadDebts } from "./viewport/loadDebts";
 import { FEATURE_META } from "./ui/featureMeta";
@@ -1276,11 +1277,16 @@ store.onBuildChunk((c) => {
 });
 store.onBuildAbort(() => viewport.abortProgressiveModel());
 
+// "Still working on the Mirror at step 86: wait, or Stop?" when one step runs
+// past the sidecar's stall limit (see stallNotice.ts).
+const stallNotice = new StallNotice(toast, () => void store.cancelBusy());
+
 store.onBuild((s) => {
   // Every state, even one this handler otherwise ignores: the owing build is
   // recognised by its start, and what it leaves unpaid at its settle is dropped
   // (bar one case, a dropped connection: see LoadDebts.reconnected).
   const due = owed.onBuild(s);
+  stallNotice.update(s, store.document.features);
   // Only render COMPLETED builds. A `building` tick carries the previous result
   // (the new geometry isn't ready yet); re-rendering it would momentarily revert an
   // in-progress ghost (a committed Move/Press-Pull) to the old placement until the
@@ -1430,7 +1436,7 @@ store.onBuild((s) => {
     // the user stopped it: not a fault, so not red
     setStatus(t("status.rebuildCancelled"), "");
   } else if (s.errorMessage) {
-    setStatus(t("status.buildError", { id: s.errorFeatureId ?? "", message: s.errorMessage }), "error");
+    setStatus(buildErrorStatus(s.errorFeatureId, s.errorMessage, store.document.features), "error");
   } else if (!s.building) {
     setStatus(t("status.ready"), "connected");
   }

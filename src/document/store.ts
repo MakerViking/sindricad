@@ -5,7 +5,7 @@
 
 import { isDriven, TRIMMED_AWAY } from "../types";
 import type { CadDocument, DimField, Feature, ParamDef, ParamTarget, PlaneDef, PlaneSpec, ProjectionUpdate, RebuildReply, RebuildResult, Selector, SketchConstraint, SketchEntity, ViewCubeSide, ViewOverride } from "../types";
-import type { GeometryBackend, ProjectionRequest, ProjectionResult, QueryResult } from "../geometry/client";
+import type { BuildStall, GeometryBackend, ProjectionRequest, ProjectionResult, QueryResult } from "../geometry/client";
 import { featureErrorText } from "../geometry/featureErrorText";
 import { migrateDocument, savedVersion } from "./migrate";
 import { applyDrivingDimsDirect, dimBindingFor, planDimEdit, upsertDrivingDim, type DimBinding } from "../sketch/directDims";
@@ -158,6 +158,11 @@ export interface RebuildState {
    *  without these the chip has nothing to show a fraction from. */
   meshed: number | null;
   meshTotal: number | null;
+  /** One step has gone past the sidecar's stall limit (180 s) without
+   *  progress, and the sidecar is waiting for the user instead of restarting
+   *  the engine: how long, and which step. null otherwise, and cleared the
+   *  moment the build moves on or ends. */
+  stalled: BuildStall | null;
   /** During a CHUNKED reply: bodies handed to the viewport so far, and the
    *  reply's total. Both null outside a stream.
    *
@@ -424,6 +429,7 @@ export class DocumentStore {
     progress: null,
     meshed: null,
     meshTotal: null,
+    stalled: null,
     cancelled: false,
   };
   /** The busy label for the rebuild that will build a feature just added by
@@ -444,7 +450,7 @@ export class DocumentStore {
     this.doc = clone(initial);
     migrateDocument(this.doc); // the seed doc skips load(); normalize it the same way
     // long-rebuild progress frames -> live "building 57/103" in the timeline
-    geometry.onProgress?.((feature, meshed, meshTotal) => {
+    geometry.onProgress?.((feature, meshed, meshTotal, stalled) => {
       if (!this.build.building) return;
       // -1/-1 means "not meshing"; keep those out of the state as null so the
       // chip can distinguish "no denominator" from "0 of N done".
@@ -453,6 +459,7 @@ export class DocumentStore {
         progress: feature,
         meshed: meshed >= 0 ? meshed : null,
         meshTotal: meshTotal > 0 ? meshTotal : null,
+        stalled: stalled ?? null,
       };
       this.emitBuild();
     });
@@ -702,6 +709,7 @@ export class DocumentStore {
       progress: null,
       meshed: null,
       meshTotal: null,
+      stalled: null,
     };
     this.emitBuild();
     // No-op when nothing is running. Cancel kills the pool worker, which is the
@@ -2448,7 +2456,7 @@ export class DocumentStore {
     this.epoch++;
     this.build = {
       ...this.build, building: true,
-      progress: null, meshed: null, meshTotal: null, streamed: null, streamTotal: null,
+      progress: null, meshed: null, meshTotal: null, stalled: null, streamed: null, streamTotal: null,
     };
     this.emitBuild();
   }
@@ -2467,7 +2475,7 @@ export class DocumentStore {
 
   private settledBuild(reply: RebuildReply): RebuildState {
     const done = {
-      building: false, progress: null, meshed: null, meshTotal: null,
+      building: false, progress: null, meshed: null, meshTotal: null, stalled: null,
       streamed: null, streamTotal: null, cancelled: false,
     };
     if (!reply.ok && reply.error.code === "cancelled") {
