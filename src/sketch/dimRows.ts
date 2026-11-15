@@ -19,7 +19,8 @@ import { t } from "../i18n";
 import type { ResolvedEntity } from "./snap";
 import type { DimField, SketchConstraint } from "../types";
 import { isDriven } from "../types";
-import { SLOT_AXIS, constraintDims, entityDims, pointAlignment, spansPolygonRadius } from "./entityDims";
+import { SLOT_AXIS, constraintDims, listedDims, pointAlignment, spansPolygonRadius } from "./entityDims";
+import type { DimSign } from "../ui/units";
 import { constraintName } from "./dimConflict";
 import { isDimConstraint } from "./id";
 import { ORIGIN_X_ID, ORIGIN_Y_ID, isOriginGeometry, isOriginId } from "./origin";
@@ -55,7 +56,13 @@ export interface SketchDimRow {
   driven: boolean;
   /** Its value carries a sign that means something (the X/Y distances). */
   signed: boolean;
+  /** Its value is a place, not a size (a text's anchor X and Y, its angle):
+   *  0 and below are values too. */
+  position?: true;
 }
+
+/** What `row`'s value may be, for units.dimValueOk. */
+export const rowSign = (row: SketchDimRow): DimSign => (row.position ? "any" : row.signed);
 
 /** The label key of an entity badge, shared with the canvas labels. */
 export const entityDimKey = (id: string, field: DimField): string => `e:${id}:${field}`;
@@ -182,7 +189,7 @@ export function sketchDimRows(entities: readonly ResolvedEntity[], constraints: 
   const rows: SketchDimRow[] = [];
   entities.forEach((e, index) => {
     if (unlisted(e.id)) return;
-    for (const d of entityDims(e)) {
+    for (const d of listedDims(e)) {
       rows.push({
         key: entityDimKey(e.id, d.field),
         ref: { kind: "entity", id: e.id, index, field: d.field },
@@ -191,9 +198,10 @@ export function sketchDimRows(entities: readonly ResolvedEntity[], constraints: 
         construction: e.construction === true,
         entities: [e.id],
         valueMm: d.valueMm,
-        kind: "length",
+        kind: d.kind,
         driven: false,
         signed: false,
+        ...(d.sign === "any" ? { position: true as const } : {}),
       });
     }
   });

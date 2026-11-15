@@ -20,6 +20,11 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ### Sketch
 
+- **Text can follow your parameters.** Each sketch text now lists its X position, Y position,
+  size and angle in the Parameters panel. Type a number, a formula like `width/2`, or
+  double-click the label to make it a named parameter, and the text moves and resizes with the
+  rest of the design. X, Y and angle take 0 and negative values, so the anchor can sit anywhere
+  on the plane.
 - **Sketch on a construction plane straight from the Sketch button.** Press Sketch and click
   the plane: the sketch opens on it and follows the plane's Offset. Before, the click went
   through the plane and opened the sketch on the base plane behind it.

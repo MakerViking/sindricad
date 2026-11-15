@@ -1129,6 +1129,8 @@
         "distance": "Distance",
         "horizontal": "Horizontal distance",
         "offset": "Offset",
+        "positionX": "X position",
+        "positionY": "Y position",
         "radialGap": "Radial gap",
         "vertical": "Vertical distance"
       },

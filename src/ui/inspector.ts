@@ -13,7 +13,7 @@ import { validatedInput, keystrokeGuard } from "./liveInputs";
 import { isImeComposing } from "./focus";
 import { resolveRealEntities } from "../sketch/resolve";
 import { selOwners } from "../sketch/selection";
-import { dimRowLabel, sketchDimRows, type SketchDimRow } from "../sketch/dimRows";
+import { dimRowLabel, rowSign, sketchDimRows, type SketchDimRow } from "../sketch/dimRows";
 import { isNumericLiteral } from "../params/parse";
 import { FEATURE_NUM_FIELDS as NUM_FIELDS, hasUpToTarget, isHelixSweep } from "../document/numFields";
 import type { FieldKind } from "../document/numFields";
@@ -417,12 +417,12 @@ export class Inspector {
       commit: (row, raw) => {
         if (isPlainNumber(raw)) {
           const v = parseField(raw, row.kind);
-          if (!dimValueOk(v, row.kind, row.signed)) return t("sketch.dimension.error.invalidValue");
+          if (!dimValueOk(v, row.kind, rowSign(row))) return t("sketch.dimension.error.invalidValue");
           this.store.setSketchDimValue(f.id, row, v);
           return null;
         }
         const accept = (v: number) =>
-          dimValueOk(v, row.kind, row.signed)
+          dimValueOk(v, row.kind, rowSign(row))
             ? null
             : t(row.signed ? "sketch.dimension.error.mustBeNonZero" : "sketch.dimension.error.mustBePositive");
         return this.store.setSketchDimExpr(f.id, row, storedDimExpr(canonicalDecimal(raw), row.kind), accept);
