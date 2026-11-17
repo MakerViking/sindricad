@@ -60,6 +60,10 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ### App
 
+- **SindriCAD starts from a network share on Windows.** Run from a folder on a NAS or
+  another PC, the geometry engine could not start and showed "DLL load failed while
+  importing _multiarray_umath" with "The parameter is incorrect". The engine is now started
+  through the share's ordinary network path, which that check accepts.
 - **The window opens centred.** On Windows it used to appear in the upper right corner. It now
   opens centred on the monitor it starts on.
 

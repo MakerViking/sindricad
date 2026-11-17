@@ -116,8 +116,27 @@ fn pick_runtime(resource_dir: Option<PathBuf>, manifest_dir: &Path) -> std::io::
     ))
 }
 
+/// `\\?\UNC\server\share\...` -> `\\server\share\...`; any other path unchanged.
+///
+/// Field report e2631232 (0.1.277): SindriCAD run from a network share spawned
+/// Python from a verbatim UNC path, and numpy's `_multiarray_umath` failed to
+/// load with "The parameter is incorrect" (ERROR_INVALID_PARAMETER). The startup
+/// probe loaded the very same `.pyd` fine; it calls LoadLibraryExW with no flags,
+/// and Python's import passes LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR, which rejects a
+/// `\\?\UNC\` name. Local `\\?\C:\` paths load either way and every other
+/// Windows install runs from one, so only the UNC form is rewritten, and only
+/// while it stays under MAX_PATH, where the plain form is still a valid name.
+fn plain_unc(p: PathBuf) -> PathBuf {
+    const VERBATIM_UNC: &str = r"\\?\UNC\";
+    let Some(s) = p.to_str() else { return p };
+    match s.strip_prefix(VERBATIM_UNC) {
+        Some(rest) if !rest.is_empty() && rest.len() + 2 < 260 => PathBuf::from(format!(r"\\{rest}")),
+        _ => p,
+    }
+}
+
 fn resolve_runtime(app: &AppHandle) -> std::io::Result<Runtime> {
-    let resource_dir = app.path().resource_dir().ok();
+    let resource_dir = app.path().resource_dir().ok().map(plain_unc);
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     pick_runtime(resource_dir, &manifest_dir)
 }
@@ -644,6 +663,25 @@ impl Drop for Sidecar {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_verbatim_unc_resource_dir_becomes_a_plain_unc_path() {
+        let p = plain_unc(PathBuf::from(r"\\?\UNC\nas\share\CAD Programme\SindriCad"));
+        assert_eq!(p, PathBuf::from(r"\\nas\share\CAD Programme\SindriCad"));
+    }
+
+    #[test]
+    fn local_and_plain_paths_are_left_alone() {
+        for s in [r"\\?\C:\Users\me\AppData\Local\SindriCAD", r"\\nas\share\x", "/opt/app", r"\\?\UNC\"] {
+            assert_eq!(plain_unc(PathBuf::from(s)), PathBuf::from(s));
+        }
+    }
+
+    #[test]
+    fn a_unc_path_too_long_for_the_plain_form_stays_verbatim() {
+        let long = format!(r"\\?\UNC\nas\share\{}", "d".repeat(300));
+        assert_eq!(plain_unc(PathBuf::from(&long)), PathBuf::from(&long));
+    }
+
     use super::*;
 
     /// NixOS issue #3: an inherited PYTHONHOME (appimage-run sets it to the
