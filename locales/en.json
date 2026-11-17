@@ -721,7 +721,7 @@
       },
       "shell": {
         "pickFace": "Select a face to open for the shell · Esc to cancel",
-        "thicknessPrompt": "Wall thickness · Enter to apply · Esc to cancel",
+        "thicknessPrompt": "Wall thickness · click more faces to open them too · Enter to apply · Esc to cancel",
         "thicknessZero": "Wall thickness must be more than zero"
       },
       "sketchGone": "That sketch no longer exists",

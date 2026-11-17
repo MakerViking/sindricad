@@ -46,6 +46,10 @@ This file starts on 2026-08-03. For anything before that, see the
   wall, every Thread on that body failed with "this cut produced an invalid shape", although
   the thread itself was fine. Thread now refuses only when its own cut breaks a body that
   was sound.
+- **Shell opens every face you pick.** Faces you select before pressing Shell are all
+  opened, and while the thickness box is up you can click more faces to open them too
+  (click one again to take it back out). Before, only the first face was opened and the
+  rest were ignored. (GH #78)
 - **A sweep starts from the end of the path nearest its profile.** A profile drawn away from
   its path, for example on a slightly tilted face on the other side of the part, could swing
   round the wrong way or run off past the end of the path, however the path was drawn. It
