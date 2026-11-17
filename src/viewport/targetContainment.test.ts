@@ -68,3 +68,39 @@ describe("the orbit target stays near the model while zooming", () => {
     expect(targetDistance(h)).toBeGreaterThan(LIMIT); // free to drift, as before
   });
 });
+
+// Sketch view (field report 262d70bb, "it jumps around a bit"): the drawing can
+// sit far outside a small model's ball, and zooming IN toward it was clamped
+// every notch, sliding the point under the cursor. Sketch view is orthographic.
+describe("zooming in sketch view", () => {
+  function sketchHarness() {
+    const h = harness();
+    h.rig.setContentBounds(BOX);
+    h.rig.setProjectionMode("ortho");
+    h.rig.fit(BOX, false);
+    h.rig.update(0.016);
+    h.rig.setZoomContainment(false);
+    return h;
+  }
+
+  it("zooms in toward drawing far outside the model without pulling back to it", () => {
+    const h = sketchHarness();
+    const farDrawing = new THREE.Vector3(400, 0, 0);
+    for (let i = 0; i < 20; i++) {
+      h.rig.zoomBy(0.8, farDrawing);
+      h.rig.update(0.016);
+    }
+    // contained, the target would stop at LIMIT (~130 mm) from the centre
+    expect(targetDistance(h)).toBeGreaterThan(LIMIT + 100);
+  });
+
+  it("still keeps zooming OUT inside the content ball", () => {
+    const h = sketchHarness();
+    const offModel = new THREE.Vector3(400, 0, 0);
+    for (let i = 0; i < 30; i++) {
+      h.rig.zoomBy(1.25, offModel);
+      h.rig.update(0.016);
+    }
+    expect(targetDistance(h)).toBeLessThanOrEqual(LIMIT + 1e-6);
+  });
+});

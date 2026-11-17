@@ -30,6 +30,10 @@ This file starts on 2026-08-03. For anything before that, see the
 - **The eye in the Browser hides other sketches while you are in a sketch.** Hiding a
   sketch from the Browser while another one was open stored the change but left the sketch
   on screen until you closed the one you were in.
+- **Zooming in a sketch stays on the cursor.** Wheel-zooming toward drawing that sat away
+  from the model slid the view back toward the model on every notch, so the spot you
+  aimed at moved off under the cursor: 6 mm over 8 notches in the reported sketch. It now
+  stays put. Zooming out still keeps the view near the model.
 - **Text can follow your parameters.** Each sketch text now lists its X position, Y position,
   size and angle in the Parameters panel. Type a number, a formula like `width/2`, or
   double-click the label to make it a named parameter, and the text moves and resizes with the
