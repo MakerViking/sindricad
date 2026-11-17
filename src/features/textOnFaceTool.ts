@@ -101,6 +101,8 @@ export class TextOnFaceTool {
   private u = 0;
   private v = 0;
   private dragging = false;
+  /** In the pick phase of an EDIT: the click moves the edited text to a new face. */
+  private repicking = false;
   private snapUV: { u: number; v: number }[] = [];
   private snapTol = 0;
   private values: TextOnFaceValues | null = null;
@@ -308,6 +310,8 @@ export class TextOnFaceTool {
     if (!plane) return;
     e.preventDefault();
     e.stopImmediatePropagation();
+    const repicking = this.repicking;
+    this.repicking = false;
 
     // The selector must carry the body it was picked from. by:"nearest" always
     // returns SOME winner, so without this the text silently lands on whichever
@@ -316,7 +320,7 @@ export class TextOnFaceTool {
     this.face = hit.bodyId ? { ...hit.selector, body: hit.bodyId } : hit.selector;
     this.plane = textFrame(plane);
     this.pick = [hit.anchor.x, hit.anchor.y, hit.anchor.z];
-    this.featureId = this.store.nextId();
+    if (!repicking) this.featureId = this.store.nextId(); // a re-pick edits the same feature
     this.viewport.clearHover();
     this.viewport.domElement.style.cursor = "default";
 
@@ -332,6 +336,13 @@ export class TextOnFaceTool {
     this.v = Math.round(d.dot(V) * 1000) / 1000;
 
     this.phase = "edit";
+    if (repicking) {
+      // Same text and settings, new face: only the placement restarts, at the click.
+      setPrompt(t("feature.text.typePrompt"));
+      this.panel.setPlacement(this.u, this.v);
+      if (this.values) this.schedulePreview({ ...this.values, u: this.u, v: this.v });
+      return;
+    }
     void this.openPanel({
       text: "", height: 6, depth: 0.6, operation: "emboss", align: "center",
       bevel: 0, bevelStyle: "auto", u: this.u, v: this.v, colorSlot: null,
@@ -361,6 +372,7 @@ export class TextOnFaceTool {
         onChange: (v) => this.schedulePreview(v),
         onCommit: (v) => this.commit(v),
         onCancel: () => this.cancel(),
+        onRepick: () => this.repickFace(),
       },
     );
     // Draw the outline straight away rather than waiting for the first change.
@@ -371,6 +383,15 @@ export class TextOnFaceTool {
     // empty here and schedulePreview returns early, so this costs nothing.
     const v0 = this.panel.values;
     if (v0) this.schedulePreview(v0);
+  }
+
+  /** Editing: wait for a click on another face, then move the text onto it. */
+  private repickFace() {
+    if (!this.active || this.phase !== "edit") return;
+    this.dragging = false;
+    this.repicking = true;
+    this.phase = "pick";
+    setPrompt(t("feature.text.repickPrompt"));
   }
 
   private buildFeature(v: TextOnFaceValues): Feature {
@@ -555,6 +576,7 @@ export class TextOnFaceTool {
   }
 
   private cleanup() {
+    this.repicking = false;
     window.clearTimeout(this.previewTimer);
     window.clearTimeout(this.outlineTimer);
     this.outlineGen++; // strand any tessellateText reply still in flight

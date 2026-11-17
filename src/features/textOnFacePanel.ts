@@ -91,6 +91,7 @@ export class TextOnFacePanel {
   private onCommit: ((v: TextOnFaceValues) => void) | null = null;
   private onChange: ((v: TextOnFaceValues) => void) | null = null;
   private onCancel: (() => void) | null = null;
+  private onRepick: (() => void) | null = null;
   private setUV: ((u: number, v: number) => void) | null = null;
 
   /** Push a placement in from the viewport (a drag), so the numeric fields and
@@ -135,12 +136,15 @@ export class TextOnFacePanel {
       onCommit: (v: TextOnFaceValues) => void;
       onChange: (v: TextOnFaceValues) => void;
       onCancel: () => void;
+      /** Editing only: put the text on another face (report 048ec84f). */
+      onRepick?: () => void;
     },
   ) {
     this.hide();
     this.onCommit = handlers.onCommit;
     this.onChange = handlers.onChange;
     this.onCancel = handlers.onCancel;
+    this.onRepick = handlers.onRepick ?? null;
     const init = opts.initial;
 
     // Which mm value a length field's CURRENT text came from, so an untouched
@@ -452,6 +456,14 @@ export class TextOnFacePanel {
     ok.addEventListener("pointerdown", (e) => { e.preventDefault(); e.stopPropagation(); this.commit(); });
     no.addEventListener("pointerdown", (e) => { e.preventDefault(); e.stopPropagation(); this.onCancel?.(); });
     row(ok, no);
+    // A text whose face is gone (an edit upstream renumbered the bodies, report
+    // 048ec84f) could only be deleted and typed again. This keeps every setting
+    // and asks for the face only.
+    if (opts.editing && this.onRepick) {
+      const again = btn(t("feature.text.repickFace"), "cancel", "select");
+      again.addEventListener("pointerdown", (e) => { e.preventDefault(); e.stopPropagation(); this.onRepick?.(); });
+      row(again);
+    }
 
     text.focus();
     text.select();
@@ -484,5 +496,6 @@ export class TextOnFacePanel {
     this.numFields = [];
     this.onCommit = this.onChange = null;
     this.onCancel = null;
+    this.onRepick = null;
   }
 }

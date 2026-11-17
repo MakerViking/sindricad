@@ -57,6 +57,10 @@ This file starts on 2026-08-03. For anything before that, see the
   opened, and while the thickness box is up you can click more faces to open them too
   (click one again to take it back out). Before, only the first face was opened and the
   rest were ignored. (GH #78)
+- **Text on Face can move to another face.** Editing a text now has a Pick another face
+  button: click a face and the text moves there, keeping its words, font and settings.
+  When an edit earlier in the timeline left a text with "the target body no longer
+  exists", the only way out used to be deleting it and typing it again.
 - **A sweep starts from the end of the path nearest its profile.** A profile drawn away from
   its path, for example on a slightly tilted face on the other side of the part, could swing
   round the wrong way or run off past the end of the path, however the path was drawn. It

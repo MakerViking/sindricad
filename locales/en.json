@@ -781,6 +781,8 @@
       "inheritColor": "Use the body's colour",
       "pickPrompt": "Click the face to put text on · Esc to cancel",
       "placeholder": "Type your text",
+      "repickFace": "Pick another face",
+      "repickPrompt": "Click the face to move the text to · Esc to cancel",
       "size": "Size",
       "style": "Style",
       "title": "Text on face",
