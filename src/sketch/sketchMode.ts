@@ -1098,6 +1098,13 @@ export class SketchMode {
     if (this.active) this.refreshActive();
   }
 
+  /** Re-draw the OTHER sketches, for a change that only the overlay shows (an
+   *  eye toggled in the Browser). The sketch being edited stays out of it, as
+   *  on enter(): the editor draws that one. No-op when inactive. */
+  redrawCommitted(): void {
+    if (this.active && this.store) this.overlay.update(this.store.document, this.editingId ?? "__active__");
+  }
+
   /** Rebuild the active sketch's committed curves + snap candidates + editable
    * dimension labels. Called when the entity list changes — and on drag end. */
   private refreshActive() {

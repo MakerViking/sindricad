@@ -27,6 +27,9 @@ This file starts on 2026-08-03. For anything before that, see the
   loading the file froze the app for minutes. In the reported file, opening the sketch
   went from 43 seconds to under 3, and loading the file from 5 seconds to under half a
   second.
+- **The eye in the Browser hides other sketches while you are in a sketch.** Hiding a
+  sketch from the Browser while another one was open stored the change but left the sketch
+  on screen until you closed the one you were in.
 - **Text can follow your parameters.** Each sketch text now lists its X position, Y position,
   size and angle in the Parameters panel. Type a number, a formula like `width/2`, or
   double-click the label to make it a named parameter, and the text moves and resizes with the
