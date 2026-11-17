@@ -98,6 +98,8 @@ export async function checkForUpdates(interactive: boolean): Promise<void> {
     }
     return;
   }
+  let installing = false;
+  let dismiss = () => {};
   try {
     const { check } = await import("@tauri-apps/plugin-updater");
     const update = await check();
@@ -110,8 +112,26 @@ export async function checkForUpdates(interactive: boolean): Promise<void> {
       { value: "later", label: t("common.later") },
     ]);
     if (pick !== "install") return;
-    toast(t("update.downloading"));
-    await update.downloadAndInstall();
+    // From here the user has asked for this, so a failure must be said whether or
+    // not the CHECK was interactive (the startup prompt is not), and the
+    // "downloading" note stays up for the whole download instead of flashing
+    // for 3.5 s. Field report 1b0fd475: "Screen flashed update being
+    // downloaded, but nothing changed", fifteen minutes before the restart.
+    installing = true;
+    let done = 0, total = 0, shown = -1;
+    dismiss = toast(t("update.downloading"), { timeout: 0 });
+    await update.downloadAndInstall((ev) => {
+      if (ev.event === "Started") total = ev.data.contentLength ?? 0;
+      else if (ev.event === "Progress") done += ev.data.chunkLength;
+      else if (ev.event === "Finished") return void dismiss();
+      if (!total) return;
+      const pct = Math.min(99, Math.floor((done / total) * 10) * 10); // every 10 %
+      if (pct === shown) return;
+      shown = pct;
+      dismiss();
+      dismiss = toast(t("update.downloadingPct", { pct }), { timeout: 0 });
+    });
+    dismiss();
     // NOT the process plugin's relaunch(): it restarts without releasing the
     // single-instance lock, and the replacement process can start while this one
     // is still exiting, find the lock held, and quit on the spot. This command
@@ -119,9 +139,11 @@ export async function checkForUpdates(interactive: boolean): Promise<void> {
     const { invoke } = await import("@tauri-apps/api/core");
     await invoke("restart_for_update");
   } catch (err) {
+    dismiss();
     console.error("[updates] check/install failed:", err);
-    if (interactive) {
-      toast(t("update.checkFailed", { reason: err instanceof Error ? err.message : String(err) }), { kind: "error" });
+    if (interactive || installing) {
+      const reason = err instanceof Error ? err.message : String(err);
+      toast(t(installing ? "update.installFailed" : "update.checkFailed", { reason }), { kind: "error" });
     }
   }
 }

@@ -83,6 +83,10 @@ This file starts on 2026-08-03. For anything before that, see the
   another PC, the geometry engine could not start and showed "DLL load failed while
   importing _multiarray_umath" with "The parameter is incorrect". The engine is now started
   through the share's ordinary network path, which that check accepts.
+- **Updating says what it is doing.** After Restart & update, a note with the download's
+  progress now stays up until SindriCAD restarts; before, it flashed for a few seconds over
+  a download that can take minutes. And if the update cannot be installed, it says why.
+  From the update prompt at startup, a failure used to go unreported.
 - **The window opens centred.** On Windows it used to appear in the upper right corner. It now
   opens centred on the monitor it starts on.
 
