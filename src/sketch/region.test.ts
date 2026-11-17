@@ -665,3 +665,33 @@ describe("regionsByEntities", () => {
     expect(bottom[0]!.centroid.y).toBeLessThan(0);
   });
 });
+
+describe("thin curved band beside a larger area (field report 49ed09fd)", () => {
+  // A half disk (arc r=20 + its chord) with a 0.1 mm band hugging its arc. The
+  // band's centroid lies inside the half disk and no centroid->vertex sample
+  // reaches the band, so its nesting point used to fall back to the centroid:
+  // the half disk then claimed the band as a HOLE, although the band is outside
+  // it. Holes sharing an edge with their outline also made the fill
+  // triangulation take minutes.
+  const arc = (id: string, r: number): ResolvedEntity =>
+    ({ type: "arc", id, x1: 0, y1: -r, x2: 0, y2: r, mx: r, my: 0 });
+  const ents: ResolvedEntity[] = [
+    arc("inner", 20),
+    arc("outer", 20.1),
+    line("chord", 0, -20, 0, 20),
+    line("capLo", 0, -20, 0, -20.1),
+    line("capHi", 0, 20, 0, 20.1),
+  ];
+
+  it("gives neither area a hole", () => {
+    const regions = detectRegions("s", ents);
+    expect(regions).toHaveLength(2);
+    for (const r of regions) expect(r.holes).toHaveLength(0);
+  });
+
+  it("still finds a point inside the band for selection", () => {
+    const band = detectRegions("s", ents).find((r) => loopArea(r.loop) < 10)!;
+    expect(band).toBeDefined();
+    expect(pointInRegion(band.interior, band)).toBe(true);
+  });
+});

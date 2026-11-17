@@ -20,6 +20,13 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ### Sketch
 
+- **A sketch with a thin curved band opens in a second, not minutes.** Two splines drawn
+  close together, for example 0.1 mm apart, made a band that the sketch filed as a hole in
+  the area beside it, although it sits outside that area. Shading that area then took tens
+  of seconds, and it was redone on every change, so opening the sketch, drawing an arc or
+  loading the file froze the app for minutes. In the reported file, opening the sketch
+  went from 43 seconds to under 3, and loading the file from 5 seconds to under half a
+  second.
 - **Text can follow your parameters.** Each sketch text now lists its X position, Y position,
   size and angle in the Parameters panel. Type a number, a formula like `width/2`, or
   double-click the label to make it a named parameter, and the text moves and resizes with the

@@ -548,7 +548,13 @@ function loopInteriorPoint(loop: THREE.Vector2[]): THREE.Vector2 {
       if (pointInLoop(p, loop)) return p;
     }
   }
-  return c; // best effort
+  // A thin curved band (two splines 0.1 mm apart, field report 49ed09fd) has
+  // its centroid outside itself and every sample above lands short of it.
+  // Returning the centroid made the band's PARENT the cell the centroid fell
+  // in, so a neighbouring area claimed it as a hole. Holes that share an edge
+  // with their outline also sent the fill triangulation into earcut's
+  // quadratic slow path: minutes of freeze on opening the sketch.
+  return scanlineInteriorPoint([loop], (p) => pointInLoop(p, loop)) ?? c;
 }
 
 /** A point inside the region's material (outside all holes), used as the parametric
@@ -580,9 +586,18 @@ function interiorPoint(
   // between two consecutive boundary crossings that lands outside every hole is
   // guaranteed to be in the material. Try several heights so a line that only
   // grazes a hole's extreme isn't the sole chance.
+  return scanlineInteriorPoint([loop, ...holes], ok) ?? centroid; // best effort
+}
+
+/** On a horizontal line across `rings[0]`, the midpoint between two consecutive
+ *  boundary crossings of any ring that passes `ok`, or null if none does. */
+function scanlineInteriorPoint(
+  rings: THREE.Vector2[][],
+  ok: (p: THREE.Vector2) => boolean,
+): THREE.Vector2 | null {
+  const loop = rings[0] ?? [];
   let minY = Infinity, maxY = -Infinity;
   for (const p of loop) { minY = Math.min(minY, p.y); maxY = Math.max(maxY, p.y); }
-  const rings = [loop, ...holes];
   for (const frac of [0.5, 0.4, 0.6, 0.3, 0.7, 0.2, 0.8, 0.1, 0.9]) {
     const y = minY + (maxY - minY) * frac;
     const xs: number[] = [];
@@ -601,7 +616,7 @@ function interiorPoint(
       if (ok(p)) return p;
     }
   }
-  return centroid; // best effort
+  return null;
 }
 
 // --- line-chain loop tracing ---
