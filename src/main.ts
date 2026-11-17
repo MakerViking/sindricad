@@ -960,12 +960,17 @@ overlay.resolvedPlanes = () => store.buildState.result?.planes;
 // touch it otherwise, so the highlight used to wait for the next mouse move.
 overlay.onRepaintNeeded = () => viewport.requestRender();
 tree.isSketchVisible = isSketchVisible;
+// An eye toggled while a sketch is open has to hide or show the OTHER sketches
+// at once too (reports 08ee5ad1, 07aeefd2: "I cannot hide the sketches that are
+// not active"). The redraw used to be skipped whenever a sketch was open.
+function redrawSketchVisibility() {
+  if (sketch.active) sketch.redrawCommitted();
+  else overlay.update(store.document);
+  viewport.requestRender(); // display-only change, no build to mark the frame dirty
+}
 tree.onToggleSketch = (id) => {
   store.setSketchVisibility(id, !isSketchVisible(id));
-  if (!sketch.active) {
-    overlay.update(store.document);
-    viewport.requestRender(); // display-only change, no build to mark the frame dirty
-  }
+  redrawSketchVisibility();
   tree.refresh();
 };
 // Sketches folder-header eye toggle (hide/restore the whole group at once,
@@ -974,10 +979,7 @@ tree.onToggleSketch = (id) => {
 // toggle does).
 tree.onSetSketchesVisibility = (vis) => {
   store.setSketchesVisibility(vis);
-  if (!sketch.active) {
-    overlay.update(store.document);
-    viewport.requestRender(); // display-only change, no build to mark the frame dirty
-  }
+  redrawSketchVisibility();
   tree.refresh();
 };
 

@@ -982,7 +982,7 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
   // it where the user just clicked.
   function pickFaceInteractive(
     promptText: string,
-    onPick: (sel: Selector, at: { x: number; y: number }) => void,
+    onPick: (sel: Selector, at: { x: number; y: number }, faceId: number) => void,
   ) {
     if (busy()) return;
     if (needsBody(t("tool.shell"))) return;
@@ -1003,7 +1003,7 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
       // land on a body the user never touched (same fault as the texture bug).
       const sel: Selector = hit.bodyId ? { ...hit.selector, body: hit.bodyId } : hit.selector;
       const at = { x: e.clientX, y: e.clientY };
-      requestAnimationFrame(() => onPick(sel, at));
+      requestAnimationFrame(() => onPick(sel, at, hit.faceId));
     };
     const onEsc = (e: KeyboardEvent) => {
       if (e.key === "Escape") cleanup();
@@ -1071,14 +1071,33 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
   const SHELL_THICKNESS_MM = 2;
   let shellDim: DimInput | null = null;
 
+  // Several openings, the way other CAD shells work (GH #78): faces already
+  // selected when Shell starts are all opened, and while the thickness box is
+  // up a click on another face adds it (a second click takes it out again).
+  // It used to keep only the one face that opened the box.
   function startShell() {
-    pickFaceInteractive(t("feature.starters.shell.pickFace"), (faces, at) => {
-      askShellThickness(faces, at);
+    if (busy()) return;
+    const pre = viewport.selectedFacesForPressPull();
+    if (pre) {
+      if (needsBody(t("tool.shell"))) return;
+      const faces = pre.faceIds.map((fid, i) => withBody(pre.selectors[i]!, viewport.faceIdToBodyId(fid)));
+      askShellThickness(faces, pre.faceIds, viewport.projectToScreen(pre.anchor));
+      return;
+    }
+    pickFaceInteractive(t("feature.starters.shell.pickFace"), (face, at, faceId) => {
+      askShellThickness([face], [faceId], at);
     });
   }
 
-  function askShellThickness(faces: Selector, at: { x: number; y: number }) {
+  /** The selector with the body that owns its face stamped on (see pickFaceInteractive). */
+  function withBody(sel: Selector, bodyId: string | null): Selector {
+    return bodyId ? { ...sel, body: bodyId } : sel;
+  }
+
+  function askShellThickness(faces: Selector[], faceIds: number[], at: { x: number; y: number }) {
     const dim = (shellDim ??= new DimInput());
+    viewport.selectFaces(faceIds);
+    viewport.suspendPicking = true; // a click on empty space must not clear the openings
     // Hold the busy flag across the prompt, the same one the face pick held, so
     // no other tool can start underneath an open box. EVERY exit path has to
     // clear it: a planePick left set disables the whole toolbar silently, which
@@ -1091,7 +1110,33 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
       setPrompt(null);
       dim.hide();
       window.removeEventListener("keydown", onEsc, true);
+      canvas.removeEventListener("pointerdown", onFace, true);
+      viewport.suspendPicking = false;
+      viewport.deselectFaces(faceIds);
     };
+    // Another face toggles in or out of the openings. The last one stays: a
+    // shell with no opening is a different feature (hollow, closed), not what
+    // a click meant.
+    function onFace(e: PointerEvent) {
+      if (e.button !== 0) return;
+      const hit = viewport.pickFaceForPressPull(e.clientX, e.clientY);
+      if (!hit) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      const k = faceIds.indexOf(hit.faceId);
+      if (k >= 0) {
+        if (faceIds.length === 1) return;
+        faceIds.splice(k, 1);
+        faces.splice(k, 1);
+        viewport.deselectFaces([hit.faceId]);
+      } else {
+        faceIds.push(hit.faceId);
+        faces.push(withBody(hit.selector, hit.bodyId));
+        viewport.selectFaces([hit.faceId]);
+      }
+      dim.focus();
+    }
+    canvas.addEventListener("pointerdown", onFace, true);
     // DimInput deliberately leaves Escape to the owning tool, so without this
     // the box has no way out except committing. Deliberately NOT gated on the
     // box owning the event target: if focus has wandered, Esc must still be able
@@ -1113,7 +1158,9 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
           setStatus(t("feature.starters.shell.thicknessZero"), "");
           return;
         }
-        store.addFeature({ id: store.nextId(), type: "shell", thickness, faces } as Feature);
+        // one face keeps the single-selector form every older document uses
+        const openings = faces.length === 1 ? faces[0]! : [...faces];
+        store.addFeature({ id: store.nextId(), type: "shell", thickness, faces: openings } as Feature);
       },
       close,
     );

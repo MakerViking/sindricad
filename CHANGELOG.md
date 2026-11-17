@@ -20,6 +20,24 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ### Sketch
 
+- **A sketch with a thin curved band opens in a second, not minutes.** Two splines drawn
+  close together, for example 0.1 mm apart, made a band that the sketch filed as a hole in
+  the area beside it, although it sits outside that area. Shading that area then took tens
+  of seconds, and it was redone on every change, so opening the sketch, drawing an arc or
+  loading the file froze the app for minutes. In the reported file, opening the sketch
+  went from 43 seconds to under 3, and loading the file from 5 seconds to under half a
+  second.
+- **The eye in the Browser hides other sketches while you are in a sketch.** Hiding a
+  sketch from the Browser while another one was open stored the change but left the sketch
+  on screen until you closed the one you were in.
+- **Zooming in a sketch stays on the cursor.** Wheel-zooming toward drawing that sat away
+  from the model slid the view back toward the model on every notch, so the spot you
+  aimed at moved off under the cursor: 6 mm over 8 notches in the reported sketch. It now
+  stays put. Zooming out still keeps the view near the model.
+- **Rect and Circular Pattern in a sketch work on what you selected.** Choosing either tool
+  cleared the selection, so selecting a circle and then choosing Rect Pattern always ended
+  in "Select entities first", and the pattern could not be started at all. The selection
+  now stays, and a click on the canvas starts the pattern.
 - **Text can follow your parameters.** Each sketch text now lists its X position, Y position,
   size and angle in the Parameters panel. Type a number, a formula like `width/2`, or
   double-click the label to make it a named parameter, and the text moves and resizes with the
@@ -34,6 +52,19 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ### Modelling
 
+- **Thread works on a body an earlier step left slightly broken.** When an earlier cut left
+  a flaw in the body, for example a face with no area where the cut ran along an existing
+  wall, every Thread on that body failed with "this cut produced an invalid shape", although
+  the thread itself was fine. Thread now refuses only when its own cut breaks a body that
+  was sound.
+- **Shell opens every face you pick.** Faces you select before pressing Shell are all
+  opened, and while the thickness box is up you can click more faces to open them too
+  (click one again to take it back out). Before, only the first face was opened and the
+  rest were ignored. (GH #78)
+- **Text on Face can move to another face.** Editing a text now has a Pick another face
+  button: click a face and the text moves there, keeping its words, font and settings.
+  When an edit earlier in the timeline left a text with "the target body no longer
+  exists", the only way out used to be deleting it and typing it again.
 - **A sweep starts from the end of the path nearest its profile.** A profile drawn away from
   its path, for example on a slightly tilted face on the other side of the part, could swing
   round the wrong way or run off past the end of the path, however the path was drawn. It
@@ -48,6 +79,14 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ### App
 
+- **SindriCAD starts from a network share on Windows.** Run from a folder on a NAS or
+  another PC, the geometry engine could not start and showed "DLL load failed while
+  importing _multiarray_umath" with "The parameter is incorrect". The engine is now started
+  through the share's ordinary network path, which that check accepts.
+- **Updating says what it is doing.** After Restart & update, a note with the download's
+  progress now stays up until SindriCAD restarts; before, it flashed for a few seconds over
+  a download that can take minutes. And if the update cannot be installed, it says why.
+  From the update prompt at startup, a failure used to go unreported.
 - **The window opens centred.** On Windows it used to appear in the upper right corner. It now
   opens centred on the monitor it starts on.
 

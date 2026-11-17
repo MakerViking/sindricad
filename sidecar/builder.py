@@ -8334,6 +8334,11 @@ def _handle_thread(f, ctx):
         for k in range(1, starts):
             tools.append(tool.rotate(turn_axis, k * 360.0 / starts))
 
+    # Judged BEFORE the fill below, so a fill that breaks the body is still
+    # this feature's fault. A body an earlier feature already left invalid
+    # (field report e59c8d88: an extrude cut left a zero-area sliver face) is
+    # not, and refusing every thread on it blamed the wrong step.
+    input_valid = body["shape"].is_valid
     if fill_to_tap_drill:
         # The hole was drawn at nominal size, so the material between the
         # tap-drill (minor) radius and the as-modeled bore wall is still
@@ -8360,7 +8365,7 @@ def _handle_thread(f, ctx):
             "Thread: this cut breaks the body into pieces — use a shorter length "
             "or a different size."
         )
-    if not result.is_valid:
+    if input_valid and not result.is_valid:
         raise ValueError("Thread: this cut produced an invalid shape — try a different size.")
     body["shape"] = result
     # Register this cut's axis + span so a later Thread feature on the same

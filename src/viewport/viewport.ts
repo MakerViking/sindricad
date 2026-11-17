@@ -2914,6 +2914,7 @@ export class Viewport {
   }
 
   enterSketchView(origin: THREE.Vector3, normal: THREE.Vector3, up: THREE.Vector3) {
+    this.rig.setZoomContainment(false); // zoom toward any part of the drawing (see cameras.ts)
     // Straighten to the NEAREST square orientation: the view is always squared
     // to the sketch axes, but among the four cardinal in-plane rotations pick
     // the one closest to the camera's current visual up — entering a sketch
@@ -2945,6 +2946,7 @@ export class Viewport {
     this.requestRender();
   }
   exitSketchView() {
+    this.rig.setZoomContainment(true);
     if (this.sketchOrtho) {
       this.rig.setProjectionMode(this.sketchPrevMode); // restore projection mode
       this.sketchOrtho = false;

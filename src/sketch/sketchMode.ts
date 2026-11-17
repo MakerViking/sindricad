@@ -229,7 +229,10 @@ function exprRefs(expr: string): string[] {
   }
 }
 
-const KEEPS_SELECTION = new Set<SketchTool>(["mirror", "move", "copy", "rotate", "scale"]);
+// The entity patterns replicate the selection too (patternFlow.click reads it).
+// They used to clear it like a drawing tool, so "select, then choose Rect
+// Pattern" always ended in "Select entities first" (field report 84d7021f).
+const KEEPS_SELECTION = new Set<SketchTool>(["mirror", "move", "copy", "rotate", "scale", "patternRect", "patternCircular"]);
 /** The tools that move the selection about a point the user clicks. Armed with
  *  nothing selected, they take clicks AS the selection first (see
  *  SketchMode.choosingTargets). */
@@ -1096,6 +1099,13 @@ export class SketchMode {
    *  repainting. No-op when inactive. */
   redraw(): void {
     if (this.active) this.refreshActive();
+  }
+
+  /** Re-draw the OTHER sketches, for a change that only the overlay shows (an
+   *  eye toggled in the Browser). The sketch being edited stays out of it, as
+   *  on enter(): the editor draws that one. No-op when inactive. */
+  redrawCommitted(): void {
+    if (this.active && this.store) this.overlay.update(this.store.document, this.editingId ?? "__active__");
   }
 
   /** Rebuild the active sketch's committed curves + snap candidates + editable

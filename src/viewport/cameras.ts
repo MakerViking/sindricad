@@ -76,6 +76,10 @@ export interface CameraRig {
   /** Where the content is, so a zoom cannot walk the orbit target away from
    *  it. `null` when there is no model: zoom then behaves as before. */
   setContentBounds(box: THREE.Box3 | null): void;
+  /** Whether a zoom IN may pull the orbit target back into the content ball
+   *  (see containTarget). On by default; sketch view turns it off. Zooming out
+   *  is always contained. */
+  setZoomContainment(on: boolean): void;
   /** Half the visible view height at the orbit target, in world units — the
    *  natural scale for making input steps (SpaceMouse pan) zoom-proportional
    *  in BOTH projections, like wheel zoom already is. */
@@ -513,9 +517,17 @@ export function createCameraRig(
   const CONTENT_RADIUS_MIN_MM = 25;
   let contentCentre: THREE.Vector3 | null = null;
   let contentRadius = CONTENT_RADIUS_MIN_MM;
+  // Zooming IN is not contained in sketch view (field report 262d70bb, "it
+  // jumps around a bit"): the drawing can sit anywhere on the plane, far
+  // outside a small model's ball, and every notch toward it slid the point
+  // under the cursor back toward the model, 6.2 mm over 8 notches in the
+  // reported document. A zoom in leaves the target on what is under the
+  // cursor, which is on screen. Zooming OUT stays contained everywhere: that
+  // is the drift the ball exists for, and it would outlast the sketch.
+  let zoomContainment = true;
   /** Pull `target` into the content ball, moving `cam` by the same vector. */
-  function containTarget(cam: THREE.Vector3, target: THREE.Vector3) {
-    if (!contentCentre) return;
+  function containTarget(cam: THREE.Vector3, target: THREE.Vector3, zoomFactor: number) {
+    if (!contentCentre || (!zoomContainment && zoomFactor < 1)) return;
     const limit = contentRadius * CONTENT_RADIUS_FACTOR;
     const away = target.clone().sub(contentCentre);
     const d = away.length();
@@ -706,7 +718,7 @@ export function createCameraRig(
           const k = 1 - curZoom / newZoom;
           const nc = new THREE.Vector3(pos.x + (pivot.x - target.x) * k, pos.y + (pivot.y - target.y) * k, pos.z + (pivot.z - target.z) * k);
           const nt = new THREE.Vector3(target.x + (pivot.x - target.x) * k, target.y + (pivot.y - target.y) * k, target.z + (pivot.z - target.z) * k);
-          containTarget(nc, nt);
+          containTarget(nc, nt, f);
           controls.setLookAt(nc.x, nc.y, nc.z, nt.x, nt.y, nt.z, false);
         }
         controls.zoomTo(newZoom, false);
@@ -755,7 +767,7 @@ export function createCameraRig(
         }
         const nc = anchor.clone().add(cam.clone().sub(anchor).multiplyScalar(ff));
         const nt = anchor.clone().add(target.clone().sub(anchor).multiplyScalar(ff));
-        containTarget(nc, nt);
+        containTarget(nc, nt, ff);
         controls.setLookAt(nc.x, nc.y, nc.z, nt.x, nt.y, nt.z, false);
       } else {
         // no pivot (programmatic): plain dolly toward the orbit target
@@ -993,6 +1005,9 @@ export function createCameraRig(
     },
     setOnUserMove(fn: () => void) {
       onUserMove = fn;
+    },
+    setZoomContainment(on) {
+      zoomContainment = on;
     },
     setOrbitLocked(locked) {
       orbitLocked = locked;
