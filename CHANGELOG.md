@@ -41,6 +41,11 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ### Modelling
 
+- **Thread works on a body an earlier step left slightly broken.** When an earlier cut left
+  a flaw in the body, for example a face with no area where the cut ran along an existing
+  wall, every Thread on that body failed with "this cut produced an invalid shape", although
+  the thread itself was fine. Thread now refuses only when its own cut breaks a body that
+  was sound.
 - **A sweep starts from the end of the path nearest its profile.** A profile drawn away from
   its path, for example on a slightly tilted face on the other side of the part, could swing
   round the wrong way or run off past the end of the path, however the path was drawn. It

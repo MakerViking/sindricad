@@ -661,6 +661,55 @@ def test_an_old_single_thread_document_rebuilds_unchanged_after_the_conflict_fix
                           body["shape"].volume, shape.volume)
 
 
+def _with_validity(rule, fn):
+    """Run fn() with build123d's `Shape.is_valid` answered by rule(shape, real)."""
+    from build123d import Shape
+    original = Shape.is_valid
+    Shape.is_valid = property(lambda self: rule(self, original.fget(self)))
+    try:
+        return fn()
+    finally:
+        Shape.is_valid = original
+
+
+def test_a_thread_on_a_body_an_earlier_feature_left_invalid_still_cuts():
+    """Field report e59c8d88: an extrude cut left one zero-area sliver face, so
+    the body was already invalid. Every Thread on it was then refused with
+    "this cut produced an invalid shape", though the cut added no defect of its
+    own (measured on his part: 2 bad sub-shapes before, 2 after). The reporter's
+    part is not in the repo, so the block is MADE to read invalid: every shape
+    as big as the block reports invalid, the thread tool (far smaller) does not."""
+    height = 10.0
+    doc, body = _bored_body("M6x1", height)
+    real_shape, _ = _cut_thread(doc, body, "M6x1", height)
+    block = body["shape"].volume
+    big = lambda sh: sh.volume > block / 2
+    shape, _ = _with_validity(lambda sh, real: False if big(sh) else real,
+                              lambda: _cut_thread(doc, body, "M6x1", height))
+    assert abs(shape.volume - real_shape.volume) < 1e-6, (
+        f"the thread on a pre-invalid body removed a different volume: "
+        f"{shape.volume:.4f} vs {real_shape.volume:.4f} mm3")
+    print(f"{PASS} a thread on a body that was already invalid cuts the same "
+          f"{block - shape.volume:.3f} mm3 it cuts on a valid one")
+
+
+def test_a_thread_that_breaks_a_valid_body_is_still_refused():
+    """The control for the test above: when the INPUT was valid and only the
+    thread's result is not, the refusal still stands."""
+    height = 10.0
+    doc, body = _bored_body("M6x1", height)
+    block = body["shape"].volume
+    after_cut = lambda sh: block / 2 < sh.volume < block - 1e-6
+    try:
+        _with_validity(lambda sh, real: False if after_cut(sh) else real,
+                       lambda: _cut_thread(doc, body, "M6x1", height))
+    except AssertionError as e:
+        assert "invalid shape" in str(e), e
+    else:
+        raise AssertionError("a thread that left a valid body invalid was accepted")
+    print(f"{PASS} a thread that breaks a valid body is still refused")
+
+
 if __name__ == "__main__":
     test_m6x1_internal_thread_cuts_to_analytic_volume()
     test_m6x1_external_thread_cuts_to_analytic_volume()
@@ -683,4 +732,6 @@ if __name__ == "__main__":
     test_a_hole_between_both_diameters_refuses_naming_both()
     test_second_thread_on_an_already_threaded_hole_refuses_naming_the_first()
     test_an_old_single_thread_document_rebuilds_unchanged_after_the_conflict_fix()
+    test_a_thread_on_a_body_an_earlier_feature_left_invalid_still_cuts()
+    test_a_thread_that_breaks_a_valid_body_is_still_refused()
     print("\nall thread tests passed")
