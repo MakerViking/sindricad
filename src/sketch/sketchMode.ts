@@ -229,7 +229,10 @@ function exprRefs(expr: string): string[] {
   }
 }
 
-const KEEPS_SELECTION = new Set<SketchTool>(["mirror", "move", "copy", "rotate", "scale"]);
+// The entity patterns replicate the selection too (patternFlow.click reads it).
+// They used to clear it like a drawing tool, so "select, then choose Rect
+// Pattern" always ended in "Select entities first" (field report 84d7021f).
+const KEEPS_SELECTION = new Set<SketchTool>(["mirror", "move", "copy", "rotate", "scale", "patternRect", "patternCircular"]);
 /** The tools that move the selection about a point the user clicks. Armed with
  *  nothing selected, they take clicks AS the selection first (see
  *  SketchMode.choosingTargets). */

@@ -34,6 +34,10 @@ This file starts on 2026-08-03. For anything before that, see the
   from the model slid the view back toward the model on every notch, so the spot you
   aimed at moved off under the cursor: 6 mm over 8 notches in the reported sketch. It now
   stays put. Zooming out still keeps the view near the model.
+- **Rect and Circular Pattern in a sketch work on what you selected.** Choosing either tool
+  cleared the selection, so selecting a circle and then choosing Rect Pattern always ended
+  in "Select entities first", and the pattern could not be started at all. The selection
+  now stays, and a click on the canvas starts the pattern.
 - **Text can follow your parameters.** Each sketch text now lists its X position, Y position,
   size and angle in the Parameters panel. Type a number, a formula like `width/2`, or
   double-click the label to make it a named parameter, and the text moves and resizes with the
