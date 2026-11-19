@@ -76,6 +76,29 @@ This file starts on 2026-08-03. For anything before that, see the
   to keep waiting or stop, and names the step it is on.
 - **A failed build names its step in the status bar.** It showed an internal id, or nothing
   at all, in front of the message.
+- **A sweep that would fold over itself says so, and how to fix it.** When the profile
+  reaches farther toward the inside of a bend in the path than the bend's radius, the
+  inner part of the profile passes through the bend's centre and comes back on itself.
+  The sweep used to build that body anyway, and it showed nowhere until a later step or
+  the export broke on it. Sweep now stops with the size of the bend and the radius it
+  needs, for example "the profile reaches 3.01 mm toward the inside of a 2.03 mm bend ...
+  make the bend's radius more than 3.01 mm". A file with a sweep like that shows the
+  message on the sweep until the bend is widened.
+- **A cut along an existing wall meets it exactly.** A sketch traced off a body's own
+  edges, for example a cut on a pocket floor that follows the pocket's walls, could land
+  a millionth of a millimetre off those walls. The cut then left a face with no area
+  along the wall, which made the body invalid: a Thread on it was refused, and the export
+  was not closed. Traced edges are now put back on the walls they came from.
+- **A Join never loses material.** When the geometry kernel could not merge two shapes, a
+  Join could come back with less than it started with, even nothing, and the body was
+  replaced without a word. It now stops with an error and leaves the bodies as they were.
+
+### Export
+
+- **3MF and STL exports come out closed where a part has a hair-thin edge.** Where two
+  curved surfaces meet at a tangent, the kernel can leave an edge a few hundredths of a
+  micron long, and the export had a hole that size, which PrusaSlicer reports as
+  non-manifold. Those edges are now closed up.
 
 ### App
 

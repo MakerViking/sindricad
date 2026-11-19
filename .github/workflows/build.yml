@@ -153,6 +153,9 @@ jobs:
           uv run python test_merge_solids.py
           uv run python test_join_left_out.py
           uv run python test_join_touching.py
+          # TA 995a4717: a Join the kernel returned EMPTY deleted the body, and a
+          # failed tidy-up damaged the body BEFORE the boolean.
+          uv run python test_join_lost_material.py
           uv run python test_split.py
           uv run python test_mirror_plane.py
           uv run python test_mesh_reference.py
@@ -226,6 +229,13 @@ jobs:
           # green through both. Its oracle is the swept volume against the
           # analytic profile-area x path-length, which nothing else here checks.
           uv run python test_sweep_path.py
+          # TA 995a4717: a profile reaching past a path bend folds, and OCCT
+          # calls the fold valid; the export later missed a whole face.
+          uv run python test_sweep_fold.py
+          # Same report: a cut traced 1e-6 off a pocket wall left a sliver face,
+          # and a 4e-5 mm kernel edge left a hole in the 3MF.
+          uv run python test_profile_snap.py
+          uv run python test_micro_edge_export.py
           # The taper path is the one place measured to return CORRUPT geometry
           # without raising (a valid solid stopped at the pyramid apex, shorter
           # than asked for) AND to hang OCCT for 600 s. It was also never listed

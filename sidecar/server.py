@@ -1320,7 +1320,7 @@ def _export_job(document, fmt, path, body=None, separate=False,
     import re
     from builder import rebuild_cached
     from exporters import export
-    from tessellate import open_edge_count, orient_consistently, weld_vertices
+    from tessellate import collapse_micro_edges, open_edge_count, orient_consistently, weld_vertices
     import mesh_writers
 
     # rebuild_cached, not rebuild: export runs in the SAME long-lived worker as
@@ -1379,6 +1379,7 @@ def _export_job(document, fmt, path, body=None, separate=False,
             # it here rather than on the concatenation below is deliberate: the
             # merged soup would weld two TOUCHING bodies into a single shell.
             pos, idx, _w = weld_vertices(pos, idx)
+            pos, idx, _w = collapse_micro_edges(pos, idx)
             pos, idx = orient_consistently(pos, idx)
             open_edges += open_edge_count(idx)
             # Checked HERE, per body, rather than on the concatenated total.
@@ -1556,7 +1557,7 @@ def _export_project_job(document, path, palette, body_colors, body_names, settin
     features become warnings; only zero live bodies is a hard error."""
     from builder import rebuild_cached
     from project3mf import sanitize_inputs, write_project_3mf
-    from tessellate import open_edge_count, orient_consistently, weld_vertices
+    from tessellate import collapse_micro_edges, open_edge_count, orient_consistently, weld_vertices
 
     part, errors, bodies = rebuild_cached(document)
     live = [b for b in bodies if b.get("shape") is not None or b.get("mesh")]
@@ -1584,6 +1585,7 @@ def _export_project_job(document, path, palette, body_colors, body_names, settin
         # face_ids rides through the weld so the per-triangle paint array cannot
         # fall out of step if a triangle collapses.
         positions, indices, face_ids = weld_vertices(positions, indices, face_ids)
+        positions, indices, face_ids = collapse_micro_edges(positions, indices, face_ids)
         # Winding, not holes: texture.py orients each triangle against its own
         # vertex normals, which cannot guarantee it agrees with its neighbour, and
         # a slicer counts a disagreeing edge as non-manifold once per triangle.

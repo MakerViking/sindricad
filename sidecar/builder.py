@@ -5774,6 +5774,14 @@ def _handle_extrude(f, ctx):
         # itself (unchanged behaviour); the face list is what the up-to and
         # start-offset paths need, because both are per-face constructions.
         prof_faces = list(entry["faces"] or [])
+    # Edges traced off a body (projected walls, snapped corners) rebuilt on that
+    # body's own curves, so a cut along an existing wall meets it exactly
+    # instead of a micron off it (`_snap_profile_to_bodies`, field report
+    # 995a4717). Untouched faces come back as the same objects, so a sketch
+    # that traced nothing still extrudes `sk` below, byte for byte.
+    snapped = _snap_profile_to_bodies(prof_faces, ctx.bodies)
+    resnapped = any(a is not b for a, b in zip(snapped, prof_faces))
+    prof_faces = snapped
     # A symmetric extrude is the profile moved back half the distance and swept
     # the whole of it: ONE sweep, so one solid with no internal face down the
     # middle for a later boolean to trip on. It moves along the profile's own
@@ -5806,7 +5814,7 @@ def _handle_extrude(f, ctx):
         sn = prof_faces[0].normal_at()
         shift = Pos(sn.X * shift_by, sn.Y * shift_by, sn.Z * shift_by)
         prof_faces = [shift * fc for fc in prof_faces]
-    if pts or shift_by:
+    if pts or shift_by or resnapped:
         target = prof_faces[0]
         for s in prof_faces[1:]:
             target = target + s
@@ -7564,6 +7572,139 @@ def _clean_section(shape):
     return kept[0] if len(kept) == 1 else Compound(kept)
 
 
+def _sweep_fold(prof, path, anchor):
+    """The tightest bend of a PLANAR `path` that `prof` reaches past, as
+    (reach, radius, point, bends), or None when it reaches past none of them.
+
+    Swept along a planar path the profile keeps its place in the path's frame
+    (tangent, in-plane normal, plane normal), so how far it reaches toward the
+    inside of a bend is one number per side, measured once where it starts. A
+    bend tighter than that reach makes the inner part of the profile pass
+    through the bend's centre line and come back on itself: the solid FOLDS,
+    and OCCT still calls it valid. Field report 995a4717: a rail profile
+    reaching 3.01 mm inside two 2.03 mm path arcs. The fold showed nowhere
+    until a later Join left the body's top face with a crossed outline that
+    could not be meshed, and the 3MF export missed the whole face.
+
+    A path that is not planar (a 3D path, a helix) is not checked: there the
+    frame turns out of the plane and one reach per side does not hold."""
+    from OCP.BRepAdaptor import BRepAdaptor_Curve
+    from OCP.BRepLProp import BRepLProp_CLProps
+    from OCP.BRepTools import BRepTools_WireExplorer
+    from OCP.GeomAbs import GeomAbs_Circle, GeomAbs_Line
+    from OCP.TopAbs import TopAbs_REVERSED
+    from OCP.gp import gp_Dir, gp_Pnt, gp_Vec
+
+    faces = prof.faces()
+    if not faces:
+        return None
+    # The path in traversal order, each piece as (adaptor, u_first, u_last).
+    steps = []
+    ex = BRepTools_WireExplorer(path.wrapped)
+    while ex.More():
+        c = BRepAdaptor_Curve(ex.Current())
+        f, l = c.FirstParameter(), c.LastParameter()
+        steps.append((c, l, f) if ex.Current().Orientation() == TopAbs_REVERSED else (c, f, l))
+        ex.Next()
+    if not steps:
+        return None
+    samples = 24
+    pts = [Vector(c.Value(a + (b - a) * k / samples)) for c, a, b in steps for k in range(samples + 1)]
+    # The path's plane, from the two directions farthest apart, or None.
+    o = pts[0]
+    far = max(pts, key=lambda p: (p - o).length)
+    if (far - o).length < 1e-9:
+        return None
+    u = (far - o).normalized()
+    side = max(pts, key=lambda p: ((p - o) - u * (p - o).dot(u)).length)
+    w = (side - o) - u * (side - o).dot(u)
+    if w.length < 1e-9:
+        return None  # a straight path has no bends
+    nb = u.cross(w.normalized()).normalized()
+    if any(abs((p - o).dot(nb)) > 1e-6 for p in pts):
+        return None
+
+    def frame_at(c, uu, a, b):
+        p, v = gp_Pnt(), gp_Vec()
+        c.D1(uu, p, v)
+        t = Vector(v) * (1 if b > a else -1)
+        return Vector(p), t.normalized() if t.length > 1e-12 else None
+
+    # Where the profile starts: its anchor vertex, else where its plane crosses
+    # the path nearest the profile, which is where OCCT puts it.
+    pln = Plane(faces[0])
+    centre = prof.bounding_box().center()
+    start = None
+    if anchor is not None:
+        av = Vector(anchor)
+        best = None
+        for c, a, b in steps:
+            for k in range(samples + 1):
+                uu = a + (b - a) * k / samples
+                d = (Vector(c.Value(uu)) - av).length
+                if best is None or d < best[0]:
+                    best = (d, c, uu, a, b)
+        start = best[1:]
+    else:
+        hits = []
+        for c, a, b in steps:
+            sd = lambda uu: (Vector(c.Value(uu)) - pln.origin).dot(pln.z_dir)
+            us = [a + (b - a) * k / 64 for k in range(65)]
+            for k in range(64):
+                lo, hi = us[k], us[k + 1]
+                if sd(lo) * sd(hi) > 0:
+                    continue
+                for _ in range(60):
+                    mid = (lo + hi) / 2
+                    if sd(lo) * sd(mid) <= 0:
+                        hi = mid
+                    else:
+                        lo = mid
+                hits.append((c, (lo + hi) / 2, a, b))
+        if not hits:
+            return None
+        start = min(hits, key=lambda h: (Vector(h[0].Value(h[1])) - centre).length)
+    c0, u0, a0, b0 = start
+    p0, t0 = frame_at(c0, u0, a0, b0)
+    if t0 is None:
+        return None
+    n0 = nb.cross(t0)
+    # How far the profile reaches each way along the in-plane normal.
+    local = Plane(origin=p0, x_dir=n0, z_dir=t0)
+    bb = local.to_local_coords(Compound(faces)).bounding_box(optimal=True)
+    reach_left, reach_right = bb.max.X, -bb.min.X  # toward +n0, toward -n0
+    worst, bends = None, 0
+    for c, a, b in steps:
+        if c.GetType() == GeomAbs_Line:
+            continue
+        tight = None
+        for k in range(samples + 1):
+            uu = a + (b - a) * k / samples
+            p, t = frame_at(c, uu, a, b)
+            if t is None:
+                continue
+            nl = nb.cross(t)
+            if c.GetType() == GeomAbs_Circle:
+                r = c.Circle().Radius()
+                toward = (Vector(c.Circle().Location()) - p).dot(nl)
+            else:
+                props = BRepLProp_CLProps(c, uu, 2, 1e-9)
+                kappa = props.Curvature()
+                if kappa < 1e-12 or not props.IsTangentDefined():
+                    continue
+                d = gp_Dir()
+                props.Normal(d)
+                r, toward = 1.0 / kappa, Vector(d).dot(nl)
+            reach = reach_left if toward > 0 else reach_right
+            if reach >= r - 1e-6 and (tight is None or r - reach < tight[1] - tight[0]):
+                tight = (reach, r, p)
+        if tight is not None:
+            bends += 1
+            if worst is None or tight[1] - tight[0] < worst[1] - worst[0]:
+                worst = tight
+    return None if worst is None else (*worst, bends)
+
+
 def _sweep_anchor(prof, path):
     """The end of an open `path` the profile has to start from when the
     profile's plane never crosses the path, as one of the path's own vertices,
@@ -7956,7 +8097,19 @@ def _handle_sweep(f, ctx):
     else:
         path = _sweep_path(f, ctx)
         section = _clean_section(prof)
-        solid = _sweep_solid(section, path, _sweep_anchor(section, path))
+        anchor = _sweep_anchor(section, path)
+        fold = _sweep_fold(section, path, anchor)
+        if fold is not None:
+            reach, radius, at, bends = fold
+            where = f"near ({at.X:.2f}, {at.Y:.2f}, {at.Z:.2f})"
+            more = f" ({bends} bends are that tight)" if bends > 1 else ""
+            raise ValueError(
+                f"Sweep: the profile reaches {reach:.2f} mm toward the inside of a "
+                f"{radius:.2f} mm bend in the path {where}{more}, so the swept body "
+                f"would fold over itself. Make the bend's radius more than "
+                f"{reach:.2f} mm, or the profile smaller on that side."
+            )
+        solid = _sweep_solid(section, path, anchor)
     # Same New/Join/Cut boolean path as extrude/revolve/loft: booleans against
     # every visible overlapping body, with the loud no-op guards. (Sweep used to
     # inline `act["shape"] + solid` / `- solid` against only the active body —
@@ -12392,7 +12545,14 @@ def _serial_bool(base, tool, kind):
     op.Build()
     raw = op.Shape()
     shape = raw
-    up = ShapeUpgrade_UnifySameDomain(raw, True, True, True)
+    # UnifySameDomain works on a COPY. When it throws ("Courbes non jointives")
+    # it has already rewritten some of the edges it was handed, and the raw
+    # result shares those edges with the input bodies: field report 995a4717's
+    # cut came back with two wall faces spanning 8.38 rad and invalid, and the
+    # body BEFORE the cut was damaged with it. The copy costs about two thirds
+    # of the unify itself (6 ms against 9 ms on a 406-face body).
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_Copy
+    up = ShapeUpgrade_UnifySameDomain(BRepBuilderAPI_Copy(raw, True, False).Shape(), True, True, True)
     up.AllowInternalEdges(False)
     try:
         up.Build()
@@ -12442,6 +12602,14 @@ def _imprint(solid, tools):
     bb.SetRunParallel(False)
     bb.Perform()
     return Compound(bb.Shape())
+
+
+_JOIN_LOST_MATERIAL = (
+    "{kind}: the geometry kernel could not merge these shapes. The result came "
+    "out smaller than what went in, so nothing was changed. One of the bodies "
+    "may be damaged by an earlier step; editing the step that made it, or the "
+    "shapes where they meet, usually clears it."
+)
 
 
 def _boolean_into_bodies(bodies, solid, op, new_body, hidden=frozenset(), split_disjoint=False,
@@ -12567,6 +12735,16 @@ def _boolean_into_bodies(bodies, solid, op, new_body, hidden=frozenset(), split_
         # No-op guard: the fused volume should exceed what was already there. If it
         # doesn't, the prism sat entirely inside the body and added no material.
         merged_vol, hit_vol = _try_vol(merged), _sum_hit_vol(parts)
+        # A fuse can also come back with LESS than it was given, even nothing at
+        # all, and report no error: field report 995a4717, a join onto a body that
+        # an earlier cut had left invalid returned an empty shape. Committing it
+        # deleted the user's body without a word. A union holds at least the
+        # biggest thing in it.
+        biggest = max([v for v in (_try_vol(sh) for sh in parts) if v is not None]
+                      + ([prism_vol] if prism_vol is not None else []), default=None)
+        if merged_vol is not None and biggest is not None \
+                and merged_vol < biggest - eps(biggest):
+            raise ValueError(_JOIN_LOST_MATERIAL.format(kind=kind.capitalize()))
         if merged_vol is not None and hit_vol is not None \
                 and merged_vol <= hit_vol + eps(prism_vol):
             if kind == "thicken":
@@ -14216,6 +14394,14 @@ def _do_combine(f, bodies, find_body, diag=None):
     after_vol = _try_vol(shape)
     if before_vol is not None and after_vol is not None:
         guard_eps = _noop_eps(before_vol)
+        # A union holds at least the biggest body in it; a fuse that returns
+        # less (field report 995a4717 returned an empty shape, no error) would
+        # delete the user's material without a word.
+        if op == "join":
+            biggest = max([before_vol] + [v for v in (_try_vol(t["shape"]) for t in tools)
+                                          if v is not None])
+            if after_vol < biggest - _noop_eps(biggest):
+                raise ValueError(_JOIN_LOST_MATERIAL.format(kind="Combine (Join)"))
         if op == "cut" and after_vol >= before_vol - guard_eps:
             raise ValueError(
                 "Combine (Cut) removed nothing — no tool body overlaps the target."
@@ -19806,6 +19992,242 @@ def _face_interior_point(face):
         if best is None or area2 > best[0]:
             best = (area2, (a + b + c) * (1.0 / 3.0))
     return best[1] if best else None
+
+
+# How far a profile edge may sit from a body edge and still be taken as traced
+# off it. Projected curves are stored to 6 decimals (`_r6`) and rebuilt from
+# those points, which leaves them up to ~1e-6 off the edge they came from; a
+# deliberate gap a user would model is thousands of times wider.
+_PROFILE_SNAP_TOL = 1e-5
+
+
+def _snap_profile_to_bodies(faces, bodies):
+    """`faces` (coplanar, one sketch's cells) with every line and arc edge that
+    lies within _PROFILE_SNAP_TOL of a body edge in their plane rebuilt ON that
+    body edge's own curve, its corners moved onto the body's vertices. A face
+    comes back as itself (the same object) when nothing is that close, or when
+    the rebuilt face is not valid or not the same area.
+
+    Field report 995a4717: a sketch on a pocket floor traced the pocket's walls
+    as projected arcs. Rounded to 6 decimals, the rebuilt circles missed the real
+    walls by 4.4e-7 to 1.0e-6 mm, wider than OCCT's 1e-7, so the cut kept two
+    copies of each wall edge and a zero-area face between them. That face made
+    the body invalid, later Threads were refused for it, and the 3MF export came
+    out with 142 unmatched edges. Snapped, the same cut leaves a valid body and
+    removes material within 4.4e-4 mm3 of the unsnapped one."""
+    from OCP.BRepAdaptor import BRepAdaptor_Curve
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeWire
+    from OCP.BRepCheck import BRepCheck_Analyzer
+    from OCP.BRepTools import BRepTools_WireExplorer
+    from OCP.ElCLib import ElCLib
+    from OCP.GC import GC_MakeSegment
+    from OCP.Geom import Geom_Circle, Geom_TrimmedCurve
+    from OCP.GeomAbs import GeomAbs_Circle, GeomAbs_Line
+    from OCP.TopAbs import TopAbs_REVERSED
+    from OCP.TopoDS import TopoDS
+    from OCP.gp import gp_Pnt
+
+    tol = _PROFILE_SNAP_TOL
+    faces = list(faces)
+    if not faces:
+        return faces
+    try:
+        pln = Plane(faces[0])
+    except Exception:
+        return faces
+    n, o = pln.z_dir, pln.origin
+    on_plane = lambda p: abs((p - o).dot(n)) <= tol
+
+    def box_near(bb, fb):
+        return not (bb.max.X < fb.min.X - tol or bb.min.X > fb.max.X + tol
+                    or bb.max.Y < fb.min.Y - tol or bb.min.Y > fb.max.Y + tol
+                    or bb.max.Z < fb.min.Z - tol or bb.min.Z > fb.max.Z + tol)
+
+    # The body edges and vertices in the profiles' plane, near the profiles:
+    # collected ONCE, then filtered per face by box. A whole-sketch extrude of
+    # text has hundreds of cells, and a detailed body thousands of edges.
+    sb = faces[0].bounding_box()
+    for fc in faces[1:]:
+        sb = sb.add(fc.bounding_box())
+    lines, circles, verts = [], [], []
+    for b in bodies:
+        sh = b.get("shape")
+        if sh is None or b.get("mesh") or not box_near(sh.bounding_box(), sb):
+            continue
+        for e in sh.edges():
+            eb = e.bounding_box()
+            if not box_near(eb, sb):
+                continue
+            c = BRepAdaptor_Curve(e.wrapped)
+            t = c.GetType()
+            if t == GeomAbs_Line:
+                a, z = e.position_at(0), e.position_at(1)
+                if on_plane(a) and on_plane(z) and (z - a).length > tol:
+                    lines.append(((a, (z - a).normalized()), eb))
+            elif t == GeomAbs_Circle:
+                circ = c.Circle()
+                cc = Vector(circ.Location())
+                ax = Vector(circ.Axis().Direction())
+                if on_plane(cc) and abs(abs(ax.dot(n)) - 1) <= 1e-9:
+                    circles.append((circ, eb))
+        for v in sh.vertices():
+            p = Vector(v.X, v.Y, v.Z)
+            if on_plane(p) and box_near(v.bounding_box(), sb):
+                verts.append(p)
+    if not lines and not circles:
+        return faces
+    return [_snap_one_profile(fc, n, lines, circles, verts, box_near) for fc in faces]
+
+
+def _snap_one_profile(face, n, all_lines, all_circles, all_verts, box_near):
+    """One face of `_snap_profile_to_bodies`, against the body curves it found."""
+    from OCP.BRepAdaptor import BRepAdaptor_Curve
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeWire
+    from OCP.BRepCheck import BRepCheck_Analyzer
+    from OCP.BRepTools import BRepTools_WireExplorer
+    from OCP.ElCLib import ElCLib
+    from OCP.GC import GC_MakeSegment
+    from OCP.Geom import Geom_Circle, Geom_TrimmedCurve
+    from OCP.GeomAbs import GeomAbs_Circle, GeomAbs_Line
+    from OCP.TopAbs import TopAbs_REVERSED
+    from OCP.TopoDS import TopoDS
+    from OCP.gp import gp_Pnt
+
+    tol = _PROFILE_SNAP_TOL
+    fb = face.bounding_box()
+    lines = [g for g, eb in all_lines if box_near(eb, fb)]
+    circles = [g for g, eb in all_circles if box_near(eb, fb)]
+    if not lines and not circles:
+        return face
+    verts = [p for p in all_verts
+             if fb.min.X - tol <= p.X <= fb.max.X + tol
+             and fb.min.Y - tol <= p.Y <= fb.max.Y + tol
+             and fb.min.Z - tol <= p.Z <= fb.max.Z + tol]
+
+    def line_dist(p, ln):
+        a, d = ln
+        w = p - a
+        return (w - d * w.dot(d)).length
+
+    def circle_dist(p, circ):
+        cc = Vector(circ.Location())
+        w = p - cc
+        w = w - n * w.dot(n)
+        return abs(w.length - circ.Radius())
+
+    def source(e):
+        """The body curve `e` was traced off, as ("line", (a, d)) / ("circle", circ)."""
+        c = BRepAdaptor_Curve(e.wrapped)
+        pts = [e.position_at(u) for u in (0, 0.5, 1)]
+        if c.GetType() == GeomAbs_Line:
+            for ln in lines:
+                if all(line_dist(p, ln) <= tol for p in pts):
+                    return ("line", ln)
+        elif c.GetType() == GeomAbs_Circle:
+            for circ in circles:
+                if (abs(circ.Radius() - c.Circle().Radius()) <= tol
+                        and all(circle_dist(p, circ) <= tol for p in pts)):
+                    return ("circle", circ)
+        return None
+
+    def project(p, src):
+        kind, g = src
+        if kind == "line":
+            a, d = g
+            return a + d * (p - a).dot(d)
+        return Vector(ElCLib.Value_s(ElCLib.Parameter_s(g, gp_Pnt(p.X, p.Y, p.Z)), g))
+
+    def rebuild(wire):
+        """(new wire, changed) or (None, False) when it cannot be rebuilt."""
+        steps = []  # (edge, reversed, start point, end point) in traversal order
+        ex = BRepTools_WireExplorer(wire.wrapped, face.wrapped)
+        while ex.More():
+            e = Edge(ex.Current())
+            rev = ex.Current().Orientation() == TopAbs_REVERSED
+            a, z = e.position_at(0), e.position_at(1)
+            steps.append((e, rev, z if rev else a, a if rev else z))
+            ex.Next()
+        if not steps:
+            return None, False
+        srcs = [source(e) for e, *_ in steps]
+        if not any(srcs):
+            return wire, False
+        k = len(steps)
+        # Corner i is where step i-1 ends and step i starts.
+        corners = []
+        for i in range(k):
+            p = steps[i][2]
+            body_v = min(verts, key=lambda q: (q - p).length, default=None)
+            if body_v is not None and (body_v - p).length <= tol:
+                corners.append(body_v)
+                continue
+            for s in (srcs[i], srcs[i - 1]):
+                if s is not None:
+                    p = project(p, s)
+                    break
+            corners.append(p)
+        mk = BRepBuilderAPI_MakeWire()
+        for i, (e, rev, a, z) in enumerate(steps):
+            p0, p1 = corners[i], corners[(i + 1) % k]
+            moved = (p0 - a).length > 1e-12 or (p1 - z).length > 1e-12
+            c = BRepAdaptor_Curve(e.wrapped)
+            if k == 1 and c.GetType() == GeomAbs_Circle:
+                # A whole circle, a hole traced off a bore: the body's circle, in
+                # the same sense round the face as the one it replaces.
+                if not srcs[i]:
+                    mk.Add(TopoDS.Edge_s(e.wrapped.Reversed()) if rev else e.wrapped)
+                    continue
+                circ = srcs[i][1]
+                flip = (Vector(circ.Axis().Direction()).dot(Vector(c.Circle().Axis().Direction())) < 0) != rev
+                ne = BRepBuilderAPI_MakeEdge(Geom_Circle(circ)).Edge()
+                mk.Add(TopoDS.Edge_s(ne.Reversed()) if flip else ne)
+                continue
+            if c.GetType() == GeomAbs_Line and (srcs[i] or moved):
+                g = GC_MakeSegment(gp_Pnt(p0.X, p0.Y, p0.Z), gp_Pnt(p1.X, p1.Y, p1.Z)).Value()
+                mk.Add(BRepBuilderAPI_MakeEdge(g).Edge())
+            elif c.GetType() == GeomAbs_Circle and (srcs[i] or moved):
+                circ = srcs[i][1] if srcs[i] else c.Circle()
+                if (p1 - p0).length <= tol:
+                    return None, False  # a whole circle: left alone
+                two = 2 * math.pi
+                mid = e.position_at(0.5)
+                u0, u1, um = (ElCLib.Parameter_s(circ, gp_Pnt(q.X, q.Y, q.Z)) for q in (p0, p1, mid))
+                span = (u1 - u0) % two
+                if (um - u0) % two < span:
+                    ne = BRepBuilderAPI_MakeEdge(Geom_TrimmedCurve(Geom_Circle(circ), u0, u0 + span)).Edge()
+                else:
+                    back = (u0 - u1) % two
+                    ne = TopoDS.Edge_s(BRepBuilderAPI_MakeEdge(
+                        Geom_TrimmedCurve(Geom_Circle(circ), u1, u1 + back)).Edge().Reversed())
+                mk.Add(ne)
+            elif moved:
+                return None, False  # a curve this cannot carry to a moved corner
+            else:
+                mk.Add(TopoDS.Edge_s(e.wrapped.Reversed()) if rev else e.wrapped)
+            if not mk.IsDone():
+                return None, False
+        w = Wire(mk.Wire())
+        return (w, True) if w.is_closed else (None, False)
+
+    try:
+        outer, changed = rebuild(face.outer_wire())
+        inners = [rebuild(w) for w in face.inner_wires()]
+        if outer is None or any(w is None for w, _ in inners):
+            return face
+        if not changed and not any(ch for _, ch in inners):
+            return face
+        snapped = Face(outer, [w for w, _ in inners])
+        # Moving every edge by at most `tol` changes the area by at most
+        # tol x perimeter; anything more means the rebuild found another shape.
+        perimeter = sum(e.length for e in face.edges())
+        if (not BRepCheck_Analyzer(snapped.wrapped).IsValid()
+                or abs(snapped.area - face.area) > 2 * tol * perimeter):
+            return face
+        if snapped.normal_at().dot(face.normal_at()) < 0:
+            snapped = Face(TopoDS.Face_s(snapped.wrapped.Reversed()))
+        return snapped
+    except Exception:
+        return face
 
 
 def _region_face_at(cells, P, diag=None, feature_id=None):
