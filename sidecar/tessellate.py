@@ -617,6 +617,60 @@ def weld_vertices(positions, indices, face_ids=None):
     return P[rep].reshape(-1), W[keep].reshape(-1), (None if F is None else F[keep])
 
 
+# Mesh edges shorter than this are collapsed for export (`collapse_micro_edges`).
+# Far below any printer, and below what a 3MF holds: coordinates are written to
+# 6 significant digits, so anything past 10 mm already prints to 1e-4.
+MICRO_EDGE = 1e-4
+
+
+def collapse_micro_edges(positions, indices, face_ids=None, tol=MICRO_EDGE):
+    """Merge the two ends of every triangle edge shorter than `tol`, and drop the
+    triangles that collapse. For the export formats, after `weld_vertices`.
+
+    The kernel can leave an edge a few hundredths of a micron long where two
+    surfaces meet tangentially. One face's triangulation then uses it and its
+    neighbour's does not, which is a hole of that size: field report 995a4717,
+    a 4.3e-5 mm ellipse edge left 3 one-sided edges, and the 3MF, which writes
+    6 significant digits, carried them as four copies of one point.
+
+    Only vertices JOINED by such an edge merge, never two that are merely close,
+    so two shells of a body that touch stay apart. Each merged group keeps one
+    of its own vertices, unmoved; the triangles round it change by less than
+    `tol`.
+
+    Returns (positions, indices, face_ids) like `weld_vertices`; a mesh with no
+    edge that short comes back as it was."""
+    import numpy as np
+
+    P = np.asarray(positions, dtype=np.float64).reshape(-1, 3)
+    T = np.asarray(indices, dtype=np.int64).reshape(-1, 3)
+    F = None if face_ids is None else np.asarray(face_ids).reshape(-1)
+    if not len(T):
+        return P.reshape(-1), T.reshape(-1), F
+    E = np.concatenate([T[:, [0, 1]], T[:, [1, 2]], T[:, [2, 0]]])
+    short = np.linalg.norm(P[E[:, 0]] - P[E[:, 1]], axis=1) < tol
+    if not short.any():
+        return P.reshape(-1), T.reshape(-1), F
+    parent = np.arange(len(P))
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    for a, b in E[short]:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[max(ra, rb)] = min(ra, rb)
+    root = np.arange(len(P))
+    touched = np.unique(E[short])
+    root[touched] = [find(i) for i in touched]
+    W = root[T]
+    keep = (W[:, 0] != W[:, 1]) & (W[:, 1] != W[:, 2]) & (W[:, 2] != W[:, 0])
+    return P.reshape(-1), W[keep].reshape(-1), (None if F is None else F[keep])
+
+
 def vertex_normals(positions, indices):
     """Area-weighted per-vertex normals for a whole mesh (flat lists in/out) —
     the same accumulation three.js's computeVertexNormals does, run server-side
